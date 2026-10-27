@@ -48,7 +48,7 @@ final class TunnelManager: ObservableObject {
             observeStatus(of: m)
             try m.connection.startVPNTunnel()
             apply(status: m.connection.status)
-            if state == .disconnected { state = .connecting }
+            if case .disconnected = state { state = .connecting }
         } catch {
             state = .failed(error.localizedDescription)
         }
