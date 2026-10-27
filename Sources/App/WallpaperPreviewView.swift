@@ -4,10 +4,11 @@ import UIKit
 /// Liquid-glass chrome for the preview screen: real SwiftUI glass on
 /// iOS 26+, ultra-thin material everywhere else. Every glassEffect use
 /// stays inside the availability branch — deployment target is iOS 17.
-struct GlassChrome<S: Shape>: ViewModifier {
+struct GlassChrome<Content: View, S: Shape>: View {
     let shape: S
+    @ViewBuilder let content: Content
 
-    func body(content: Content) -> some View {
+    var body: some View {
         if #available(iOS 26.0, *) {
             content.glassEffect(.regular, in: shape)
         } else {
@@ -18,7 +19,7 @@ struct GlassChrome<S: Shape>: ViewModifier {
 
 extension View {
     func glassChrome<S: Shape>(in shape: S) -> some View {
-        modifier(GlassChrome(shape: shape))
+        GlassChrome(shape: shape) { self }
     }
 }
 
