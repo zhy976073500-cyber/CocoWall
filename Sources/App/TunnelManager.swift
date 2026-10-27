@@ -61,17 +61,21 @@ final class TunnelManager: ObservableObject {
     // MARK: - Status observation
 
     private func observeStatus(of manager: NETunnelProviderManager?) {
-        if let statusObserver {
-            NotificationCenter.default.removeObserver(statusObserver)
-            self.statusObserver = nil
+        if let observer = statusObserver {
+            NotificationCenter.default.removeObserver(observer)
+            statusObserver = nil
         }
         guard let connection = manager?.connection else { return }
+        // The observer block runs on the main queue; the explicit Task hop
+        // puts the state mutation back on the main actor.
         statusObserver = NotificationCenter.default.addObserver(
             forName: .NEVPNStatusDidChange, object: connection, queue: .main
         ) { [weak self] note in
             guard let conn = note.object as? NEVPNConnection else { return }
             let newStatus = conn.status
-            Task { @MainActor [weak self] in self?.apply(status: newStatus) }
+            Task { @MainActor in
+                self?.apply(status: newStatus)
+            }
         }
     }
 
