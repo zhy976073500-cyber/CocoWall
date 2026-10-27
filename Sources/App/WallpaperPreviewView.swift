@@ -47,31 +47,38 @@ struct WallpaperPreviewView: View {
     var body: some View {
         let background = backgroundImage
         let floating = floatingImage
-        ZStack {
-            Color.black.ignoresSafeArea()
+        // Chrome must respect the device safe area explicitly: the image
+        // layers ignore it, which used to stretch the whole ZStack and
+        // push the close button under the status bar / Dynamic Island.
+        GeometryReader { geo in
+            ZStack {
+                Color.black.ignoresSafeArea()
 
-            if background != nil || floating != nil {
-                if let background {
-                    Image(uiImage: background)
-                        .resizable()
-                        .scaledToFill()
-                        .ignoresSafeArea()
+                if background != nil || floating != nil {
+                    if let background {
+                        Image(uiImage: background)
+                            .resizable()
+                            .scaledToFill()
+                            .ignoresSafeArea()
+                    }
+                    if let floating {
+                        Image(uiImage: floating)
+                            .resizable()
+                            .scaledToFill()
+                            .ignoresSafeArea()
+                    }
+                    clockOverlay
+                } else {
+                    noPreviewCard
                 }
-                if let floating {
-                    Image(uiImage: floating)
-                        .resizable()
-                        .scaledToFill()
-                        .ignoresSafeArea()
-                }
-                clockOverlay
-            } else {
-                noPreviewCard
-            }
 
-            VStack {
-                topChrome
-                Spacer()
-                bottomChrome(showLockButtons: background != nil || floating != nil)
+                VStack {
+                    topChrome
+                    Spacer()
+                    bottomChrome(showLockButtons: background != nil || floating != nil)
+                }
+                .padding(.top, geo.safeAreaInsets.top + 2)
+                .padding(.bottom, geo.safeAreaInsets.bottom + 4)
             }
         }
     }
@@ -122,28 +129,7 @@ struct WallpaperPreviewView: View {
     }
 
     private func bottomChrome(showLockButtons: Bool) -> some View {
-        VStack(spacing: 12) {
-            VStack(spacing: 5) {
-                Button {
-                    // Write path is not implemented yet; button stays
-                    // disabled rather than pretending to apply.
-                } label: {
-                    Text("设为壁纸")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                }
-                .glassChrome(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-                .disabled(true)
-                .opacity(0.75)
-
-                Text("写入功能开发中")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.7))
-            }
-            .padding(.horizontal, 24)
-
+        VStack(spacing: 14) {
             if showLockButtons {
                 HStack {
                     lockButton(systemName: "flashlight.fill")
@@ -153,12 +139,36 @@ struct WallpaperPreviewView: View {
                 .padding(.horizontal, 46)
             }
 
-            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                .fill(Color.white)
-                .frame(width: 134, height: 5)
-                .padding(.top, 2)
+            // Floating glass dock: darkened material so it stays legible
+            // (and visibly glassy) over bright wallpapers.
+            VStack(spacing: 4) {
+                Button {
+                    // Write path is not implemented yet; button stays
+                    // disabled rather than pretending to apply.
+                } label: {
+                    Text("设为壁纸")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .disabled(true)
+
+                Text("写入功能开发中")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.75))
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .background {
+                let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
+                shape.fill(.ultraThinMaterial)
+                    .overlay(shape.fill(Color.black.opacity(0.22)))
+                    .overlay(shape.stroke(Color.white.opacity(0.35), lineWidth: 1))
+                    .shadow(color: .black.opacity(0.25), radius: 16, x: 0, y: 6)
+            }
+            .padding(.horizontal, 20)
         }
-        .padding(.bottom, 8)
     }
 
     private func lockButton(systemName: String) -> some View {
