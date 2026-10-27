@@ -1,0 +1,42 @@
+# CocoWall CI: build an unsigned IPA on macOS runners.
+# Placement: this file must end up at .github/workflows/build-ipa.yml in the repo.
+# cc cannot push workflow files (GitHub 403), so Sage adds it once via the web UI,
+# same as the Cocomusic pipeline.
+name: Build CocoWall IPA
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build (unsigned)
+        run: |
+          xcodebuild build \
+            -project CocoWall.xcodeproj \
+            -scheme CocoWall \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: Package IPA
+        run: |
+          mkdir -p build/Payload
+          cp -R build/DerivedData/Build/Products/Release-iphoneos/CocoWall.app build/Payload/
+          cd build && zip -qr CocoWall-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CocoWall-iOS-IPA
+          path: build/CocoWall-unsigned.ipa
