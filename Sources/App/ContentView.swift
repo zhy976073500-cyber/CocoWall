@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// v1 shell: 壁纸 (import / apply / manage) + 设置 (pairing / tunnel).
@@ -22,6 +23,7 @@ struct WallpaperListView: View {
     @ObservedObject var tunnel: TunnelManager
     @State private var records: [ImportedWallpaper] = []
     @State private var showImporter = false
+    @State private var selectedRecord: ImportedWallpaper?
     @State private var errorMessage: String?
 
     @State private var scanMessage: String?
@@ -34,11 +36,20 @@ struct WallpaperListView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(records) { record in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(record.displayName).font(.headline)
-                        Text("编号 \(record.descriptorIdentifier) · \(record.fileName)")
-                            .font(.caption).foregroundStyle(.secondary)
+                    Button {
+                        selectedRecord = record
+                    } label: {
+                        HStack(spacing: 12) {
+                            WallpaperThumbnail(record: record)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(record.displayName).font(.headline)
+                                Text("编号 \(record.descriptorIdentifier) · \(record.fileName)")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 }
                 .onDelete(perform: delete)
             }
@@ -51,7 +62,15 @@ struct WallpaperListView: View {
                     Text("导入 .tendies")
                 }
             }
-            .onAppear { records = ImportedWallpaperStore.load() }
+            .onAppear {
+                records = ImportedWallpaperStore.load()
+                backfillPreviews()
+            }
+            .fullScreenCover(item: $selectedRecord) { record in
+                WallpaperPreviewView(record: record) {
+                    selectedRecord = nil
+                }
+            }
             .sheet(isPresented: $showImporter) {
                 DocumentPicker { url in
                     showImporter = false
@@ -104,6 +123,24 @@ struct WallpaperListView: View {
         } else {
             scanMessage = "导入 \(result.added.count) 个；解析失败：\(result.failed.joined(separator: "、"))"
         }
+    }
+
+    /// Wallpapers imported by older builds have no preview files yet;
+    /// generate them once from the stored archives. Records that already
+    /// have either preview field set are skipped, so a package that
+    /// legitimately has no background still (floating only, or none) is
+    /// not re-parsed on every appearance.
+    private func backfillPreviews() {
+        var changed = false
+        for index in records.indices
+        where records[index].previewFileName == nil
+            && records[index].floatingPreviewFileName == nil {
+            if let updated = ImportedWallpaperStore.ensurePreview(for: records[index]) {
+                records[index] = updated
+                changed = true
+            }
+        }
+        if changed { ImportedWallpaperStore.save(records) }
     }
 
     private func delete(at offsets: IndexSet) {
@@ -205,5 +242,32 @@ struct SettingsView: View {
         } catch {
             deviceMessage = error.localizedDescription
         }
+    }
+}
+
+/// 46×62 portrait thumbnail for a wallpaper row: the stored background
+/// preview when there is one, otherwise a placeholder symbol. Clipped
+/// rounded rect with a soft shadow and deliberately no stroke — matches
+/// the cover style Sage settled on for his other projects.
+struct WallpaperThumbnail: View {
+    let record: ImportedWallpaper
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.secondary.opacity(0.15))
+            if let url = ImportedWallpaperStore.previewURL(for: record),
+               let image = UIImage(contentsOfFile: url.path) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "photo.on.rectangle.angled")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 46, height: 62)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .shadow(color: .black.opacity(0.12), radius: 2, x: 0, y: 1)
     }
 }
