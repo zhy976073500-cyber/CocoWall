@@ -24,11 +24,7 @@ struct WallpaperListView: View {
     @State private var showImporter = false
     @State private var errorMessage: String?
 
-    /// Deliberately broad: on-device .tendies files often carry a dynamic /
-    /// unregistered UTI (Files shows them as unknown), so restricting the
-    /// picker to the exported com.coco.tendies type leaves them greyed out.
-    /// Accept anything and let the importer validate by parsing.
-    private var tendiesContentTypes: [UTType] { [.item, .data] }
+    @State private var scanMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -48,13 +44,22 @@ struct WallpaperListView: View {
             }
             .navigationTitle("壁纸")
             .toolbar {
-                Button("导入 .tendies…") { showImporter = true }
+                Menu {
+                    Button("从文件选择…") { showImporter = true }
+                    Button("扫描文稿目录") { scanDocuments() }
+                } label: {
+                    Text("导入 .tendies")
+                }
             }
             .onAppear { records = ImportedWallpaperStore.load() }
-            .fileImporter(isPresented: $showImporter,
-                          allowedContentTypes: tendiesContentTypes,
-                          allowsMultipleSelection: false) { result in
-                handleImport(result)
+            .sheet(isPresented: $showImporter) {
+                DocumentPicker { url in
+                    showImporter = false
+                    importPicked(url)
+                } onCancel: {
+                    showImporter = false
+                }
+                .ignoresSafeArea()
             }
             .alert("导入失败", isPresented: Binding(
                 get: { errorMessage != nil },
@@ -64,24 +69,40 @@ struct WallpaperListView: View {
             } message: {
                 Text(errorMessage ?? "")
             }
+            .alert("扫描结果", isPresented: Binding(
+                get: { scanMessage != nil },
+                set: { if !$0 { scanMessage = nil } }
+            )) {
+                Button("好") { scanMessage = nil }
+            } message: {
+                Text(scanMessage ?? "")
+            }
         }
     }
 
-    private func handleImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .failure(let error):
+    private func importPicked(_ url: URL) {
+        // DocumentPicker is asCopy, so the URL is a local copy already.
+        do {
+            let record = try ImportedWallpaperStore.importArchive(from: url)
+            records.append(record)
+            ImportedWallpaperStore.save(records)
+        } catch {
             errorMessage = error.localizedDescription
-        case .success(let urls):
-            guard let url = urls.first else { return }
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let record = try ImportedWallpaperStore.importArchive(from: url)
-                records.append(record)
-                ImportedWallpaperStore.save(records)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
+        }
+    }
+
+    private func scanDocuments() {
+        let result = ImportedWallpaperStore.scanDocuments(existing: records)
+        if !result.added.isEmpty {
+            records.append(contentsOf: result.added)
+            ImportedWallpaperStore.save(records)
+        }
+        if result.added.isEmpty && result.failed.isEmpty {
+            scanMessage = "文稿目录里没有新的 .tendies。把文件放进「文件 ▸ 我的 iPhone ▸ CocoWall」后再扫一次。"
+        } else if result.failed.isEmpty {
+            scanMessage = "已导入 \(result.added.count) 个壁纸。"
+        } else {
+            scanMessage = "导入 \(result.added.count) 个；解析失败：\(result.failed.joined(separator: "、"))"
         }
     }
 
@@ -151,18 +172,19 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
-            .fileImporter(isPresented: $showPairingImporter,
-                          allowedContentTypes: [.item, .data],
-                          allowsMultipleSelection: false) { result in
-                handlePairingImport(result)
+            .sheet(isPresented: $showPairingImporter) {
+                DocumentPicker { url in
+                    showPairingImporter = false
+                    handlePairingPick(url)
+                } onCancel: {
+                    showPairingImporter = false
+                }
+                .ignoresSafeArea()
             }
         }
     }
 
-    private func handlePairingImport(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result, let url = urls.first else { return }
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+    private func handlePairingPick(_ url: URL) {
         do {
             let data = try Data(contentsOf: url)
             pairing.importPairing(data: data)

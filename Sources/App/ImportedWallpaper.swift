@@ -98,6 +98,34 @@ enum ImportedWallpaperStore {
         }
     }
 
+    /// Fallback import path when the picker misbehaves: anything dropped
+    /// into the app's Documents folder (Files ▸ On My iPhone ▸ CocoWall,
+    /// file sharing is enabled) or Documents/Inbox is imported in place.
+    /// Names already imported are skipped; unparsable files are reported
+    /// by name rather than aborting the whole scan.
+    static func scanDocuments(existing: [ImportedWallpaper])
+        -> (added: [ImportedWallpaper], failed: [String]) {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        var candidates: [URL] = []
+        for dir in [docs, docs.appendingPathComponent("Inbox", isDirectory: true)] {
+            guard let entries = try? fm.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil) else { continue }
+            candidates += entries.filter { $0.pathExtension.lowercased() == "tendies" }
+        }
+        let known = Set(existing.map(\.fileName))
+        var added: [ImportedWallpaper] = []
+        var failed: [String] = []
+        for url in candidates where !known.contains(url.lastPathComponent) {
+            do {
+                added.append(try importArchive(from: url))
+            } catch {
+                failed.append(url.lastPathComponent)
+            }
+        }
+        return (added, failed)
+    }
+
     static func removeFile(for record: ImportedWallpaper) {
         try? FileManager.default.removeItem(
             at: importedDirectory.appendingPathComponent(record.storedFileName))
