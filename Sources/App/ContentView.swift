@@ -24,14 +24,11 @@ struct WallpaperListView: View {
     @State private var showImporter = false
     @State private var errorMessage: String?
 
-    /// The .tendies type exported in Info.plist (UTExportedTypeDeclarations,
-    /// identifier com.coco.tendies) is resolved through its filename-extension
-    /// tag; fall back to a plain data picker (the handler then filters by
-    /// extension) if the type cannot be resolved at runtime.
-    private var tendiesContentTypes: [UTType] {
-        if let type = UTType(filenameExtension: "tendies") { return [type] }
-        return [.data]
-    }
+    /// Deliberately broad: on-device .tendies files often carry a dynamic /
+    /// unregistered UTI (Files shows them as unknown), so restricting the
+    /// picker to the exported com.coco.tendies type leaves them greyed out.
+    /// Accept anything and let the importer validate by parsing.
+    private var tendiesContentTypes: [UTType] { [.item, .data] }
 
     var body: some View {
         NavigationStack {
@@ -155,7 +152,7 @@ struct SettingsView: View {
             }
             .navigationTitle("设置")
             .fileImporter(isPresented: $showPairingImporter,
-                          allowedContentTypes: [.propertyList, .data],
+                          allowedContentTypes: [.item, .data],
                           allowsMultipleSelection: false) { result in
                 handlePairingImport(result)
             }
