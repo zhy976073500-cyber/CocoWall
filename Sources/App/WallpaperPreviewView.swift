@@ -1,19 +1,21 @@
 import SwiftUI
 import UIKit
 
-/// Liquid-glass chrome for the preview screen: real SwiftUI glass on
-/// iOS 26+, ultra-thin material everywhere else. Every glassEffect use
-/// stays inside the availability branch — deployment target is iOS 17.
+/// Glass-look chrome for the preview screen. NOTE: SwiftUI's real
+/// glassEffect (iOS 26 SDK) cannot be used yet — the CI runner's Xcode
+/// SDK predates it, and #available guards runtime, not SDK presence, so
+/// the symbol fails to compile there. Until CI moves to an iOS 26 SDK
+/// runner, this fakes glass with ultra-thin material + a light edge
+/// highlight + soft shadow, which reads the same at this size.
 struct GlassChrome<Content: View, S: Shape>: View {
     let shape: S
     @ViewBuilder let content: Content
 
     var body: some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(.regular, in: shape)
-        } else {
-            content.background(.ultraThinMaterial, in: shape)
-        }
+        content
+            .background(.ultraThinMaterial, in: shape)
+            .overlay(shape.stroke(Color.white.opacity(0.28), lineWidth: 1))
+            .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
     }
 }
 
