@@ -13,6 +13,18 @@ probe run proved every runtime route dead (ATGrappaDeviceInfo returns
 nil, establish fails with ATError 0, no framework exports
 ALGetGrappaToken).
 
+This tool's primary route is the macOS home one: `dlsym`
+`ALGetGrappaToken` in every loaded AirTraffic framework (and
+RTLD_DEFAULT) and call it with the (1,0,1) triple — the entry the
+Vellum/airlift dissection records name as how a Mac sync host mints
+its token. The session-class route is kept as second in line; run
+#29 proved `ATGrappaSession` does not exist in macOS's
+AirTrafficHost (it lives in iOS's AirTrafficDevice), so on the build
+host that route is expected to stay unreachable. Each run also logs,
+as evidence only, the Grappa-containing class names of the
+AirTrafficHost image and the per-framework `ATGrappaDeviceInfo`
+probe results.
+
 The token (100 bytes, hex prefix `0101`) is minted for the
 (version=1, deviceType=0, protocolVersion=1) triple. It is not bound
 to a device or a session; the device-side daemon verifies the token
@@ -51,9 +63,10 @@ bundled token, so the failure stays visible in two places.
   watchdog (stack `sample` on timeout) and ad-hoc re-signs + retries
   once when the diag file lacks MARK 0 (dyld/code-signature death).
 - Exit codes: 0 success · 2 no AirTraffic framework loadable ·
-  3 ATGrappaSession missing/incomplete · 4 establish returned NSError
-  for every candidate · 5 session produced no data · 6 session could
-  not be created · 70 NSException.
+  3 no framework token entry produced a token and ATGrappaSession
+  missing/incomplete · 4 establish returned NSError for every
+  candidate · 5 session produced no data · 6 session could not be
+  created · 70 NSException.
 
 ## Debugging: pre-main SIGKILL bisect (builds #26–#28)
 
