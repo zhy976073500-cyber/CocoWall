@@ -1,0 +1,4 @@
+module CocoWallCore {
+    header "cocowall_core.h"
+    export *
+}

@@ -158,7 +158,7 @@ struct SettingsView: View {
     @State private var showPairingImporter = false
     @State private var deviceMessage: String?
 
-    private let deviceService: DeviceService = UnavailableDeviceService()
+    private let deviceService: DeviceService = FFIDeviceService()
 
     var body: some View {
         NavigationStack {
@@ -200,7 +200,9 @@ struct SettingsView: View {
                     Button("断开回环隧道") { tunnel.disconnect() }
                 }
                 Section("壁纸写入") {
-                    Text("设备写入服务尚未链接（idevice FFI 未集成到本 App），导入的壁纸目前只能保存在 App 内，还不能注入 PosterBoard。")
+                    Text("Rust 核心已链接：\(FFIDeviceService.coreVersion)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("注入环（AFC 暂存 + AirTraffic 同步）尚未落地：检测与写入会由核心返回明确的「注入环未落地」错误，不会假装成功。")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("检测 PosterBoard 容器") { Task { await probeContainer() } }
                     if let deviceMessage {

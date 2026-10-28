@@ -26,6 +26,9 @@ targets:
         INFOPLIST_FILE: Sources/App/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     preBuildScripts:
+      - name: Build Rust core (CocoWallCore.xcframework)
+        script: |
+          bash "$SRCROOT/ci/build-rust-core.sh"
       - name: Generate AppIcon from base64
         script: |
           ICON_DIR="$SRCROOT/Sources/App/Assets.xcassets/AppIcon.appiconset"
@@ -36,6 +39,8 @@ targets:
       - target: CocoWallTunnel
         embed: true
       - package: ZIPFoundation
+      - framework: Frameworks/CocoWallCore.xcframework
+        embed: false
   CocoWallTunnel:
     type: app-extension
     platform: iOS
