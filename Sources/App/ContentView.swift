@@ -163,14 +163,25 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("配对与设备连接") {
+                Section("本机配对（iOS 27）") {
                     switch pairing.state {
                     case .unpaired:
                         Text("尚未配对").foregroundStyle(.secondary)
                     case .hosting(let pin):
-                        Text(pin.map { "在本机输入 PIN：\($0)" } ?? "正在广播配对服务…")
+                        if let pin {
+                            Text("配对码")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(pin)
+                                .font(.system(size: 34, weight: .bold, design: .monospaced))
+                                .tracking(6)
+                            Text("在 系统设置 › 隐私与安全性 › 开发者模式 里点「与 CocoWall 配对」，填入这串配对码。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("正在广播配对服务，等待本机系统连接…")
+                                .foregroundStyle(.secondary)
+                        }
                     case .paired:
-                        Text("已导入配对文件").foregroundStyle(.green)
+                        Text("已配对").foregroundStyle(.green)
                         if let path = pairing.pairingFilePath {
                             Text(URL(fileURLWithPath: path).lastPathComponent)
                                 .font(.caption).foregroundStyle(.secondary)
@@ -178,10 +189,17 @@ struct SettingsView: View {
                     case .failed(let msg):
                         Text(msg).foregroundStyle(.red)
                     }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("1. 打开「开发者模式」：系统设置 → 隐私与安全性 → 开发者模式，打开后按提示重启确认（首次才需要）。")
+                        Text("2. 先开回环：在下方「回环隧道」里点「连接回环隧道」，看到状态栏 VPN 标志后再回来。")
+                        Text("3. 点下方「开始配对」，本 App 会显示一串 6 位配对码。")
+                        Text("4. 在开发者模式里点「与 CocoWall 配对」填入配对码；成功后配对记录保存在本机，以后不用重复配对。")
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
                     if #available(iOS 27.0, *) {
-                        Button("在这台 iPhone 上配对") { pairing.startOnDevicePairing() }
+                        Button("开始配对") { pairing.startOnDevicePairing() }
                     } else {
-                        Text("机内配对需 iOS 27 及以上，此版本请导入配对文件。")
+                        Text("机内配对需 iOS 27 及以上；系统低于 iOS 27 请用下方导入配对文件。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Button("导入配对文件…") { showPairingImporter = true }
