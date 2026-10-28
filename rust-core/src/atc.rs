@@ -21,9 +21,38 @@ use crate::grappa;
 use crate::tunnel::DeviceTunnel;
 
 const ATC_SERVICE: &str = "com.apple.atc";
-/// LibraryID used by the reference ATH implementation.
-const LIBRARY_ID: &str = "5AC547BA5322B210";
 const SYNC_HOST_NAME: &str = "cocowall";
+
+/// LibraryID for one sync session, shaped like a UUID
+/// (8-4-4-4-12 hex). The reference implementation that runs this
+/// handshake on iOS generates a fresh one per session; the fixed ID
+/// this code used before came from a desktop ATH implementation and
+/// named a library this device has never seen. Not security material —
+/// just an identifier — so time/counter entropy is enough.
+fn random_library_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut x = nanos
+        ^ count.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ ((std::process::id() as u64) << 17);
+    let mut next = move || {
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    };
+    let a = next() as u32;
+    let b = (next() >> 16) as u16;
+    let c = next() as u16;
+    let d = (next() >> 32) as u16;
+    let e = next() & 0xFFFF_FFFF_FFFF;
+    format!("{a:08x}-{b:04x}-{c:04x}-{d:04x}-{e:012x}")
+}
 
 fn make_msg(command: &str, session: u64, params: Option<plist::Dictionary>) -> plist::Value {
     let mut dict = plist::Dictionary::new();
@@ -89,12 +118,15 @@ async fn read_msg(stream: &mut Box<dyn ReadWrite>) -> Result<plist::Dictionary, 
 }
 
 fn msg_name(dict: &plist::Dictionary) -> Option<String> {
+    /* The daemon normally uses "Command"; some builds name the same
+     * field "MessageName" — accept both, like the reference reader. */
     dict.get("Command")
+        .or_else(|| dict.get("MessageName"))
         .and_then(|c| c.as_string())
         .map(|s| s.to_string())
 }
 
-fn build_host_info(grappa_token: &Option<Vec<u8>>) -> plist::Dictionary {
+fn build_host_info(grappa_token: &Option<Vec<u8>>, library_id: &str) -> plist::Dictionary {
     let mut host = plist::Dictionary::new();
     host.insert("Type".into(), plist::Value::String("iTunes".into()));
     host.insert(
@@ -111,7 +143,7 @@ fn build_host_info(grappa_token: &Option<Vec<u8>>) -> plist::Dictionary {
     );
     host.insert(
         "LibraryID".into(),
-        plist::Value::String(LIBRARY_ID.into()),
+        plist::Value::String(library_id.into()),
     );
     host.insert(
         "SyncedDataclasses".into(),
@@ -175,6 +207,9 @@ impl AtcSession {
                                     .and_then(|v| v.as_unsigned_integer())
                                     .unwrap_or(1) as u32;
                                 grappa_info = Some((ver, dt, pv));
+                                log.log(format!(
+                                    "同步：守护进程 GrappaSupportInfo：version={ver} deviceType={dt} protocolVersion={pv}"
+                                ));
                             }
                         }
                         if name == "SyncAllowed" {
@@ -197,7 +232,21 @@ impl AtcSession {
         log: &Logger,
     ) -> Result<(), String> {
         let grappa_token = grappa::generate_grappa_token(grappa_info, log);
-        let host_info = build_host_info(&grappa_token);
+        match &grappa_token {
+            Some(token) => log.log(format!(
+                "同步：Grappa token 将写入 HostInfo 字典的 'Grappa' 键与 RequestingSync 参数的 'Grappa' 键（{} 字节）",
+                token.len()
+            )),
+            None => log.log(
+                "同步：无 Grappa token——HostInfo 与 RequestingSync 均不带 'Grappa' 键，守护进程可能因此拒绝进入 ReadyForSync"
+                    .to_string(),
+            ),
+        }
+        let library_id = random_library_id();
+        log.log(format!(
+            "同步：本次会话 LibraryID（每会话随机生成）: {library_id}"
+        ));
+        let host_info = build_host_info(&grappa_token, &library_id);
 
         // HostInfo, session 0.
         let mut params = plist::Dictionary::new();
@@ -251,9 +300,13 @@ impl AtcSession {
                                 break;
                             }
                             "SyncFailed" => {
-                                log.log(
-                                    "同步：守护进程报 SyncFailed（非致命，继续等待）".to_string(),
-                                );
+                                /* Dump the full message: its ErrorCode
+                                 * distinguishes a stale prior-session
+                                 * cancellation (routine) from an auth
+                                 * rejection (the thing we are hunting). */
+                                log.log(format!(
+                                    "同步：守护进程报 SyncFailed（继续等待）：{dict:?}"
+                                ));
                             }
                             _ => {}
                         }
@@ -299,6 +352,11 @@ impl AtcSession {
                             "AssetManifest" | "SyncFinished" => {
                                 manifest = true;
                                 break;
+                            }
+                            "SyncFailed" => {
+                                log.log(format!(
+                                    "同步：守护进程报 SyncFailed（清单阶段，继续等待）：{dict:?}"
+                                ));
                             }
                             _ => {}
                         }
