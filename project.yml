@@ -49,18 +49,28 @@ targets:
           # and the app then behaves exactly like the runtime-only build
           # (its own log also reports the missing bundled token).
           #
-          # Debug round (grappa-gen-debug): run #26's generator died with
-          # SIGKILL (137) leaving ZERO diagnostics. This script therefore
-          # (1) probes the host up front (arch, OS, framework presence),
-          # (2) runs the generator in the background under a 20s watchdog
-          # — on timeout it samples the stack before killing, so a hang
-          # inside a framework call leaves a stack in the log, (3) always
-          # cats the generator's stderr log AND its write()+fsync diag
-          # file (numbered MARK lines bracket every framework call;
-          # MARK 0 is main()'s first statement), and (4) if the diag file
-          # has no MARK 0 the process died before main() (dyld /
-          # code-signature class), so it ad-hoc re-signs the binary and
-          # retries exactly once.
+          # Debug round 2 (grappa-gen-debug2): runs #26/#27 proved the
+          # generator dies with SIGKILL (exit 137) BEFORE main()'s first
+          # statement — its write()+fsync diag file never even exists,
+          # watchdog_timeout=0, ad-hoc re-signing changes nothing, and
+          # no crash report is produced. This script therefore BISECTS
+          # "our binary" vs "the CI execution environment" through one
+          # identical compile+run path:
+          #   level 0  hello-c          trivial C tool (tools/grappa-gen/bisect/hello.c)
+          #   level 1  hello-foundation ObjC + Foundation, grappa-gen's exact flags
+          #   level 2  hello-dlopen     level 1 + dlopen(AirTrafficHost) only
+          #   level 3  grappa-gen       the full generator (tools/grappa-gen/main.m)
+          # Every level writes MARK lines to its own diag file via
+          # write()+fsync (MARK 0 = first statement of main) and runs
+          # under the same 20s watchdog (stack sample on timeout). If
+          # even level 0 dies pre-main, the environment / execution
+          # policy is at fault (prime suspect: user script sandboxing
+          # + AMFI vs freshly compiled ad-hoc binaries), NOT anything
+          # grappa-gen links or loads. The script also probes the
+          # effective ENABLE_USER_SCRIPT_SANDBOXING value in the
+          # generated pbxproj, each binary's LC_BUILD_VERSION, and
+          # collects forensics (DiagnosticReports + a bounded unified
+          # log query for amfid / the tool names) for the report.
           echo "=== GRAPPA-GEN ENV: host probe begin"
           uname -a || true
           echo "=== GRAPPA-GEN ENV: uname -m = $(uname -m)"
@@ -73,9 +83,17 @@ targets:
             echo "=== GRAPPA-GEN ENV: contents of /System/Library/PrivateFrameworks/$FW.framework:"
             ls -la "/System/Library/PrivateFrameworks/$FW.framework/" 2>&1 | head -n 10
           done
+          if [ -n "${PROJECT_FILE_PATH:-}" ] && [ -f "$PROJECT_FILE_PATH/project.pbxproj" ]; then
+            echo "=== GRAPPA-GEN ENV: ENABLE_USER_SCRIPT_SANDBOXING in generated project.pbxproj:"
+            grep -n "ENABLE_USER_SCRIPT_SANDBOXING" "$PROJECT_FILE_PATH/project.pbxproj" || echo "(setting absent from pbxproj - Xcode default applies)"
+          else
+            echo "=== GRAPPA-GEN ENV: PROJECT_FILE_PATH unavailable - cannot inspect generated pbxproj"
+          fi
           echo "=== GRAPPA-GEN ENV: host probe end"
           GEN_DIR="$SRCROOT/build/grappa-gen"
           mkdir -p "$GEN_DIR"
+          BIS_DIR="$GEN_DIR/bisect"
+          mkdir -p "$BIS_DIR"
           GEN_SRC="$SRCROOT/tools/grappa-gen/main.m"
           GEN_BIN="$GEN_DIR/grappa-gen"
           GEN_HEX="$GEN_DIR/GrappaToken.txt"
@@ -83,6 +101,7 @@ targets:
           GEN_RUNLOG="$GEN_DIR/run.log"
           GEN_TOKOUT="$GEN_DIR/token.out"
           GEN_SAMPLE="$GEN_DIR/sample.txt"
+          GEN_CC="$(xcrun --find clang 2>/dev/null || echo clang)"
           grappa_gen_fail() {
             echo "======================================================================"
             echo "=== GRAPPA-GEN FAILURE: $1"
@@ -94,66 +113,119 @@ targets:
               rm -f "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/GrappaToken.txt"
             fi
           }
-          run_grappa_gen() {
-            rm -f "$GEN_DIAG" "$GEN_RUNLOG" "$GEN_TOKOUT" "$GEN_SAMPLE"
-            "$GEN_BIN" "$GEN_DIAG" >"$GEN_TOKOUT" 2>"$GEN_RUNLOG" &
-            GEN_PID=$!
-            GEN_TIMEOUT=0
-            GEN_TICKS=0
+          # run_tool LABEL BIN DIAG OUT ERRLOG SAMPLE
+          # Runs BIN with argv[1]=DIAG in the background under a 20s
+          # watchdog (stack sample before the kill on timeout), then
+          # cats stdout/stderr/diag. Sets RT_RC and RT_TIMEOUT.
+          run_tool() {
+            RT_LABEL="$1"; RT_BIN="$2"; RT_DIAG="$3"; RT_OUT="$4"; RT_ERR="$5"; RT_SAMPLE="$6"
+            rm -f "$RT_DIAG" "$RT_ERR" "$RT_OUT" "$RT_SAMPLE"
+            "$RT_BIN" "$RT_DIAG" >"$RT_OUT" 2>"$RT_ERR" &
+            RT_PID=$!
+            RT_TIMEOUT=0
+            RT_TICKS=0
             while :; do
-              GEN_STAT="$(ps -p "$GEN_PID" -o stat= 2>/dev/null)"
-              if [ -z "$GEN_STAT" ]; then
+              RT_STAT="$(ps -p "$RT_PID" -o stat= 2>/dev/null)"
+              if [ -z "$RT_STAT" ]; then
                 break
               fi
-              case "$GEN_STAT" in
+              case "$RT_STAT" in
                 *Z*) break ;;
               esac
-              if [ "$GEN_TICKS" -ge 40 ]; then
-                GEN_TIMEOUT=1
-                echo "=== GRAPPA-GEN WATCHDOG: pid $GEN_PID still alive after 20s - sampling stack, then killing"
-                sample "$GEN_PID" 3 -file "$GEN_SAMPLE" >/dev/null 2>&1 || true
-                kill -9 "$GEN_PID" 2>/dev/null || true
+              if [ "$RT_TICKS" -ge 40 ]; then
+                RT_TIMEOUT=1
+                echo "=== WATCHDOG: $RT_LABEL pid $RT_PID still alive after 20s - sampling stack, then killing"
+                sample "$RT_PID" 3 -file "$RT_SAMPLE" >/dev/null 2>&1 || true
+                kill -9 "$RT_PID" 2>/dev/null || true
                 break
               fi
               sleep 0.5
-              GEN_TICKS=$((GEN_TICKS + 1))
+              RT_TICKS=$((RT_TICKS + 1))
             done
-            wait "$GEN_PID" 2>/dev/null
-            GEN_RC=$?
-            echo "=== GRAPPA-GEN RUN: exit code $GEN_RC watchdog_timeout=$GEN_TIMEOUT"
-            echo "--- GRAPPA-GEN generator stderr (run.log):"
-            cat "$GEN_RUNLOG" 2>/dev/null || echo "(run.log missing)"
-            echo "--- GRAPPA-GEN generator diag file (MARK lines):"
-            cat "$GEN_DIAG" 2>/dev/null || echo "(diag file missing - process may never have started)"
-            if [ -f "$GEN_SAMPLE" ]; then
-              echo "--- GRAPPA-GEN watchdog stack sample:"
-              cat "$GEN_SAMPLE"
-            fi
-            if [ "$GEN_RC" -eq 137 ]; then
-              echo "=== GRAPPA-GEN: exit 137 = SIGKILL. Newest diagnostic reports (jetsam/crash evidence):"
-              ls -lt /Library/Logs/DiagnosticReports/ 2>/dev/null | head -n 8 || true
-              ls -lt "$HOME/Library/Logs/DiagnosticReports/" 2>/dev/null | head -n 8 || true
+            wait "$RT_PID" 2>/dev/null
+            RT_RC=$?
+            echo "=== RUN $RT_LABEL: exit code $RT_RC watchdog_timeout=$RT_TIMEOUT"
+            echo "--- $RT_LABEL stderr:"
+            cat "$RT_ERR" 2>/dev/null || echo "(stderr file missing)"
+            echo "--- $RT_LABEL diag file (MARK lines):"
+            cat "$RT_DIAG" 2>/dev/null || echo "(diag file missing - process died before main?)"
+            echo "--- $RT_LABEL stdout:"
+            cat "$RT_OUT" 2>/dev/null || echo "(stdout file missing)"
+            if [ -f "$RT_SAMPLE" ]; then
+              echo "--- $RT_LABEL watchdog stack sample:"
+              cat "$RT_SAMPLE"
             fi
           }
+          # run_variant LABEL SRC MODE(c|objc): compile + binary info +
+          # run one bisect level. Sets BV_COMPILE, BV_RC, BV_MARK0, BV_TO.
+          run_variant() {
+            V_LABEL="$1"; V_SRC="$2"; V_MODE="$3"
+            V_BIN="$BIS_DIR/$V_LABEL"
+            V_DIAG="$BIS_DIR/$V_LABEL.diag"
+            V_OUT="$BIS_DIR/$V_LABEL.out"
+            V_ERR="$BIS_DIR/$V_LABEL.err"
+            V_SAMPLE="$BIS_DIR/$V_LABEL.sample"
+            BV_COMPILE="ok"; BV_RC="n/a"; BV_MARK0="n/a"; BV_TO="n/a"
+            echo "=== BISECT $V_LABEL: compiling $V_SRC (mode=$V_MODE)"
+            if [ "$V_MODE" = "objc" ]; then
+              "$GEN_CC" -fobjc-arc -fblocks -framework Foundation "$V_SRC" -o "$V_BIN" >"$BIS_DIR/$V_LABEL.clang.log" 2>&1
+            else
+              "$GEN_CC" "$V_SRC" -o "$V_BIN" >"$BIS_DIR/$V_LABEL.clang.log" 2>&1
+            fi
+            if [ $? -ne 0 ]; then
+              BV_COMPILE="FAIL"
+              echo "=== BISECT $V_LABEL: COMPILE FAILED:"
+              cat "$BIS_DIR/$V_LABEL.clang.log"
+              return 0
+            fi
+            echo "=== BISECT $V_BIN: file:"
+            file "$V_BIN" || true
+            echo "=== BISECT $V_LABEL: LC_BUILD_VERSION (minos / sdk):"
+            otool -l "$V_BIN" 2>/dev/null | grep -A4 "LC_BUILD_VERSION" | head -n 6 || true
+            echo "=== BISECT $V_LABEL: codesign -dvvv:"
+            codesign -dvvv "$V_BIN" 2>&1 | head -n 12 || true
+            run_tool "$V_LABEL" "$V_BIN" "$V_DIAG" "$V_OUT" "$V_ERR" "$V_SAMPLE"
+            BV_RC="$RT_RC"
+            BV_TO="$RT_TIMEOUT"
+            if grep -q "MARK 0" "$V_DIAG" 2>/dev/null; then BV_MARK0="yes"; else BV_MARK0="no"; fi
+          }
           TOKEN_HEX=""
-          GEN_CC="$(xcrun --find clang 2>/dev/null || echo clang)"
+          GEN_RC="n/a"
+          GEN_TIMEOUT="n/a"
+          GEN_MARK0="n/a"
           if ! "$GEN_CC" -fobjc-arc -fblocks -framework Foundation "$GEN_SRC" -o "$GEN_BIN" >"$GEN_DIR/clang.log" 2>&1; then
             cat "$GEN_DIR/clang.log"
             grappa_gen_fail "generator compile failed (see clang output above)"
+            GEN_RC="compile-fail"
           else
             echo "=== GRAPPA-GEN BINARY: file output:"
             file "$GEN_BIN" || true
+            echo "=== GRAPPA-GEN BINARY: LC_BUILD_VERSION (minos / sdk):"
+            otool -l "$GEN_BIN" 2>/dev/null | grep -A4 "LC_BUILD_VERSION" | head -n 6 || true
             echo "=== GRAPPA-GEN BINARY: codesign -dvvv output:"
             codesign -dvvv "$GEN_BIN" 2>&1 || true
             echo "=== GRAPPA-GEN BINARY: codesign --verify output:"
             codesign --verify --verbose=2 "$GEN_BIN" 2>&1 || true
-            run_grappa_gen
+            echo "=== BISECT begin (levels 0-2 via the identical path, then level 3 = grappa-gen)"
+            run_variant "hello-c" "$SRCROOT/tools/grappa-gen/bisect/hello.c" "c"
+            BVC_COMPILE="$BV_COMPILE"; BVC_RC="$BV_RC"; BVC_MARK0="$BV_MARK0"; BVC_TO="$BV_TO"
+            run_variant "hello-foundation" "$SRCROOT/tools/grappa-gen/bisect/hello_foundation.m" "objc"
+            BVF_COMPILE="$BV_COMPILE"; BVF_RC="$BV_RC"; BVF_MARK0="$BV_MARK0"; BVF_TO="$BV_TO"
+            run_variant "hello-dlopen" "$SRCROOT/tools/grappa-gen/bisect/hello_dlopen.m" "objc"
+            BVD_COMPILE="$BV_COMPILE"; BVD_RC="$BV_RC"; BVD_MARK0="$BV_MARK0"; BVD_TO="$BV_TO"
+            echo "=== BISECT level 3: grappa-gen itself"
+            run_tool "grappa-gen" "$GEN_BIN" "$GEN_DIAG" "$GEN_TOKOUT" "$GEN_RUNLOG" "$GEN_SAMPLE"
+            GEN_RC="$RT_RC"
+            GEN_TIMEOUT="$RT_TIMEOUT"
             if [ "$GEN_RC" -ne 0 ] && ! grep -q "MARK 0" "$GEN_DIAG" 2>/dev/null; then
               echo "=== GRAPPA-GEN RETRY: diag file has no MARK 0 - process died before main() (dyld/code-signature class). Ad-hoc re-signing and retrying once."
               codesign -s - --force "$GEN_BIN" 2>&1 || true
               codesign -dvvv "$GEN_BIN" 2>&1 || true
-              run_grappa_gen
+              run_tool "grappa-gen-retry" "$GEN_BIN" "$GEN_DIAG" "$GEN_TOKOUT" "$GEN_RUNLOG" "$GEN_SAMPLE"
+              GEN_RC="$RT_RC"
+              GEN_TIMEOUT="$RT_TIMEOUT"
             fi
+            if grep -q "MARK 0" "$GEN_DIAG" 2>/dev/null; then GEN_MARK0="yes"; else GEN_MARK0="no"; fi
             if [ "$GEN_RC" -ne 0 ]; then
               grappa_gen_fail "generator exited with code $GEN_RC watchdog_timeout=$GEN_TIMEOUT (see grappa-gen MARK/diag lines above)"
             else
@@ -180,6 +252,48 @@ targets:
                 ;;
             esac
           fi
+          echo "=== GRAPPA-GEN FORENSICS begin"
+          echo "--- DiagnosticReports listing (/Library/Logs/DiagnosticReports):"
+          ls -lt /Library/Logs/DiagnosticReports/ 2>/dev/null | head -n 10 || true
+          echo "--- DiagnosticReports listing (~/Library/Logs/DiagnosticReports):"
+          ls -lt "$HOME/Library/Logs/DiagnosticReports/" 2>/dev/null | head -n 10 || true
+          for D in /Library/Logs/DiagnosticReports "$HOME/Library/Logs/DiagnosticReports"; do
+            for f in "$D"/*.ips; do
+              [ -f "$f" ] || continue
+              case "$f" in
+                *grappa*|*hello*)
+                  echo "--- diagnostic report: $f"
+                  head -n 50 "$f"
+                  ;;
+              esac
+            done
+          done
+          echo "--- unified log query (amfid / grappa-gen / hello-*), last 3m, bounded to 15s:"
+          FLOG="$GEN_DIR/forensics-unified.log"
+          rm -f "$FLOG"
+          log show --style compact --last 3m --predicate 'process == "amfid" OR eventMessage CONTAINS "grappa-gen" OR eventMessage CONTAINS "hello-c" OR eventMessage CONTAINS "hello-foundation" OR eventMessage CONTAINS "hello-dlopen"' >"$FLOG" 2>&1 &
+          LF_PID=$!
+          LF_TICKS=0
+          while kill -0 "$LF_PID" 2>/dev/null; do
+            if [ "$LF_TICKS" -ge 30 ]; then
+              echo "(log show still running after 15s - killing it; partial output follows)"
+              kill -9 "$LF_PID" 2>/dev/null || true
+              break
+            fi
+            sleep 0.5
+            LF_TICKS=$((LF_TICKS + 1))
+          done
+          wait "$LF_PID" 2>/dev/null || true
+          echo "unified log captured bytes: $(wc -c <"$FLOG" 2>/dev/null | tr -d ' ')"
+          head -n 100 "$FLOG" 2>/dev/null || echo "(no unified log output captured - permissions/environment may restrict log show in the build sandbox)"
+          echo "=== GRAPPA-GEN FORENSICS end"
+          echo "=== BISECT SUMMARY begin"
+          echo "level 0 hello-c:          compile=${BVC_COMPILE:-n/a} run_exit=${BVC_RC:-n/a} mark0=${BVC_MARK0:-n/a} watchdog_timeout=${BVC_TO:-n/a}"
+          echo "level 1 hello-foundation: compile=${BVF_COMPILE:-n/a} run_exit=${BVF_RC:-n/a} mark0=${BVF_MARK0:-n/a} watchdog_timeout=${BVF_TO:-n/a}"
+          echo "level 2 hello-dlopen:     compile=${BVD_COMPILE:-n/a} run_exit=${BVD_RC:-n/a} mark0=${BVD_MARK0:-n/a} watchdog_timeout=${BVD_TO:-n/a}"
+          echo "level 3 grappa-gen:       run_exit=$GEN_RC mark0=$GEN_MARK0 watchdog_timeout=$GEN_TIMEOUT"
+          echo "=== BISECT SUMMARY end"
+          true
     dependencies:
       - target: CocoWallTunnel
         embed: true

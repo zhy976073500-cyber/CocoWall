@@ -55,6 +55,28 @@ bundled token, so the failure stays visible in two places.
   for every candidate · 5 session produced no data · 6 session could
   not be created · 70 NSException.
 
+## Debugging: pre-main SIGKILL bisect (builds #26–#28)
+
+Runs #26/#27: the generator died with SIGKILL (exit 137) **before
+main()'s first statement** — no diag file, watchdog_timeout=0, ad-hoc
+re-signing changed nothing, no crash report (AMFI/policy-class kill).
+The build script now bisects "our binary" vs "the CI execution
+environment" through one identical compile+run path:
+
+- level 0 `bisect/hello.c` — trivial C tool;
+- level 1 `bisect/hello_foundation.m` — ObjC + Foundation with
+  grappa-gen's exact compile flags;
+- level 2 `bisect/hello_dlopen.m` — level 1 + one
+  `dlopen(AirTrafficHost)`;
+- level 3 — grappa-gen itself.
+
+Each level leaves MARK lines in its own write()+fsync diag file and
+runs under the same 20s watchdog; the script also probes
+`ENABLE_USER_SCRIPT_SANDBOXING` in the generated pbxproj, each
+binary's `LC_BUILD_VERSION`, and collects DiagnosticReports + a
+bounded `log show` query (amfid / tool names). See the `BISECT
+SUMMARY` block at the end of the build log.
+
 ## Hygiene
 
 A generated token is a build product. It is written only under
