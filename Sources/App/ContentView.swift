@@ -67,7 +67,7 @@ struct WallpaperListView: View {
                 backfillPreviews()
             }
             .fullScreenCover(item: $selectedRecord) { record in
-                WallpaperPreviewView(record: record) {
+                WallpaperPreviewView(record: record, pairing: pairing) {
                     selectedRecord = nil
                 }
             }

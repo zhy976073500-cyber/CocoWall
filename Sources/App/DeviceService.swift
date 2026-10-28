@@ -3,29 +3,45 @@ import Foundation
 
 /// PosterBoard write primitives exposed by the device layer.
 ///
-/// The shapes mirror the airlift exploit entry points catalogued in
-/// research/write-path.md (exploit_inject_folder / exploit_write_batch /
-/// exploit_write_single_file), plus the two read-side operations the flow
-/// needs: locating the PosterBoard container and reading back the gallery
-/// descriptor count after an injection.
+/// The shapes mirror the write-channel operations catalogued in
+/// research/write-path.md, plus the two read-side operations the flow
+/// needs: locating the PosterBoard container and the full wallpaper
+/// apply sequence.
 ///
-/// Implementations run in the Rust `idevice` core (cocowall-core) behind
-/// the C FFI, linked as CocoWallCore.xcframework. FFIDeviceService below
-/// is the real wiring: every call crosses into the core. The injection
-/// ring (AFC staging + AirTraffic sync) has not landed in the core yet,
-/// so those calls come back with the core's own
-/// "注入环未落地" error — surfaced verbatim, never papered over.
+/// All implementations run in the Rust `idevice` core (cocowall-core)
+/// behind the C FFI. FFIDeviceService below is the real wiring: every
+/// call crosses into the core, streams its log lines to the optional
+/// sink, and surfaces core errors verbatim — never papered over.
 protocol DeviceService {
     /// Resolves the on-device PosterBoard data container path.
     func detectPosterBoardContainer(pairingFile: URL) async throws -> String
-    /// Injects one descriptor folder into the container's descriptors store.
-    func injectFolder(_ folder: URL, pairingFile: URL) async throws
-    /// Batch-writes files staged for an AirTraffic sync.
-    func writeBatch(files: [URL], pairingFile: URL) async throws
-    /// Writes a single file (e.g. the patched Books.plist).
-    func writeSingleFile(_ file: URL, pairingFile: URL) async throws
+    /// Injects one folder into `targetParentDir` on the device as
+    /// `destName`, verified by reading the gallery count back.
+    func injectFolder(
+        _ folder: URL, targetParentDir: String, destName: String, pairingFile: URL
+    ) async throws
+    /// Writes every file directly inside a local directory into a
+    /// device directory (Books-class AirTraffic sync).
+    func writeDirectory(_ source: URL, targetDir: String, pairingFile: URL) async throws
+    /// Full wallpaper apply for one extracted descriptor folder:
+    /// container lookup, fresh UUID + identifier rewrite on a staging
+    /// copy, primary inject, iOS 18+ dual inject, refresh plist.
+    func applyWallpaper(descriptorDir: URL, pairingFile: URL) async throws -> WallpaperApplyReport
     /// Reads back how many descriptors the gallery currently holds.
     func galleryDescriptorCount(containerPath: String) async throws -> Int
+    /// Restarts the device (SpringBoard respring) via DiagnosticsRelay.
+    func respring(pairingFile: URL) async throws
+}
+
+/// Parsed from the JSON report cw_wallpaper_apply returns.
+struct WallpaperApplyReport: Decodable {
+    let uuid: String
+    let identifierRewritten: Bool
+    let primaryBefore: Int
+    let primaryAfter: Int
+    /// "ok" | "skipped" | "failed: <error>"
+    let dual: String
+    let productVersion: String?
 }
 
 enum DeviceServiceError: LocalizedError {
@@ -41,28 +57,47 @@ enum DeviceServiceError: LocalizedError {
     }
 }
 
-/// Placeholder used until the idevice FFI lands: every primitive throws
-/// DeviceServiceError.notLinked so callers surface an honest failure.
+/// Placeholder used where the FFI is not wanted (previews): every
+/// primitive throws DeviceServiceError.notLinked so callers surface an
+/// honest failure.
 struct UnavailableDeviceService: DeviceService {
     func detectPosterBoardContainer(pairingFile: URL) async throws -> String {
         throw DeviceServiceError.notLinked
     }
 
-    func injectFolder(_ folder: URL, pairingFile: URL) async throws {
+    func injectFolder(
+        _ folder: URL, targetParentDir: String, destName: String, pairingFile: URL
+    ) async throws {
         throw DeviceServiceError.notLinked
     }
 
-    func writeBatch(files: [URL], pairingFile: URL) async throws {
+    func writeDirectory(_ source: URL, targetDir: String, pairingFile: URL) async throws {
         throw DeviceServiceError.notLinked
     }
 
-    func writeSingleFile(_ file: URL, pairingFile: URL) async throws {
+    func applyWallpaper(descriptorDir: URL, pairingFile: URL) async throws -> WallpaperApplyReport {
         throw DeviceServiceError.notLinked
     }
 
     func galleryDescriptorCount(containerPath: String) async throws -> Int {
         throw DeviceServiceError.notLinked
     }
+
+    func respring(pairingFile: URL) async throws {
+        throw DeviceServiceError.notLinked
+    }
+}
+
+/// Per-call log routing for the core's C log callback: the box is
+/// retained for exactly the duration of one blocking FFI call.
+private final class CoreLogBox {
+    let sink: (String) -> Void
+    init(sink: @escaping (String) -> Void) { self.sink = sink }
+}
+
+private func coreLogTrampoline(_ ctx: UnsafeMutableRawPointer?, _ msg: UnsafePointer<CChar>?) {
+    guard let ctx, let msg else { return }
+    Unmanaged<CoreLogBox>.fromOpaque(ctx).takeUnretainedValue().sink(String(cString: msg))
 }
 
 /// Real FFI-backed service. All work runs off the main actor on a
@@ -71,13 +106,23 @@ struct FFIDeviceService: DeviceService {
     /// Answered by the core itself; shown in Settings as proof of link.
     static var coreVersion: String { CoreBridge.version }
 
+    /// Optional recipient for the core's per-call log lines (the apply
+    /// UI uses it to render the segmented progress log live).
+    var logSink: ((String) -> Void)?
+
+    init(logSink: ((String) -> Void)? = nil) {
+        self.logSink = logSink
+    }
+
     func detectPosterBoardContainer(pairingFile: URL) async throws -> String {
         try await Self.offMain {
             var container: UnsafeMutablePointer<CChar>?
             var error: UnsafeMutablePointer<CChar>?
-            let rc = pairingFile.path.withCString { pairing in
-                "com.apple.PosterBoard".withCString { bundle in
-                    cw_find_app_container(pairing, bundle, nil, nil, &container, &error)
+            let rc = self.withLog { cb, ctx in
+                pairingFile.path.withCString { pairing in
+                    "com.apple.PosterBoard".withCString { bundle in
+                        cw_find_app_container(pairing, bundle, cb, ctx, &container, &error)
+                    }
                 }
             }
             defer {
@@ -91,15 +136,19 @@ struct FFIDeviceService: DeviceService {
         }
     }
 
-    func injectFolder(_ folder: URL, pairingFile: URL) async throws {
+    func injectFolder(
+        _ folder: URL, targetParentDir: String, destName: String, pairingFile: URL
+    ) async throws {
         try await Self.offMain {
             var error: UnsafeMutablePointer<CChar>?
-            let rc = pairingFile.path.withCString { pairing in
-                folder.path.withCString { folderPath in
-                    "".withCString { parent in
-                        "".withCString { dest in
-                            cw_exploit_inject_folder(
-                                pairing, folderPath, parent, dest, nil, nil, &error)
+            let rc = self.withLog { cb, ctx in
+                pairingFile.path.withCString { pairing in
+                    folder.path.withCString { folderPath in
+                        targetParentDir.withCString { parent in
+                            destName.withCString { dest in
+                                cw_exploit_inject_folder(
+                                    pairing, folderPath, parent, dest, cb, ctx, &error)
+                            }
                         }
                     }
                 }
@@ -111,17 +160,51 @@ struct FFIDeviceService: DeviceService {
         }
     }
 
-    func writeBatch(files: [URL], pairingFile: URL) async throws {
-        // The core's write primitive is directory-shaped; a batch is
-        // staged from the files' common parent directory.
-        guard let first = files.first else { return }
-        try await writeDir(
-            source: first.deletingLastPathComponent(), target: "", pairingFile: pairingFile)
+    func writeDirectory(_ source: URL, targetDir: String, pairingFile: URL) async throws {
+        try await Self.offMain {
+            var error: UnsafeMutablePointer<CChar>?
+            let rc = self.withLog { cb, ctx in
+                pairingFile.path.withCString { pairing in
+                    source.path.withCString { src in
+                        targetDir.withCString { dst in
+                            cw_exploit_write_dir(pairing, src, dst, cb, ctx, &error)
+                        }
+                    }
+                }
+            }
+            defer { cw_string_free(error) }
+            if rc != 0 {
+                throw DeviceServiceError.coreFailed(Self.message(from: error, rc: rc))
+            }
+        }
     }
 
-    func writeSingleFile(_ file: URL, pairingFile: URL) async throws {
-        try await writeDir(
-            source: file.deletingLastPathComponent(), target: "", pairingFile: pairingFile)
+    func applyWallpaper(descriptorDir: URL, pairingFile: URL) async throws -> WallpaperApplyReport {
+        let json = try await Self.offMain {
+            var report: UnsafeMutablePointer<CChar>?
+            var error: UnsafeMutablePointer<CChar>?
+            let rc = self.withLog { cb, ctx in
+                pairingFile.path.withCString { pairing in
+                    descriptorDir.path.withCString { dir in
+                        cw_wallpaper_apply(pairing, dir, cb, ctx, &report, &error)
+                    }
+                }
+            }
+            defer {
+                cw_string_free(report)
+                cw_string_free(error)
+            }
+            if rc == 0, let report {
+                return String(cString: report)
+            }
+            throw DeviceServiceError.coreFailed(Self.message(from: error, rc: rc))
+        }
+        guard let data = json.data(using: .utf8),
+              let report = try? JSONDecoder().decode(WallpaperApplyReport.self, from: data)
+        else {
+            throw DeviceServiceError.coreFailed("核心返回的应用报告无法解析：\(json)")
+        }
+        return report
     }
 
     func galleryDescriptorCount(containerPath: String) async throws -> Int {
@@ -132,16 +215,12 @@ struct FFIDeviceService: DeviceService {
             "核心未提供独立的计数入口：gallery 计数在注入流程内回读校验。")
     }
 
-    // MARK: - Helpers
-
-    private func writeDir(source: URL, target: String, pairingFile: URL) async throws {
+    func respring(pairingFile: URL) async throws {
         try await Self.offMain {
             var error: UnsafeMutablePointer<CChar>?
-            let rc = pairingFile.path.withCString { pairing in
-                source.path.withCString { src in
-                    target.withCString { dst in
-                        cw_exploit_write_dir(pairing, src, dst, nil, nil, &error)
-                    }
+            let rc = self.withLog { cb, ctx in
+                pairingFile.path.withCString { pairing in
+                    cw_device_respring(pairing, cb, ctx, &error)
                 }
             }
             defer { cw_string_free(error) }
@@ -149,6 +228,18 @@ struct FFIDeviceService: DeviceService {
                 throw DeviceServiceError.coreFailed(Self.message(from: error, rc: rc))
             }
         }
+    }
+
+    // MARK: - Helpers
+
+    /// Runs `work` with the core log callback wired to `logSink` when
+    /// one is set; the box lives exactly for the call.
+    private func withLog<T>(_ work: (CWLogCallback?, UnsafeMutableRawPointer?) -> T) -> T {
+        guard let logSink else { return work(nil, nil) }
+        let box = CoreLogBox(sink: logSink)
+        let ctx = Unmanaged.passRetained(box).toOpaque()
+        defer { Unmanaged<CoreLogBox>.fromOpaque(ctx).release() }
+        return work(coreLogTrampoline, ctx)
     }
 
     private static func message(from error: UnsafeMutablePointer<CChar>?, rc: Int32) -> String {

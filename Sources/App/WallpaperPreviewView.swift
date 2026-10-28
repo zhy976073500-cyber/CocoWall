@@ -32,7 +32,9 @@ extension View {
 /// card is shown instead of a faked picture.
 struct WallpaperPreviewView: View {
     let record: ImportedWallpaper
+    @ObservedObject var pairing: PairingService
     let onDismiss: () -> Void
+    @State private var showApply = false
 
     private var backgroundImage: UIImage? {
         guard let url = ImportedWallpaperStore.previewURL(for: record) else { return nil }
@@ -79,6 +81,13 @@ struct WallpaperPreviewView: View {
                 }
                 .padding(.top, geo.safeAreaInsets.top + 2)
                 .padding(.bottom, geo.safeAreaInsets.bottom + 4)
+            }
+        }
+        .sheet(isPresented: $showApply) {
+            if let path = pairing.pairingFilePath {
+                WallpaperApplyView(
+                    record: record,
+                    pairingFile: URL(fileURLWithPath: path))
             }
         }
     }
@@ -143,8 +152,7 @@ struct WallpaperPreviewView: View {
             // (and visibly glassy) over bright wallpapers.
             VStack(spacing: 4) {
                 Button {
-                    // Write path is not implemented yet; button stays
-                    // disabled rather than pretending to apply.
+                    showApply = true
                 } label: {
                     Text("设为壁纸")
                         .font(.headline)
@@ -152,9 +160,11 @@ struct WallpaperPreviewView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
-                .disabled(true)
+                .disabled(pairing.pairingFilePath == nil)
 
-                Text("写入功能开发中")
+                Text(pairing.pairingFilePath == nil
+                     ? "先在设置页完成本机配对后可写入"
+                     : "经本机配对写入 PosterBoard")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.75))
             }
