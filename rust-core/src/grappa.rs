@@ -67,10 +67,11 @@ pub fn generate_grappa_token(
 
     let mut buf = vec![0u8; 512];
     let mut out_len: usize = 0;
-    // Round 2's trace carries the full probe matrix plus an
-    // ATGrappaSession method dump, so the diag buffer is much larger
-    // than round 1's; the helper truncates to whatever it is given.
-    let mut diag_buf = [0 as libc::c_char; 16384];
+    // The trace carries the full probe matrix plus ATGrappaSession
+    // introspection; round 4 adds type-encoding dumps and the
+    // self-sign attempt matrix, so the diag buffer is sized
+    // generously — the helper truncates to whatever it is given.
+    let mut diag_buf = [0 as libc::c_char; 32768];
     let rc = unsafe {
         ALGetGrappaToken(
             ver,

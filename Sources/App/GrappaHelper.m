@@ -40,6 +40,23 @@
  * copied from the reference implementation's captured table — is the
  * step-6 fallback, used only after the runtime probes have all
  * failed, and the trace says so when it is adopted.
+ *
+ * Round 3's outcome closed the macOS route too: run #30's build log
+ * proved the CI runner's AirTrafficHost is an empty shell (zero
+ * Grappa classes in its image, no ALGetGrappaToken exported by the
+ * framework or visible via RTLD_DEFAULT), so no bundled token is
+ * ever embedded and the step-7 fallback finds nothing. Round 4
+ * therefore tries the one lead never yet exercised on iOS:
+ * ATGrappaSession is a real class there whose signature methods
+ * (createSignature:forData:, _hostCreateSignature:forData:) may be
+ * pure local computation even though establishHostSession… depends
+ * on an absent service. This build dumps those methods' type
+ * encodings, feeds the signature methods a matrix of candidate
+ * inputs (see cw_selfsign_probe below), and — only if an output has
+ * the known token shape (100 bytes, 0x0101 prefix) AND passes the
+ * device-session self-check — adopts it, traced with source
+ * "selfsign". Outputs that fail the self-check are logged, never
+ * used; no external token values are involved anywhere.
  */
 
 #import <Foundation/Foundation.h>
@@ -262,6 +279,375 @@ static int cw_bundled_fallback(NSMutableString *trace,
              verified ? @"passed"
                       : @"FAILED — adopted anyway, mirroring the reference behaviour");
     return 0;
+}
+
+/* ── Round 4: signature-method self-sign probe ─────────────────────
+ *
+ * The host-session route is dead on iOS (establish returns ATError 0;
+ * it depends on CoreFP, which ships on macOS only) and the macOS
+ * self-generation route is dead too (the CI runner's AirTrafficHost
+ * is an empty shell). But ATGrappaSession itself is a real class on
+ * iOS with signature methods that have never been tried:
+ * createSignature:forData: and _hostCreateSignature:forData: may be
+ * pure local computation that needs no service at all. This probe
+ * feeds them a matrix of candidate inputs, records every outcome,
+ * and adopts an output ONLY when it has the known token shape
+ * (100 bytes, 0x0101 prefix) and passes the same device-session
+ * self-check the reference implementation applies to its candidates
+ * (initWithType: 0 + establishDeviceSessionWithRequestData:
+ * responseData: — no NSError and a non-empty response means valid).
+ * Anything that fails the self-check is logged, never used. */
+
+/* First bytes of a data blob as hex, for prefix checks in the trace. */
+static NSString *cw_hex_prefix(NSData *data, NSUInteger maxBytes) {
+    if (data == nil) {
+        return @"<nil>";
+    }
+    NSUInteger n = data.length < maxBytes ? data.length : maxBytes;
+    const uint8_t *bytes = (const uint8_t *)data.bytes;
+    NSMutableString *hex = [NSMutableString stringWithCapacity:n * 2];
+    for (NSUInteger i = 0; i < n; i++) {
+        [hex appendFormat:@"%02x", bytes[i]];
+    }
+    return hex;
+}
+
+/* First significant character of a runtime type string, skipping
+ * qualifiers (const / bycopy / byref / oneway …). */
+static char cw_type_kind(const char *type) {
+    if (type == NULL) {
+        return '\0';
+    }
+    const char *p = type;
+    while (*p == 'r' || *p == 'n' || *p == 'N' || *p == 'o' ||
+           *p == 'O' || *p == 'R' || *p == 'V') {
+        p++;
+    }
+    return *p;
+}
+
+/* Type encodings of every ATGrappaSession method this project cares
+ * about, instance and class side, recorded verbatim so the next
+ * route decision reads parameter/return shapes from evidence. */
+static void cw_dump_type_encodings(NSMutableString *trace, Class sessionClass) {
+    static const char *const names[] = {
+        "createSignature:forData:",
+        "_hostCreateSignature:forData:",
+        "_deviceCreateSignature:forData:",
+        "verifySignature:forData:",
+        "beginHostSessionWithDeviceResponseData:",
+        "establishDeviceSessionWithRequestData:responseData:",
+        "establishHostSessionWithDeviceInfo:clientRequestData:",
+        "deviceInfo",
+        "initWithType:",
+    };
+    for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        SEL sel = sel_registerName(names[i]);
+        Method im = class_getInstanceMethod(sessionClass, sel);
+        Method cm = class_getClassMethod(sessionClass, sel);
+        cw_trace(trace, @"type encoding %s: instance=%s class=%s",
+                 names[i],
+                 im != NULL ? (method_getTypeEncoding(im) ?: "<null>") : "<absent>",
+                 cm != NULL ? (method_getTypeEncoding(cm) ?: "<null>") : "<absent>");
+    }
+}
+
+/* Device-session self-check for a locally minted candidate: no
+ * NSError and a non-empty response means the daemon-side machinery
+ * accepts the token. */
+static BOOL cw_device_session_verify(NSMutableString *trace, Class sessionClass,
+                                     NSData *token, NSString *sourceLabel) {
+    SEL devEstablishSel = sel_registerName("establishDeviceSessionWithRequestData:responseData:");
+    if (![sessionClass instancesRespondToSelector:devEstablishSel]) {
+        cw_trace(trace, @"selfsign verify (%@): establishDeviceSession selector missing", sourceLabel);
+        return NO;
+    }
+    @try {
+        id alloced = ((id (*)(id, SEL))objc_msgSend)((id)sessionClass, sel_registerName("alloc"));
+        /* type 0 = device session */
+        id devSession = ((id (*)(id, SEL, unsigned int))objc_msgSend)(
+            alloced, sel_registerName("initWithType:"), 0);
+        if (devSession == nil) {
+            cw_trace(trace, @"selfsign verify (%@): device session (initWithType: 0) -> nil", sourceLabel);
+            return NO;
+        }
+        NSData *response = nil;
+        NSError *devError = ((NSError * (*)(id, SEL, id, NSData **))objc_msgSend)(
+            devSession, devEstablishSel, token, &response);
+        if (devError != nil) {
+            cw_trace(trace, @"selfsign verify (%@): FAILED — NSError domain=%@ code=%ld desc=%@",
+                     sourceLabel, devError.domain ?: @"?", (long)devError.code,
+                     devError.localizedDescription ?: @"");
+            return NO;
+        }
+        if (![response isKindOfClass:[NSData class]] || response.length == 0) {
+            cw_trace(trace, @"selfsign verify (%@): FAILED — no response data", sourceLabel);
+            return NO;
+        }
+        cw_trace(trace, @"selfsign verify (%@): PASSED (response %lu bytes)",
+                 sourceLabel, (unsigned long)response.length);
+        return YES;
+    } @catch (NSException *e) {
+        cw_trace(trace, @"selfsign verify (%@): raised %@: %@",
+                 sourceLabel, e.name ?: @"?", e.reason ?: @"");
+        return NO;
+    }
+}
+
+/* Record one candidate output. Only a token-shaped output (100
+ * bytes, 0x0101 prefix) that passes the device-session self-check is
+ * adopted into out_buf (returns YES); everything else is trace-only. */
+static BOOL cw_consider_output(NSMutableString *trace, Class sessionClass,
+                               id output, NSString *label,
+                               uint8_t *out_buf, size_t max_len, size_t *out_len) {
+    if (output == nil) {
+        cw_trace(trace, @"selfsign %@: -> nil", label);
+        return NO;
+    }
+    if (![output isKindOfClass:[NSData class]]) {
+        cw_trace(trace, @"selfsign %@: -> non-data (class=%@)", label,
+                 NSStringFromClass([output class]));
+        return NO;
+    }
+    NSData *data = (NSData *)output;
+    cw_trace(trace, @"selfsign %@: -> data len=%lu prefix=%@",
+             label, (unsigned long)data.length, cw_hex_prefix(data, 4));
+    if (data.length != 100) {
+        return NO;
+    }
+    const uint8_t *bytes = (const uint8_t *)data.bytes;
+    if (bytes[0] != 0x01 || bytes[1] != 0x01) {
+        cw_trace(trace, @"selfsign %@: 100 bytes but prefix is not 0101 — not token-shaped", label);
+        return NO;
+    }
+    cw_trace(trace, @"selfsign %@: token-shaped (100 bytes, 0101) — running device-session self-check", label);
+    if (!cw_device_session_verify(trace, sessionClass, data, label)) {
+        cw_trace(trace, @"selfsign %@: self-check FAILED — output logged only, NOT used as token", label);
+        return NO;
+    }
+    if (data.length > max_len) {
+        cw_trace(trace, @"selfsign %@: verified but too large for the output buffer (%lu > %lu)",
+                 label, (unsigned long)data.length, (unsigned long)max_len);
+        return NO;
+    }
+    memcpy(out_buf, data.bytes, data.length);
+    *out_len = data.length;
+    cw_trace(trace, @"selfsign %@: token ADOPTED (source=selfsign, %lu bytes)",
+             label, (unsigned long)data.length);
+    return YES;
+}
+
+/* One createSignature-style call. The call is only made when the
+ * method's own type encoding says both explicit arguments are
+ * objects and the return value is an object; any other shape is
+ * recorded from the encoding instead of being invoked blind. */
+static BOOL cw_try_signature_call(NSMutableString *trace, Class sessionClass,
+                                  id receiver, BOOL classReceiver, SEL sel,
+                                  NSString *label,
+                                  NSData *first, NSData *second,
+                                  uint8_t *out_buf, size_t max_len, size_t *out_len) {
+    Method m = classReceiver ? class_getClassMethod(sessionClass, sel)
+                             : class_getInstanceMethod(sessionClass, sel);
+    if (m == NULL) {
+        cw_trace(trace, @"selfsign %@: method absent on this side", label);
+        return NO;
+    }
+    char retType[64] = {0};
+    char arg2[64] = {0};
+    char arg3[64] = {0};
+    method_getReturnType(m, retType, sizeof(retType));
+    method_getArgumentType(m, 2, arg2, sizeof(arg2));
+    method_getArgumentType(m, 3, arg3, sizeof(arg3));
+    if (cw_type_kind(arg2) != '@' || cw_type_kind(arg3) != '@') {
+        cw_trace(trace, @"selfsign %@: skipped — argument types %s / %s are not both objects",
+                 label, arg2, arg3);
+        return NO;
+    }
+    if (cw_type_kind(retType) != '@') {
+        cw_trace(trace, @"selfsign %@: skipped — return type %s is not an object", label, retType);
+        return NO;
+    }
+    id output = nil;
+    @try {
+        output = ((id (*)(id, SEL, id, id))objc_msgSend)(receiver, sel, first, second);
+    } @catch (NSException *e) {
+        cw_trace(trace, @"selfsign %@: raised %@: %@", label, e.name ?: @"?", e.reason ?: @"");
+        return NO;
+    }
+    return cw_consider_output(trace, sessionClass, output, label, out_buf, max_len, out_len);
+}
+
+static int cw_selfsign_probe(NSMutableString *trace,
+                             uint32_t version, uint32_t device_type, uint32_t protocol_version,
+                             uint8_t *out_buf, size_t max_len, size_t *out_len,
+                             int incoming_result) {
+    cw_trace(trace, @"selfsign probe: minting locally via ATGrappaSession signature methods");
+    Class sessionClass = objc_getClass("ATGrappaSession");
+    if (sessionClass == Nil) {
+        cw_trace(trace, @"selfsign probe: ATGrappaSession class NOT FOUND — probe skipped");
+        return incoming_result;
+    }
+    cw_dump_type_encodings(trace, sessionClass);
+
+    /* Candidate inputs. (a)/(b) are the fixed (1, 0, 1) triple — the
+     * only triple a token is known to be minted for — as binary and
+     * XML plist; (d) is the daemon's GrappaSupportInfo triple exactly
+     * as passed into this function, binary plist; (c) is empty. */
+    NSDictionary *fixedTriple = @{ @"version" : @1, @"deviceType" : @0, @"protocolVersion" : @1 };
+    NSDictionary *daemonTriple = @{
+        @"version" : @(version),
+        @"deviceType" : @(device_type),
+        @"protocolVersion" : @(protocol_version),
+    };
+    NSError *serError = nil;
+    NSData *binFixed = [NSPropertyListSerialization dataWithPropertyList:fixedTriple
+                                                                  format:NSPropertyListBinaryFormat_v1_0
+                                                                 options:0
+                                                                   error:&serError];
+    if (binFixed == nil) {
+        cw_trace(trace, @"selfsign probe: binary plist of fixed triple failed (%@)",
+                 serError.localizedDescription ?: @"?");
+    }
+    serError = nil;
+    NSData *xmlFixed = [NSPropertyListSerialization dataWithPropertyList:fixedTriple
+                                                                  format:NSPropertyListXMLFormat_v1_0
+                                                                 options:0
+                                                                   error:&serError];
+    if (xmlFixed == nil) {
+        cw_trace(trace, @"selfsign probe: XML plist of fixed triple failed (%@)",
+                 serError.localizedDescription ?: @"?");
+    }
+    serError = nil;
+    NSData *binDaemon = [NSPropertyListSerialization dataWithPropertyList:daemonTriple
+                                                                   format:NSPropertyListBinaryFormat_v1_0
+                                                                  options:0
+                                                                    error:&serError];
+    if (binDaemon == nil) {
+        cw_trace(trace, @"selfsign probe: binary plist of daemon triple failed (%@)",
+                 serError.localizedDescription ?: @"?");
+    }
+    NSData *empty = [NSData data];
+    NSArray<NSDictionary *> *inputs = @[
+        @{ @"label" : @"(a) fixed-triple binary plist", @"data" : binFixed ?: empty },
+        @{ @"label" : @"(b) fixed-triple XML plist", @"data" : xmlFixed ?: empty },
+        @{ @"label" : @"(c) empty data", @"data" : empty },
+        @{ @"label" : @"(d) daemon GrappaSupportInfo binary plist", @"data" : binDaemon ?: empty },
+    ];
+    for (NSDictionary *input in inputs) {
+        cw_trace(trace, @"selfsign probe: candidate %@ is %lu bytes",
+                 input[@"label"], (unsigned long)((NSData *)input[@"data"]).length);
+    }
+
+    /* Host-type instance for the instance-side attempts. */
+    id hostSession = nil;
+    @try {
+        id alloced = ((id (*)(id, SEL))objc_msgSend)((id)sessionClass, sel_registerName("alloc"));
+        hostSession = ((id (*)(id, SEL, unsigned int))objc_msgSend)(
+            alloced, sel_registerName("initWithType:"), 1);
+    } @catch (NSException *e) {
+        cw_trace(trace, @"selfsign probe: host session init raised %@: %@",
+                 e.name ?: @"?", e.reason ?: @"");
+        hostSession = nil;
+    }
+    cw_trace(trace, @"selfsign probe: host session (initWithType: 1) -> %@",
+             hostSession != nil ? @"created" : @"nil");
+
+    /* Signature attempts: both selectors × instance/class receivers
+     * × every candidate input × both argument orders (the semantics
+     * of the two parameter slots are unknown, so the candidate data
+     * is tried in each). The empty candidate has a single order. */
+    static const char *const sigNames[] = {
+        "createSignature:forData:",
+        "_hostCreateSignature:forData:",
+    };
+    for (unsigned s = 0; s < sizeof(sigNames) / sizeof(sigNames[0]); s++) {
+        SEL sel = sel_registerName(sigNames[s]);
+        for (int r = 0; r < 2; r++) {
+            BOOL classReceiver = (r == 1);
+            NSString *receiverLabel = classReceiver ? @"class" : @"host-instance";
+            if (classReceiver) {
+                if (class_getClassMethod(sessionClass, sel) == NULL) {
+                    cw_trace(trace, @"selfsign %s via class: no class method — skipped", sigNames[s]);
+                    continue;
+                }
+            } else {
+                if (hostSession == nil) {
+                    cw_trace(trace, @"selfsign %s via host-instance: no host session — skipped", sigNames[s]);
+                    continue;
+                }
+                if (class_getInstanceMethod(sessionClass, sel) == NULL) {
+                    cw_trace(trace, @"selfsign %s via host-instance: no instance method — skipped", sigNames[s]);
+                    continue;
+                }
+            }
+            id receiver = classReceiver ? (id)sessionClass : hostSession;
+            for (NSDictionary *input in inputs) {
+                NSData *data = (NSData *)input[@"data"];
+                int orders = data.length == 0 ? 1 : 2;
+                for (int o = 0; o < orders; o++) {
+                    NSData *first = o == 0 ? data : empty;
+                    NSData *second = o == 0 ? empty : data;
+                    NSString *label = [NSString stringWithFormat:@"%s via %@, %@: %@",
+                                       sigNames[s], receiverLabel, input[@"label"],
+                                       o == 0 ? @"input->arg1, empty->arg2"
+                                              : @"empty->arg1, input->arg2"];
+                    if (cw_try_signature_call(trace, sessionClass, receiver, classReceiver,
+                                              sel, label, first, second,
+                                              out_buf, max_len, out_len)) {
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
+
+    /* beginHostSessionWithDeviceResponseData: — fed the daemon's
+     * GrappaSupportInfo serialization as the "device response". */
+    SEL beginSel = sel_registerName("beginHostSessionWithDeviceResponseData:");
+    Method beginMethod = class_getInstanceMethod(sessionClass, beginSel);
+    if (beginMethod == NULL) {
+        cw_trace(trace, @"selfsign beginHostSessionWithDeviceResponseData:: method absent — skipped");
+    } else if (hostSession == nil) {
+        cw_trace(trace, @"selfsign beginHostSessionWithDeviceResponseData:: no host session — skipped");
+    } else {
+        char retType[64] = {0};
+        char arg2[64] = {0};
+        method_getReturnType(beginMethod, retType, sizeof(retType));
+        method_getArgumentType(beginMethod, 2, arg2, sizeof(arg2));
+        NSString *beginLabel = @"beginHostSessionWithDeviceResponseData: (daemon GrappaSupportInfo binary plist)";
+        if (cw_type_kind(arg2) != '@') {
+            cw_trace(trace, @"selfsign %@: skipped — argument type %s is not an object",
+                     beginLabel, arg2);
+        } else if (cw_type_kind(retType) == '@') {
+            id output = nil;
+            BOOL raised = NO;
+            @try {
+                output = ((id (*)(id, SEL, id))objc_msgSend)(hostSession, beginSel, binDaemon ?: empty);
+            } @catch (NSException *e) {
+                raised = YES;
+                cw_trace(trace, @"selfsign %@: raised %@: %@", beginLabel, e.name ?: @"?", e.reason ?: @"");
+            }
+            if (!raised && cw_consider_output(trace, sessionClass, output, beginLabel,
+                                              out_buf, max_len, out_len)) {
+                return 0;
+            }
+        } else if (cw_type_kind(retType) == 'B' || cw_type_kind(retType) == 'c') {
+            BOOL ok = NO;
+            @try {
+                ok = ((BOOL (*)(id, SEL, id))objc_msgSend)(hostSession, beginSel, binDaemon ?: empty);
+            } @catch (NSException *e) {
+                cw_trace(trace, @"selfsign %@: raised %@: %@", beginLabel, e.name ?: @"?", e.reason ?: @"");
+            }
+            cw_trace(trace, @"selfsign %@: -> BOOL %@ (no data returned — nothing to adopt)",
+                     beginLabel, ok ? @"YES" : @"NO");
+        } else {
+            cw_trace(trace, @"selfsign %@: skipped — return type %s is neither object nor BOOL",
+                     beginLabel, retType);
+        }
+    }
+
+    cw_trace(trace, @"selfsign probe: exhausted — no locally minted output passed verification");
+    return incoming_result;
 }
 
 __attribute__((visibility("default"), used))
@@ -527,9 +913,14 @@ int ALGetGrappaToken(uint32_t version,
         }
 
     done:
-        /* Step 7 hook: every failure path lands here (fall-through and
-         * gotos alike), so the bundled-token last resort gets its turn
-         * whenever the runtime routes produced nothing. */
+        /* Failure-path hooks: every failure lands here (fall-through
+         * and gotos alike). Round 4's self-sign probe gets its turn
+         * first — it is the only remaining runtime lead on iOS — and
+         * the bundled-token last resort (step 7) runs after it. */
+        if (result != 0) {
+            result = cw_selfsign_probe(trace, version, device_type, protocol_version,
+                                       out_buf, max_len, out_len, result);
+        }
         if (result != 0) {
             result = cw_bundled_fallback(trace, out_buf, max_len, out_len, result);
         }
