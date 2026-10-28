@@ -49,28 +49,31 @@ targets:
           # and the app then behaves exactly like the runtime-only build
           # (its own log also reports the missing bundled token).
           #
-          # Debug round 2 (grappa-gen-debug2): runs #26/#27 proved the
-          # generator dies with SIGKILL (exit 137) BEFORE main()'s first
-          # statement — its write()+fsync diag file never even exists,
-          # watchdog_timeout=0, ad-hoc re-signing changes nothing, and
-          # no crash report is produced. This script therefore BISECTS
-          # "our binary" vs "the CI execution environment" through one
-          # identical compile+run path:
-          #   level 0  hello-c          trivial C tool (tools/grappa-gen/bisect/hello.c)
-          #   level 1  hello-foundation ObjC + Foundation, grappa-gen's exact flags
-          #   level 2  hello-dlopen     level 1 + dlopen(AirTrafficHost) only
-          #   level 3  grappa-gen       the full generator (tools/grappa-gen/main.m)
-          # Every level writes MARK lines to its own diag file via
-          # write()+fsync (MARK 0 = first statement of main) and runs
-          # under the same 20s watchdog (stack sample on timeout). If
-          # even level 0 dies pre-main, the environment / execution
-          # policy is at fault (prime suspect: user script sandboxing
-          # + AMFI vs freshly compiled ad-hoc binaries), NOT anything
-          # grappa-gen links or loads. The script also probes the
-          # effective ENABLE_USER_SCRIPT_SANDBOXING value in the
-          # generated pbxproj, each binary's LC_BUILD_VERSION, and
-          # collects forensics (DiagnosticReports + a bounded unified
-          # log query for amfid / the tool names) for the report.
+          # Debug round 3 (grappa-gen-macos-target): runs #26-#28 died
+          # with SIGKILL (exit 137) before main() - even a trivial C
+          # hello, so the code was never at fault. Run #28's unified log
+          # gave the root cause: AMFI rejected the binaries ("unsuitable
+          # CT policy ... rejecting signature") because they had been
+          # compiled as iOS binaries (LC_BUILD_VERSION platform 2,
+          # minos 17.0) - this script runs inside the iOS target's
+          # build, so a bare clang inherited SDKROOT=iphoneos. The fix:
+          # every tool compiled here is pinned to the macOS SDK plus an
+          # explicit arm64-apple-macos14.0 target, and each binary's
+          # LC_BUILD_VERSION is self-checked right after compilation
+          # (platform must be 1 = MACOS; anything else is a hard stop
+          # for that binary, never a silent continue). A trivial C
+          # canary (tools/grappa-gen/bisect/hello.c) is compiled and run
+          # FIRST on every build, so an environment / execution-policy
+          # problem stays distinguishable from a generator problem at a
+          # glance; the ObjC bisect variants (bisect/hello_foundation.m,
+          # bisect/hello_dlopen.m) are no longer executed - their
+          # sources stay in the repo. Tools still run under the 20s
+          # watchdog and write MARK lines to a diag file via
+          # write()+fsync (MARK 0 = first statement of main). The script
+          # also probes the effective ENABLE_USER_SCRIPT_SANDBOXING
+          # value in the generated pbxproj and collects forensics
+          # (DiagnosticReports + a bounded unified log query for amfid /
+          # the tool names) for the report.
           echo "=== GRAPPA-GEN ENV: host probe begin"
           uname -a || true
           echo "=== GRAPPA-GEN ENV: uname -m = $(uname -m)"
@@ -101,7 +104,11 @@ targets:
           GEN_RUNLOG="$GEN_DIR/run.log"
           GEN_TOKOUT="$GEN_DIR/token.out"
           GEN_SAMPLE="$GEN_DIR/sample.txt"
-          GEN_CC="$(xcrun --find clang 2>/dev/null || echo clang)"
+          GEN_CC="$(xcrun --sdk macosx --find clang 2>/dev/null || echo clang)"
+          GEN_SDK_PATH="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)"
+          GEN_MACOS_TARGET="arm64-apple-macos14.0"
+          echo "=== GRAPPA-GEN ENV: macosx SDK path = ${GEN_SDK_PATH:-UNRESOLVED}"
+          echo "=== GRAPPA-GEN ENV: pinned compile target = $GEN_MACOS_TARGET (every tool's LC_BUILD_VERSION platform must be 1 = MACOS)"
           grappa_gen_fail() {
             echo "======================================================================"
             echo "=== GRAPPA-GEN FAILURE: $1"
@@ -111,6 +118,24 @@ targets:
             echo "error: GRAPPA-GEN FAILURE: $1 - building without bundled GrappaToken.txt"
             if [ -n "${TARGET_BUILD_DIR:-}" ] && [ -n "${UNLOCALIZED_RESOURCES_FOLDER_PATH:-}" ]; then
               rm -f "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/GrappaToken.txt"
+            fi
+          }
+          # check_platform LABEL BIN: prints the binary's
+          # LC_BUILD_VERSION block and sets PLAT_OK=1 only when its
+          # platform field is 1 (MACOS). An iOS-platform (2) binary
+          # here is exactly the run #28 failure mode: macOS AMFI kills
+          # it before main() with "unsuitable CT policy". Callers must
+          # treat PLAT_OK != 1 as a hard stop for that binary.
+          check_platform() {
+            CP_LABEL="$1"; CP_BIN="$2"
+            PLAT_OK=0
+            PLAT_VAL="$(otool -l "$CP_BIN" 2>/dev/null | awk '/LC_BUILD_VERSION/{seen=1; next} seen && /platform/{print $2; exit}')"
+            echo "=== PLATFORM CHECK $CP_LABEL: LC_BUILD_VERSION platform=${PLAT_VAL:-unknown} (required: 1 = MACOS)"
+            otool -l "$CP_BIN" 2>/dev/null | grep -A4 "LC_BUILD_VERSION" | head -n 6 || true
+            if [ "$PLAT_VAL" = "1" ]; then
+              PLAT_OK=1
+            else
+              echo "=== PLATFORM CHECK $CP_LABEL: WRONG PLATFORM - refusing to run a non-macOS binary on the macOS build host (run #28 AMFI kill mode)"
             fi
           }
           # run_tool LABEL BIN DIAG OUT ERRLOG SAMPLE
@@ -156,8 +181,10 @@ targets:
               cat "$RT_SAMPLE"
             fi
           }
-          # run_variant LABEL SRC MODE(c|objc): compile + binary info +
-          # run one bisect level. Sets BV_COMPILE, BV_RC, BV_MARK0, BV_TO.
+          # run_variant LABEL SRC MODE(c|objc): compile (macOS target
+          # pinned) + platform self-check + binary info + run one tool
+          # variant. Sets BV_COMPILE, BV_RC, BV_MARK0, BV_TO. A binary
+          # whose LC_BUILD_VERSION platform is not 1 (MACOS) is NOT run.
           run_variant() {
             V_LABEL="$1"; V_SRC="$2"; V_MODE="$3"
             V_BIN="$BIS_DIR/$V_LABEL"
@@ -166,23 +193,27 @@ targets:
             V_ERR="$BIS_DIR/$V_LABEL.err"
             V_SAMPLE="$BIS_DIR/$V_LABEL.sample"
             BV_COMPILE="ok"; BV_RC="n/a"; BV_MARK0="n/a"; BV_TO="n/a"
-            echo "=== BISECT $V_LABEL: compiling $V_SRC (mode=$V_MODE)"
+            echo "=== VARIANT $V_LABEL: compiling $V_SRC (mode=$V_MODE, target=$GEN_MACOS_TARGET)"
             if [ "$V_MODE" = "objc" ]; then
-              "$GEN_CC" -fobjc-arc -fblocks -framework Foundation "$V_SRC" -o "$V_BIN" >"$BIS_DIR/$V_LABEL.clang.log" 2>&1
+              "$GEN_CC" -isysroot "$GEN_SDK_PATH" -target "$GEN_MACOS_TARGET" -fobjc-arc -fblocks -framework Foundation "$V_SRC" -o "$V_BIN" >"$BIS_DIR/$V_LABEL.clang.log" 2>&1
             else
-              "$GEN_CC" "$V_SRC" -o "$V_BIN" >"$BIS_DIR/$V_LABEL.clang.log" 2>&1
+              "$GEN_CC" -isysroot "$GEN_SDK_PATH" -target "$GEN_MACOS_TARGET" "$V_SRC" -o "$V_BIN" >"$BIS_DIR/$V_LABEL.clang.log" 2>&1
             fi
             if [ $? -ne 0 ]; then
               BV_COMPILE="FAIL"
-              echo "=== BISECT $V_LABEL: COMPILE FAILED:"
+              echo "=== VARIANT $V_LABEL: COMPILE FAILED:"
               cat "$BIS_DIR/$V_LABEL.clang.log"
               return 0
             fi
-            echo "=== BISECT $V_BIN: file:"
+            echo "=== VARIANT $V_BIN: file:"
             file "$V_BIN" || true
-            echo "=== BISECT $V_LABEL: LC_BUILD_VERSION (minos / sdk):"
-            otool -l "$V_BIN" 2>/dev/null | grep -A4 "LC_BUILD_VERSION" | head -n 6 || true
-            echo "=== BISECT $V_LABEL: codesign -dvvv:"
+            check_platform "$V_LABEL" "$V_BIN"
+            if [ "$PLAT_OK" != "1" ]; then
+              BV_COMPILE="WRONG-PLATFORM"
+              echo "=== VARIANT $V_LABEL: NOT RUNNING - binary is not a macOS-platform binary"
+              return 0
+            fi
+            echo "=== VARIANT $V_LABEL: codesign -dvvv:"
             codesign -dvvv "$V_BIN" 2>&1 | head -n 12 || true
             run_tool "$V_LABEL" "$V_BIN" "$V_DIAG" "$V_OUT" "$V_ERR" "$V_SAMPLE"
             BV_RC="$RT_RC"
@@ -193,43 +224,42 @@ targets:
           GEN_RC="n/a"
           GEN_TIMEOUT="n/a"
           GEN_MARK0="n/a"
-          if ! "$GEN_CC" -fobjc-arc -fblocks -framework Foundation "$GEN_SRC" -o "$GEN_BIN" >"$GEN_DIR/clang.log" 2>&1; then
-            cat "$GEN_DIR/clang.log"
-            grappa_gen_fail "generator compile failed (see clang output above)"
-            GEN_RC="compile-fail"
+          BVC_COMPILE="n/a"; BVC_RC="n/a"; BVC_MARK0="n/a"; BVC_TO="n/a"
+          if [ -z "$GEN_SDK_PATH" ]; then
+            grappa_gen_fail "macosx SDK not found (xcrun --sdk macosx --show-sdk-path returned nothing) - cannot pin the macOS compile target"
+            GEN_RC="no-macosx-sdk"
           else
-            echo "=== GRAPPA-GEN BINARY: file output:"
-            file "$GEN_BIN" || true
-            echo "=== GRAPPA-GEN BINARY: LC_BUILD_VERSION (minos / sdk):"
-            otool -l "$GEN_BIN" 2>/dev/null | grep -A4 "LC_BUILD_VERSION" | head -n 6 || true
-            echo "=== GRAPPA-GEN BINARY: codesign -dvvv output:"
-            codesign -dvvv "$GEN_BIN" 2>&1 || true
-            echo "=== GRAPPA-GEN BINARY: codesign --verify output:"
-            codesign --verify --verbose=2 "$GEN_BIN" 2>&1 || true
-            echo "=== BISECT begin (levels 0-2 via the identical path, then level 3 = grappa-gen)"
+            echo "=== CANARY begin: hello-c runs first on every build (environment canary)"
             run_variant "hello-c" "$SRCROOT/tools/grappa-gen/bisect/hello.c" "c"
             BVC_COMPILE="$BV_COMPILE"; BVC_RC="$BV_RC"; BVC_MARK0="$BV_MARK0"; BVC_TO="$BV_TO"
-            run_variant "hello-foundation" "$SRCROOT/tools/grappa-gen/bisect/hello_foundation.m" "objc"
-            BVF_COMPILE="$BV_COMPILE"; BVF_RC="$BV_RC"; BVF_MARK0="$BV_MARK0"; BVF_TO="$BV_TO"
-            run_variant "hello-dlopen" "$SRCROOT/tools/grappa-gen/bisect/hello_dlopen.m" "objc"
-            BVD_COMPILE="$BV_COMPILE"; BVD_RC="$BV_RC"; BVD_MARK0="$BV_MARK0"; BVD_TO="$BV_TO"
-            echo "=== BISECT level 3: grappa-gen itself"
-            run_tool "grappa-gen" "$GEN_BIN" "$GEN_DIAG" "$GEN_TOKOUT" "$GEN_RUNLOG" "$GEN_SAMPLE"
-            GEN_RC="$RT_RC"
-            GEN_TIMEOUT="$RT_TIMEOUT"
-            if [ "$GEN_RC" -ne 0 ] && ! grep -q "MARK 0" "$GEN_DIAG" 2>/dev/null; then
-              echo "=== GRAPPA-GEN RETRY: diag file has no MARK 0 - process died before main() (dyld/code-signature class). Ad-hoc re-signing and retrying once."
-              codesign -s - --force "$GEN_BIN" 2>&1 || true
-              codesign -dvvv "$GEN_BIN" 2>&1 || true
-              run_tool "grappa-gen-retry" "$GEN_BIN" "$GEN_DIAG" "$GEN_TOKOUT" "$GEN_RUNLOG" "$GEN_SAMPLE"
-              GEN_RC="$RT_RC"
-              GEN_TIMEOUT="$RT_TIMEOUT"
-            fi
-            if grep -q "MARK 0" "$GEN_DIAG" 2>/dev/null; then GEN_MARK0="yes"; else GEN_MARK0="no"; fi
-            if [ "$GEN_RC" -ne 0 ]; then
-              grappa_gen_fail "generator exited with code $GEN_RC watchdog_timeout=$GEN_TIMEOUT (see grappa-gen MARK/diag lines above)"
+            echo "=== CANARY end: hello-c compile=$BVC_COMPILE run_exit=$BVC_RC mark0=$BVC_MARK0 watchdog_timeout=$BVC_TO"
+            if ! "$GEN_CC" -isysroot "$GEN_SDK_PATH" -target "$GEN_MACOS_TARGET" -fobjc-arc -fblocks -framework Foundation "$GEN_SRC" -o "$GEN_BIN" >"$GEN_DIR/clang.log" 2>&1; then
+              cat "$GEN_DIR/clang.log"
+              grappa_gen_fail "generator compile failed (see clang output above)"
+              GEN_RC="compile-fail"
             else
-              TOKEN_HEX="$(tr -d '[:space:]' <"$GEN_TOKOUT")"
+              echo "=== GRAPPA-GEN BINARY: file output:"
+              file "$GEN_BIN" || true
+              check_platform "grappa-gen" "$GEN_BIN"
+              if [ "$PLAT_OK" != "1" ]; then
+                grappa_gen_fail "grappa-gen compiled for the wrong platform (LC_BUILD_VERSION platform is not 1/MACOS - see PLATFORM CHECK above); refusing to run it"
+                GEN_RC="wrong-platform"
+              else
+                echo "=== GRAPPA-GEN BINARY: codesign -dvvv output:"
+                codesign -dvvv "$GEN_BIN" 2>&1 || true
+                echo "=== GRAPPA-GEN BINARY: codesign --verify output:"
+                codesign --verify --verbose=2 "$GEN_BIN" 2>&1 || true
+                echo "=== GRAPPA-GEN RUN: the generator itself"
+                run_tool "grappa-gen" "$GEN_BIN" "$GEN_DIAG" "$GEN_TOKOUT" "$GEN_RUNLOG" "$GEN_SAMPLE"
+                GEN_RC="$RT_RC"
+                GEN_TIMEOUT="$RT_TIMEOUT"
+                if grep -q "MARK 0" "$GEN_DIAG" 2>/dev/null; then GEN_MARK0="yes"; else GEN_MARK0="no"; fi
+                if [ "$GEN_RC" -ne 0 ]; then
+                  grappa_gen_fail "generator exited with code $GEN_RC watchdog_timeout=$GEN_TIMEOUT (see grappa-gen MARK/diag lines above)"
+                else
+                  TOKEN_HEX="$(tr -d '[:space:]' <"$GEN_TOKOUT")"
+                fi
+              fi
             fi
           fi
           if [ -n "$TOKEN_HEX" ]; then
@@ -268,10 +298,10 @@ targets:
               esac
             done
           done
-          echo "--- unified log query (amfid / grappa-gen / hello-*), last 3m, bounded to 15s:"
+          echo "--- unified log query (amfid / grappa-gen / hello-c), last 3m, bounded to 15s:"
           FLOG="$GEN_DIR/forensics-unified.log"
           rm -f "$FLOG"
-          log show --style compact --last 3m --predicate 'process == "amfid" OR eventMessage CONTAINS "grappa-gen" OR eventMessage CONTAINS "hello-c" OR eventMessage CONTAINS "hello-foundation" OR eventMessage CONTAINS "hello-dlopen"' >"$FLOG" 2>&1 &
+          log show --style compact --last 3m --predicate 'process == "amfid" OR eventMessage CONTAINS "grappa-gen" OR eventMessage CONTAINS "hello-c"' >"$FLOG" 2>&1 &
           LF_PID=$!
           LF_TICKS=0
           while kill -0 "$LF_PID" 2>/dev/null; do
@@ -287,12 +317,13 @@ targets:
           echo "unified log captured bytes: $(wc -c <"$FLOG" 2>/dev/null | tr -d ' ')"
           head -n 100 "$FLOG" 2>/dev/null || echo "(no unified log output captured - permissions/environment may restrict log show in the build sandbox)"
           echo "=== GRAPPA-GEN FORENSICS end"
-          echo "=== BISECT SUMMARY begin"
-          echo "level 0 hello-c:          compile=${BVC_COMPILE:-n/a} run_exit=${BVC_RC:-n/a} mark0=${BVC_MARK0:-n/a} watchdog_timeout=${BVC_TO:-n/a}"
-          echo "level 1 hello-foundation: compile=${BVF_COMPILE:-n/a} run_exit=${BVF_RC:-n/a} mark0=${BVF_MARK0:-n/a} watchdog_timeout=${BVF_TO:-n/a}"
-          echo "level 2 hello-dlopen:     compile=${BVD_COMPILE:-n/a} run_exit=${BVD_RC:-n/a} mark0=${BVD_MARK0:-n/a} watchdog_timeout=${BVD_TO:-n/a}"
-          echo "level 3 grappa-gen:       run_exit=$GEN_RC mark0=$GEN_MARK0 watchdog_timeout=$GEN_TIMEOUT"
-          echo "=== BISECT SUMMARY end"
+          echo "=== GRAPPA-GEN SUMMARY begin"
+          echo "canary hello-c:  compile=$BVC_COMPILE run_exit=$BVC_RC mark0=$BVC_MARK0 watchdog_timeout=$BVC_TO"
+          echo "grappa-gen:      run_exit=$GEN_RC mark0=$GEN_MARK0 watchdog_timeout=$GEN_TIMEOUT"
+          if [ "$BVC_RC" = "137" ] || [ "$GEN_RC" = "137" ]; then
+            echo "=== 137 NOTE: a tool was SIGKILLed (exit 137) again. FIRST check the PLATFORM CHECK lines above (LC_BUILD_VERSION platform must be 1 = MACOS; the run #28 root cause was platform 2 = IOS binaries) and the AMFI 'unsuitable CT policy' lines in the forensics unified log - before suspecting the canary/generator code itself."
+          fi
+          echo "=== GRAPPA-GEN SUMMARY end"
           true
     dependencies:
       - target: CocoWallTunnel
