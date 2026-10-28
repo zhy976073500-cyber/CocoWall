@@ -22,6 +22,14 @@
 //! Absence of a token is still reported, never papered over: when the
 //! helper cannot produce one it returns non-zero with a step-by-step
 //! diagnostic trace, which is logged verbatim below.
+//!
+//! Round 2 widened the helper's probes after the first on-device run:
+//! round 1 stopped at the first dlopen success (AirTrafficDevice) and
+//! never tested AirTrafficHost — the framework the recorded protocol
+//! facts place the `ALGetGrappaToken` entry in. The helper now loads
+//! and probes both frameworks, dumps ATGrappaSession introspection,
+//! and tries a host session per candidate device-info dictionary, so
+//! a failing run returns the full evidence matrix instead of a guess.
 
 use std::ffi::CStr;
 
@@ -59,7 +67,10 @@ pub fn generate_grappa_token(
 
     let mut buf = vec![0u8; 512];
     let mut out_len: usize = 0;
-    let mut diag_buf = [0 as libc::c_char; 1024];
+    // Round 2's trace carries the full probe matrix plus an
+    // ATGrappaSession method dump, so the diag buffer is much larger
+    // than round 1's; the helper truncates to whatever it is given.
+    let mut diag_buf = [0 as libc::c_char; 16384];
     let rc = unsafe {
         ALGetGrappaToken(
             ver,
@@ -73,9 +84,14 @@ pub fn generate_grappa_token(
         )
     };
 
+    // The helper joins its steps with " | "; log each probe as its own
+    // line so the on-device segmented log shows the matrix step by step.
     let diag = unsafe { CStr::from_ptr(diag_buf.as_ptr()) }.to_string_lossy();
-    if !diag.is_empty() {
-        log.log(format!("同步：GrappaHelper 步骤记录：{diag}"));
+    for (i, step) in diag.split(" | ").enumerate() {
+        let step = step.trim();
+        if !step.is_empty() {
+            log.log(format!("同步：Grappa 探针 {}：{}", i + 1, step));
+        }
     }
 
     if rc != 0 || out_len == 0 {

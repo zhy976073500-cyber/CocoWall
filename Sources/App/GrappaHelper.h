@@ -8,9 +8,13 @@
  * this file was compiled in.
  *
  * The token is generated on this device at sync time (see the .m for
- * the step-by-step approach). There is intentionally no fallback to
- * pre-generated token values: if the device cannot produce a token,
- * the function returns non-zero and says exactly which step failed.
+ * the step-by-step approach). Round 2 probes BOTH AirTrafficDevice and
+ * AirTrafficHost (no dlopen short-circuit), dlsym-probes the token
+ * entry and ATGrappaDeviceInfo in every loaded framework, and dumps
+ * ATGrappaSession introspection (defining image, full method lists)
+ * into the trace. There is intentionally no fallback to pre-generated
+ * token values: if the device cannot produce a token, the function
+ * returns non-zero and the trace says exactly which probes failed.
  */
 #ifndef COCOWALL_GRAPPA_HELPER_H
 #define COCOWALL_GRAPPA_HELPER_H
