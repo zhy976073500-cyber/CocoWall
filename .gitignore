@@ -5,3 +5,8 @@ xcuserdata/
 .DS_Store
 rust-core/target/
 Frameworks/
+# Grappa token build products: generated per-build by tools/grappa-gen on
+# the CI host and embedded into the app bundle. A generated token value
+# must never be committed.
+GrappaToken.txt
+tools/grappa-gen/grappa-gen

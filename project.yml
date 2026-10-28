@@ -37,6 +37,67 @@ targets:
           if [ ! -f "$ICON_DIR/icon-1024.png" ]; then
             base64 -D -i "$SRCROOT/Sources/App/icon-1024.b64" -o "$ICON_DIR/icon-1024.png" || openssl base64 -d -in "$SRCROOT/Sources/App/icon-1024.b64" -out "$ICON_DIR/icon-1024.png"
           fi
+      - name: Generate bundled Grappa token
+        script: |
+          # Mint a Grappa token on this (macOS) build host with
+          # tools/grappa-gen and embed it in the app bundle as
+          # GrappaToken.txt. It is the in-app helper's LAST-RESORT fallback
+          # only — runtime generation always runs first (see
+          # Sources/App/GrappaHelper.m). Generation failure must be loud
+          # but must NOT block the build: a GRAPPA-GEN FAILURE banner and an
+          # error: line go into the build log, no token file is embedded,
+          # and the app then behaves exactly like the runtime-only build
+          # (its own log also reports the missing bundled token).
+          GEN_DIR="$SRCROOT/build/grappa-gen"
+          mkdir -p "$GEN_DIR"
+          GEN_SRC="$SRCROOT/tools/grappa-gen/main.m"
+          GEN_BIN="$GEN_DIR/grappa-gen"
+          GEN_HEX="$GEN_DIR/GrappaToken.txt"
+          grappa_gen_fail() {
+            echo "======================================================================"
+            echo "=== GRAPPA-GEN FAILURE: $1"
+            echo "=== Building WITHOUT a bundled Grappa token (GrappaToken.txt)."
+            echo "=== The app will rely on runtime Grappa generation only."
+            echo "======================================================================"
+            echo "error: GRAPPA-GEN FAILURE: $1 - building without bundled GrappaToken.txt"
+            if [ -n "${TARGET_BUILD_DIR:-}" ] && [ -n "${UNLOCALIZED_RESOURCES_FOLDER_PATH:-}" ]; then
+              rm -f "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/GrappaToken.txt"
+            fi
+          }
+          TOKEN_HEX=""
+          GEN_CC="$(xcrun --find clang 2>/dev/null || echo clang)"
+          if ! "$GEN_CC" -fobjc-arc -fblocks -framework Foundation "$GEN_SRC" -o "$GEN_BIN" >"$GEN_DIR/clang.log" 2>&1; then
+            cat "$GEN_DIR/clang.log"
+            grappa_gen_fail "generator compile failed (see clang output above)"
+          else
+            TOKEN_HEX="$("$GEN_BIN" 2>"$GEN_DIR/run.log")"
+            GEN_RC=$?
+            cat "$GEN_DIR/run.log"
+            if [ "$GEN_RC" -ne 0 ]; then
+              grappa_gen_fail "generator exited with code $GEN_RC (see grappa-gen diagnostics above)"
+              TOKEN_HEX=""
+            fi
+          fi
+          if [ -n "$TOKEN_HEX" ]; then
+            case "$TOKEN_HEX" in
+              *[!0-9a-fA-F]*)
+                grappa_gen_fail "generator output was not pure hex"
+                ;;
+              *)
+                printf '%s' "$TOKEN_HEX" > "$GEN_HEX"
+                HEX_CHARS="$(printf '%s' "$TOKEN_HEX" | wc -c | tr -d ' ')"
+                HEX_PREFIX="$(printf '%s' "$TOKEN_HEX" | cut -c 1-4)"
+                if [ -n "${TARGET_BUILD_DIR:-}" ] && [ -n "${UNLOCALIZED_RESOURCES_FOLDER_PATH:-}" ]; then
+                  BUNDLE_DIR="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
+                  mkdir -p "$BUNDLE_DIR"
+                  cp "$GEN_HEX" "$BUNDLE_DIR/GrappaToken.txt"
+                  echo "=== GRAPPA-GEN OK: bundled Grappa token generated on build host and embedded as GrappaToken.txt (hex chars: $HEX_CHARS, prefix: $HEX_PREFIX)"
+                else
+                  grappa_gen_fail "TARGET_BUILD_DIR/UNLOCALIZED_RESOURCES_FOLDER_PATH unset - cannot locate app bundle"
+                fi
+                ;;
+            esac
+          fi
     dependencies:
       - target: CocoWallTunnel
         embed: true
