@@ -72,6 +72,10 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>CocoWall 需要在本机发布配对服务并访问本机 lockdown 服务，以便完成配对与壁纸写入。</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>UILaunchScreen</key>

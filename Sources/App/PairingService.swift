@@ -41,9 +41,62 @@ final class PairingService: ObservableObject {
 
     init() {
         // A pairing file stored by a previous launch is still valid input
-        // for the core, so restore the paired state from disk.
-        if FileManager.default.fileExists(atPath: Self.pairingFileURL.path) {
+        // for the core, so restore the paired state from disk. Same
+        // validity bar as the host completion path: exists and non-empty.
+        if Self.storedPairingFileSize() > 0 {
             state = .paired(filePath: Self.pairingFileURL.path)
+        }
+    }
+
+    /// Byte size of the stored pairing file, 0 when absent/unreadable.
+    private static func storedPairingFileSize() -> Int {
+        let attrs = try? FileManager.default
+            .attributesOfItem(atPath: pairingFileURL.path)
+        return (attrs?[.size] as? Int) ?? 0
+    }
+
+    /// Reconciles `state` with the pairing file actually on disk.
+    ///
+    /// Called when the app returns to the foreground and whenever the
+    /// settings page appears: pairing involves a trip into the system
+    /// Settings app, during which this app may be suspended and the
+    /// host's completion hop lost — while the core may still have
+    /// finished and written the file. Trusting the disk over a stale
+    /// in-memory state lets the UI heal itself without an app restart.
+    func refreshFromDisk() {
+        let url = Self.pairingFileURL
+        guard Self.storedPairingFileSize() > 0 else {
+            // No usable file: a `.paired` state would be a lie.
+            if !hostRunning, case .paired = state {
+                state = .unpaired
+            }
+            return
+        }
+        if hostRunning {
+            // The host owns the state while it runs — but if it wrote
+            // the file during *this* run and its completion never
+            // landed (suspension), adopt the on-disk result and retire
+            // the stuck host generation so its late return is ignored.
+            // The mtime guard keeps an earlier session's file from
+            // falsely completing a fresh host run.
+            let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+            if let started = hostStartedAt,
+               let mtime = attrs?[.modificationDate] as? Date,
+               mtime >= started.addingTimeInterval(-2) {
+                hostGeneration += 1
+                hostRunning = false
+                hostStartedAt = nil
+                keepAlive.stop()
+                stopAdvertising()
+                hostServiceID = nil
+                state = .paired(filePath: url.path)
+            }
+            return
+        }
+        // Any non-paired state with a valid file on disk is stale.
+        guard case .paired = state else {
+            state = .paired(filePath: url.path)
+            return
         }
     }
 
@@ -79,7 +132,11 @@ final class PairingService: ObservableObject {
 
     func forget() {
         hostGeneration += 1   // invalidate any in-flight host completion
+        hostRunning = false
+        hostStartedAt = nil
+        keepAlive.stop()
         stopAdvertising()
+        hostServiceID = nil
         try? FileManager.default.removeItem(at: Self.pairingFileURL)
         UserDefaults.standard.removeObject(forKey: Self.altIRKKey)
         state = .unpaired
@@ -90,6 +147,20 @@ final class PairingService: ObservableObject {
     private var netService: NetService?
     private var hostRunning = false
     private var hostGeneration = 0
+    private var hostStartedAt: Date?
+
+    /// Silent-audio keep-alive, alive only while the host is up: it
+    /// keeps the process (and with it the Bonjour advertisement and
+    /// the Rust host) running while the user is over in Settings.
+    private let keepAlive = PairingKeepAlive()
+
+    /// Bonjour service name the core asked us to publish (e.g.
+    /// "idevice_pair-84d6be"), set when the ready callback fires and
+    /// cleared when the host ends. The settings card shows it so the
+    /// user can pick the right row in Developer Mode › 配对设备, and
+    /// its presence doubles as the honest "broadcasting" signal —
+    /// it only exists once the core's listener is bound.
+    @Published private(set) var hostServiceID: String?
 
     /// Persisted host altIRK: keeps this host's identity stable so a
     /// device that already paired recognises it next time.
@@ -106,7 +177,12 @@ final class PairingService: ObservableObject {
         hostRunning = true
         hostGeneration += 1
         let generation = hostGeneration
+        hostStartedAt = Date()
+        hostServiceID = nil
         state = .hosting(pin: nil)
+        // From here the user will leave for Settings; keep the process
+        // alive so the advertisement and host survive the trip.
+        keepAlive.start()
 
         let outPath = Self.pairingFileURL.path
         let altIRK = storedAltIRK
@@ -146,7 +222,10 @@ final class PairingService: ObservableObject {
 
     private func finishOnDevicePairing(_ outcome: PairingOutcome, generation: Int) {
         hostRunning = false
+        hostStartedAt = nil
+        keepAlive.stop()
         stopAdvertising()
+        hostServiceID = nil
         guard generation == hostGeneration else { return }  // forgotten / superseded
         if outcome.rc == 0 {
             if !outcome.altIRKHex.isEmpty {
@@ -173,6 +252,7 @@ final class PairingService: ObservableObject {
 
     fileprivate func advertise(serviceID: String, port: Int32, txt: [String: Data]) {
         stopAdvertising()
+        hostServiceID = serviceID
         let service = NetService(
             domain: "",
             type: "_remotepairing-pairable-host._tcp.",

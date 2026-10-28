@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @StateObject private var tunnel = TunnelManager()
     @StateObject private var pairing = PairingService()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TabView {
@@ -15,6 +16,16 @@ struct ContentView: View {
                 .tabItem { Label("设置", systemImage: "gearshape") }
         }
         .task { await tunnel.refresh() }
+        .onChange(of: scenePhase) { _, phase in
+            // Pairing sends the user into the system Settings app; the
+            // host may have finished and written the pairing file
+            // while we were backgrounded, with its completion hop
+            // lost. Reconcile with the disk instead of trusting a
+            // possibly stale in-memory state.
+            if phase == .active {
+                pairing.refreshFromDisk()
+            }
+        }
     }
 }
 
@@ -169,15 +180,24 @@ struct SettingsView: View {
                         Text("尚未配对").foregroundStyle(.secondary)
                     case .hosting(let pin):
                         if let pin {
-                            Text("配对码")
+                            // The core only issues a PIN once the
+                            // system has connected and pair-setup has
+                            // begun — this phase is proof of connection.
+                            Text("系统已连接，配对进行中")
+                                .foregroundStyle(.green)
+                            Text("配对码（配对结束前会一直显示在这里）")
                                 .font(.caption).foregroundStyle(.secondary)
                             Text(pin)
                                 .font(.system(size: 34, weight: .bold, design: .monospaced))
                                 .tracking(6)
-                            Text("在 系统设置 › 隐私与安全性 › 开发者模式 里点「与 CocoWall 配对」，填入这串配对码。")
+                            Text("切回 系统设置 › 隐私与安全性 › 开发者模式，把这串配对码填进刚才点的配对设备里。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else if let serviceID = pairing.hostServiceID {
+                            Text("广播中，等待系统连接…")
+                            Text("去 系统设置 › 隐私与安全性 › 开发者模式 ›「配对设备」，点「\(serviceID)」；系统连上后，这里会给出配对码。")
                                 .font(.caption).foregroundStyle(.secondary)
                         } else {
-                            Text("正在广播配对服务，等待本机系统连接…")
+                            Text("正在启动配对广播…")
                                 .foregroundStyle(.secondary)
                         }
                     case .paired:
@@ -192,8 +212,8 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("1. 打开「开发者模式」：系统设置 → 隐私与安全性 → 开发者模式，打开后按提示重启确认（首次才需要）。")
                         Text("2. 先开回环：在下方「回环隧道」里点「连接回环隧道」，看到状态栏 VPN 标志后再回来。")
-                        Text("3. 点下方「开始配对」，本 App 会显示一串 6 位配对码。")
-                        Text("4. 在开发者模式里点「与 CocoWall 配对」填入配对码；成功后配对记录保存在本机，以后不用重复配对。")
+                        Text("3. 点下方「开始配对」，切到开发者模式的「配对设备」，点以 idevice_pair 开头的那一条。")
+                        Text("4. 回到本 App，配对码会大字显示且全程保留；再回设置把码填进去。成功后配对记录保存在本机，以后不用重复配对。")
                     }
                     .font(.caption).foregroundStyle(.secondary)
                     if #available(iOS 27.0, *) {
@@ -229,6 +249,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            .onAppear { pairing.refreshFromDisk() }
             .sheet(isPresented: $showPairingImporter) {
                 DocumentPicker { url in
                     showPairingImporter = false
