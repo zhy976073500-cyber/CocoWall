@@ -48,11 +48,41 @@ targets:
           # error: line go into the build log, no token file is embedded,
           # and the app then behaves exactly like the runtime-only build
           # (its own log also reports the missing bundled token).
+          #
+          # Debug round (grappa-gen-debug): run #26's generator died with
+          # SIGKILL (137) leaving ZERO diagnostics. This script therefore
+          # (1) probes the host up front (arch, OS, framework presence),
+          # (2) runs the generator in the background under a 20s watchdog
+          # — on timeout it samples the stack before killing, so a hang
+          # inside a framework call leaves a stack in the log, (3) always
+          # cats the generator's stderr log AND its write()+fsync diag
+          # file (numbered MARK lines bracket every framework call;
+          # MARK 0 is main()'s first statement), and (4) if the diag file
+          # has no MARK 0 the process died before main() (dyld /
+          # code-signature class), so it ad-hoc re-signs the binary and
+          # retries exactly once.
+          echo "=== GRAPPA-GEN ENV: host probe begin"
+          uname -a || true
+          echo "=== GRAPPA-GEN ENV: uname -m = $(uname -m)"
+          sw_vers || true
+          xcodebuild -version 2>/dev/null | head -n 2 || true
+          echo "=== GRAPPA-GEN ENV: hw.memsize = $(sysctl -n hw.memsize 2>/dev/null || echo unknown)"
+          vm_stat 2>/dev/null | head -n 6 || true
+          csrutil status 2>&1 || true
+          for FW in AirTrafficDevice AirTrafficHost; do
+            echo "=== GRAPPA-GEN ENV: contents of /System/Library/PrivateFrameworks/$FW.framework:"
+            ls -la "/System/Library/PrivateFrameworks/$FW.framework/" 2>&1 | head -n 10
+          done
+          echo "=== GRAPPA-GEN ENV: host probe end"
           GEN_DIR="$SRCROOT/build/grappa-gen"
           mkdir -p "$GEN_DIR"
           GEN_SRC="$SRCROOT/tools/grappa-gen/main.m"
           GEN_BIN="$GEN_DIR/grappa-gen"
           GEN_HEX="$GEN_DIR/GrappaToken.txt"
+          GEN_DIAG="$GEN_DIR/diag.log"
+          GEN_RUNLOG="$GEN_DIR/run.log"
+          GEN_TOKOUT="$GEN_DIR/token.out"
+          GEN_SAMPLE="$GEN_DIR/sample.txt"
           grappa_gen_fail() {
             echo "======================================================================"
             echo "=== GRAPPA-GEN FAILURE: $1"
@@ -64,18 +94,70 @@ targets:
               rm -f "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/GrappaToken.txt"
             fi
           }
+          run_grappa_gen() {
+            rm -f "$GEN_DIAG" "$GEN_RUNLOG" "$GEN_TOKOUT" "$GEN_SAMPLE"
+            "$GEN_BIN" "$GEN_DIAG" >"$GEN_TOKOUT" 2>"$GEN_RUNLOG" &
+            GEN_PID=$!
+            GEN_TIMEOUT=0
+            GEN_TICKS=0
+            while :; do
+              GEN_STAT="$(ps -p "$GEN_PID" -o stat= 2>/dev/null)"
+              if [ -z "$GEN_STAT" ]; then
+                break
+              fi
+              case "$GEN_STAT" in
+                *Z*) break ;;
+              esac
+              if [ "$GEN_TICKS" -ge 40 ]; then
+                GEN_TIMEOUT=1
+                echo "=== GRAPPA-GEN WATCHDOG: pid $GEN_PID still alive after 20s - sampling stack, then killing"
+                sample "$GEN_PID" 3 -file "$GEN_SAMPLE" >/dev/null 2>&1 || true
+                kill -9 "$GEN_PID" 2>/dev/null || true
+                break
+              fi
+              sleep 0.5
+              GEN_TICKS=$((GEN_TICKS + 1))
+            done
+            wait "$GEN_PID" 2>/dev/null
+            GEN_RC=$?
+            echo "=== GRAPPA-GEN RUN: exit code $GEN_RC watchdog_timeout=$GEN_TIMEOUT"
+            echo "--- GRAPPA-GEN generator stderr (run.log):"
+            cat "$GEN_RUNLOG" 2>/dev/null || echo "(run.log missing)"
+            echo "--- GRAPPA-GEN generator diag file (MARK lines):"
+            cat "$GEN_DIAG" 2>/dev/null || echo "(diag file missing - process may never have started)"
+            if [ -f "$GEN_SAMPLE" ]; then
+              echo "--- GRAPPA-GEN watchdog stack sample:"
+              cat "$GEN_SAMPLE"
+            fi
+            if [ "$GEN_RC" -eq 137 ]; then
+              echo "=== GRAPPA-GEN: exit 137 = SIGKILL. Newest diagnostic reports (jetsam/crash evidence):"
+              ls -lt /Library/Logs/DiagnosticReports/ 2>/dev/null | head -n 8 || true
+              ls -lt "$HOME/Library/Logs/DiagnosticReports/" 2>/dev/null | head -n 8 || true
+            fi
+          }
           TOKEN_HEX=""
           GEN_CC="$(xcrun --find clang 2>/dev/null || echo clang)"
           if ! "$GEN_CC" -fobjc-arc -fblocks -framework Foundation "$GEN_SRC" -o "$GEN_BIN" >"$GEN_DIR/clang.log" 2>&1; then
             cat "$GEN_DIR/clang.log"
             grappa_gen_fail "generator compile failed (see clang output above)"
           else
-            TOKEN_HEX="$("$GEN_BIN" 2>"$GEN_DIR/run.log")"
-            GEN_RC=$?
-            cat "$GEN_DIR/run.log"
+            echo "=== GRAPPA-GEN BINARY: file output:"
+            file "$GEN_BIN" || true
+            echo "=== GRAPPA-GEN BINARY: codesign -dvvv output:"
+            codesign -dvvv "$GEN_BIN" 2>&1 || true
+            echo "=== GRAPPA-GEN BINARY: codesign --verify output:"
+            codesign --verify --verbose=2 "$GEN_BIN" 2>&1 || true
+            run_grappa_gen
+            if [ "$GEN_RC" -ne 0 ] && ! grep -q "MARK 0" "$GEN_DIAG" 2>/dev/null; then
+              echo "=== GRAPPA-GEN RETRY: diag file has no MARK 0 - process died before main() (dyld/code-signature class). Ad-hoc re-signing and retrying once."
+              codesign -s - --force "$GEN_BIN" 2>&1 || true
+              codesign -dvvv "$GEN_BIN" 2>&1 || true
+              run_grappa_gen
+            fi
             if [ "$GEN_RC" -ne 0 ]; then
-              grappa_gen_fail "generator exited with code $GEN_RC (see grappa-gen diagnostics above)"
-              TOKEN_HEX=""
+              grappa_gen_fail "generator exited with code $GEN_RC watchdog_timeout=$GEN_TIMEOUT (see grappa-gen MARK/diag lines above)"
+            else
+              TOKEN_HEX="$(tr -d '[:space:]' <"$GEN_TOKOUT")"
             fi
           fi
           if [ -n "$TOKEN_HEX" ]; then

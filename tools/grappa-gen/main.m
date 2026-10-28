@@ -22,6 +22,13 @@
  * Contract:
  *   stdout: exactly one line — the token as lowercase hex — on success.
  *   stderr: step-by-step diagnostics (never the token itself).
+ *   argv[1] (optional): path of a diagnostics file. Every diagnostic
+ *   line is ALSO written there with raw write()+fsync, and numbered
+ *   "MARK n" lines bracket every framework interaction. Run #26 died
+ *   with SIGKILL and zero captured output; with this file the last
+ *   MARK line shows exactly how far the process got even if it is
+ *   killed externally. MARK 0 is emitted as the first statement of
+ *   main(), before any framework call.
  *   exit 0: token produced.
  *   exit 2: neither AirTraffic framework could be loaded.
  *   exit 3: ATGrappaSession class not found.
@@ -36,22 +43,51 @@
 
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
+#import <fcntl.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <stdarg.h>
 #import <stdio.h>
 #import <string.h>
+#import <unistd.h>
 
 /* Signature of the framework-exported device-info function. */
 typedef id (*CWGrappaDeviceInfoFn)(void);
+
+/* Diagnostics file descriptor (argv[1]); -1 when not provided. Lines
+ * are written with raw write()+fsync so they survive an external
+ * SIGKILL of this process — stdio buffering must never be the reason
+ * a dead run leaves no evidence again. */
+static int gDiagFd = -1;
+
+static void emitLine(const char *utf8) {
+    fprintf(stderr, "grappa-gen: %s\n", utf8);
+    fflush(stderr);
+    if (gDiagFd >= 0) {
+        (void)!write(gDiagFd, utf8, strlen(utf8));
+        (void)!write(gDiagFd, "\n", 1);
+        fsync(gDiagFd);
+    }
+}
 
 static void diag(NSString *format, ...) {
     va_list args;
     va_start(args, format);
     NSString *line = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
-    fprintf(stderr, "grappa-gen: %s\n", line.UTF8String ?: "?");
-    fflush(stderr);
+    emitLine(line.UTF8String ?: "?");
+}
+
+/* Pure-C marker: safe to call before @autoreleasepool / Foundation
+ * setup. Used for the numbered MARK lines that bracket every risky
+ * call so a killed run still shows its last completed step. */
+static void markf(const char *format, ...) {
+    char buf[1200];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+    emitLine(buf);
 }
 
 static NSString *hexString(NSData *data) {
@@ -66,9 +102,15 @@ static NSString *hexString(NSData *data) {
 }
 
 int main(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
+    if (argc > 1 && argv[1] != NULL && argv[1][0] != '\0') {
+        gDiagFd = open(argv[1], O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }
+    /* First statement of main(): if the diag file lacks even this
+     * line, the process died in dyld / exec (signature class), which
+     * is a different failure family from dying inside a framework. */
+    markf("MARK 0: main() entered (pid=%d, diagFd=%d)", (int)getpid(), gDiagFd);
     @autoreleasepool {
+        markf("MARK 1: autoreleasepool entered");
         @try {
             /* ── Load both AirTraffic frameworks (no short-circuit) ── */
             static const char *paths[2] = {
@@ -79,8 +121,11 @@ int main(int argc, char *argv[]) {
             void *handles[2] = { NULL, NULL };
             unsigned loaded = 0;
             for (unsigned i = 0; i < 2; i++) {
+                markf("MARK 2.%u: before dlopen %s", i, names[i]);
                 dlerror(); /* clear */
                 handles[i] = dlopen(paths[i], RTLD_NOW);
+                markf("MARK 3.%u: after dlopen %s -> %s", i, names[i],
+                      handles[i] != NULL ? "handle OK" : "NULL");
                 if (handles[i] != NULL) {
                     loaded++;
                     diag(@"dlopen %s -> OK", names[i]);
@@ -122,6 +167,7 @@ int main(int argc, char *argv[]) {
                     continue;
                 }
                 diag(@"%s symbol ATGrappaDeviceInfo -> FOUND, calling it", names[i]);
+                markf("MARK 4.%u: before calling ATGrappaDeviceInfo (%s)", i, names[i]);
                 id produced = nil;
                 @try {
                     produced = infoFn();
@@ -129,6 +175,8 @@ int main(int argc, char *argv[]) {
                     diag(@"%s ATGrappaDeviceInfo raised %@: %@",
                          names[i], e.name ?: @"?", e.reason ?: @"");
                 }
+                markf("MARK 5.%u: after ATGrappaDeviceInfo (%s) -> %s", i, names[i],
+                      produced != nil ? "non-nil" : "nil");
                 if ([produced isKindOfClass:[NSDictionary class]]) {
                     NSDictionary *dict = (NSDictionary *)produced;
                     diag(@"%s ATGrappaDeviceInfo -> dictionary version=%@ deviceType=%@ protocolVersion=%@",
@@ -151,7 +199,10 @@ int main(int argc, char *argv[]) {
             diag(@"device-info candidates: %lu", (unsigned long)candidates.count);
 
             /* ── ATGrappaSession host session ──────────────────────── */
+            markf("MARK 6: before objc_getClass(ATGrappaSession)");
             Class sessionClass = objc_getClass("ATGrappaSession");
+            markf("MARK 7: after objc_getClass(ATGrappaSession) -> %s",
+                  sessionClass != Nil ? "FOUND" : "NOT FOUND");
             if (sessionClass == Nil) {
                 diag(@"FATAL: class ATGrappaSession -> NOT FOUND");
                 return 3;
@@ -179,6 +230,8 @@ int main(int argc, char *argv[]) {
                      info[@"deviceType"] ?: @"<absent>",
                      info[@"protocolVersion"] ?: @"<absent>");
 
+                markf("MARK 8.%lu: before alloc/initWithType:1 (candidate %lu)",
+                      (unsigned long)c, (unsigned long)c);
                 id session = nil;
                 @try {
                     id alloced = ((id (*)(id, SEL))objc_msgSend)((id)sessionClass,
@@ -194,6 +247,8 @@ int main(int argc, char *argv[]) {
                     continue;
                 }
 
+                markf("MARK 9.%lu: before establishHostSessionWithDeviceInfo (candidate %lu)",
+                      (unsigned long)c, (unsigned long)c);
                 NSData *produced = nil;
                 NSError *establishError = nil;
                 @try {
@@ -204,6 +259,12 @@ int main(int argc, char *argv[]) {
                     result = 4;
                     continue;
                 }
+                markf("MARK 10.%lu: after establish -> error=%s producedLen=%lu",
+                      (unsigned long)c,
+                      establishError != nil ? "yes" : "no",
+                      (unsigned long)([produced isKindOfClass:[NSData class]]
+                                           ? ((NSData *)produced).length
+                                           : 0));
                 if (establishError != nil) {
                     diag(@"establishHostSession NSError domain=%@ code=%ld desc=%@",
                          establishError.domain ?: @"?",
@@ -227,6 +288,8 @@ int main(int argc, char *argv[]) {
                 return result;
             }
 
+            markf("MARK 11: token produced (%lu bytes) - writing hex to stdout",
+                  (unsigned long)token.length);
             NSString *hex = hexString(token);
             diag(@"token minted via host session with info from %@ (%lu bytes, prefix 0x%02x%02x)",
                  tokenSource,

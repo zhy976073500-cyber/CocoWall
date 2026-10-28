@@ -42,6 +42,14 @@ bundled token, so the failure stays visible in two places.
 - stderr: step-by-step diagnostics (`grappa-gen: ` prefix); the token
   itself is never printed there (only its byte count and 2-byte
   prefix).
+- argv[1] (optional): diagnostics file path. Every diagnostic line is
+  also written there via raw `write()`+`fsync`, and numbered
+  `MARK n` lines bracket every framework call — MARK 0 is main()'s
+  first statement. If the process is killed externally (run #26 died
+  with SIGKILL/137 and zero captured output), the file still shows
+  exactly how far it got. The build script runs the tool under a 20s
+  watchdog (stack `sample` on timeout) and ad-hoc re-signs + retries
+  once when the diag file lacks MARK 0 (dyld/code-signature death).
 - Exit codes: 0 success · 2 no AirTraffic framework loadable ·
   3 ATGrappaSession missing/incomplete · 4 establish returned NSError
   for every candidate · 5 session produced no data · 6 session could
