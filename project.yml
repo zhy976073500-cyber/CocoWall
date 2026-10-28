@@ -25,6 +25,13 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.coco.cocowall
         INFOPLIST_FILE: Sources/App/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    preBuildScripts:
+      - name: Generate AppIcon from base64
+        script: |
+          ICON_DIR="$SRCROOT/Sources/App/Assets.xcassets/AppIcon.appiconset"
+          if [ ! -f "$ICON_DIR/icon-1024.png" ]; then
+            base64 -D -i "$SRCROOT/Sources/App/icon-1024.b64" -o "$ICON_DIR/icon-1024.png" || openssl base64 -d -in "$SRCROOT/Sources/App/icon-1024.b64" -out "$ICON_DIR/icon-1024.png"
+          fi
     dependencies:
       - target: CocoWallTunnel
         embed: true

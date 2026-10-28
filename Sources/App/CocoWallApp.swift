@@ -4,7 +4,9 @@ import SwiftUI
 struct CocoWallApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            // Trial build: web UI shell (see WebShellView). The native
+            // ContentView remains available for the native track.
+            WebShellView()
         }
     }
 }
