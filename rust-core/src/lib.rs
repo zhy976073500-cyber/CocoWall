@@ -5,22 +5,30 @@
 //! `research/write-path.md` and `research/airlift-implementation-notes.md`.
 //!
 //! Status: pairing (B ring) is live — `cw_pairing_run_host` drives the
-//! real RPPairing host in `pairing.rs`. The injection entries (C ring:
-//! stage + AirTraffic sync in `stage.rs` / `atc.rs` / `device.rs`) are
-//! NOT landed yet and return `CW_ERR_UNIMPLEMENTED` with a message that
-//! says so; they never fake success.
+//! real RPPairing host in `pairing.rs`. The injection entries (C ring)
+//! are landed: `stage.rs` stages payloads + a symlink into the Media
+//! area over AFC, `atc.rs` runs the com.apple.atc Book-class sync that
+//! makes the daemon write through the symlink, and `device.rs`
+//! orchestrates container lookup, respring, count-verified injection,
+//! and the full wallpaper apply sequence. Failures are reported with
+//! the failing step's own words; nothing fakes success.
 //!
 //! Conventions: 0 == OK. Heap strings returned through out-params are
 //! released by the caller with `cw_string_free`.
 
+mod atc;
+mod device;
 mod device_log;
 mod ffi_util;
 mod grappa;
 mod pairing;
+mod stage;
 mod tunnel;
 
 use std::ffi::{c_char, c_void, CString};
 use std::sync::Mutex;
+
+use crate::device_log::Logger;
 
 pub const CW_OK: i32 = 0;
 pub const CW_ERR_FAILED: i32 = 1;
@@ -111,17 +119,6 @@ fn set_out(slot: *mut *mut c_char, value: &str) {
     }
 }
 
-/// C-ring (injection) entries share this honest failure until stage/atc
-/// land: distinct code, and the message names the missing ring in plain
-/// words so the UI shows exactly what is not there yet.
-fn inject_not_landed(what: &str, out_error: *mut *mut c_char) -> i32 {
-    set_out(
-        out_error,
-        &format!("注入环未落地：{what} 尚未实现（AFC 暂存 + AirTraffic 同步层未编入本构建）"),
-    );
-    CW_ERR_UNIMPLEMENTED
-}
-
 // ---------------------------------------------------------------------------
 // Version / strings / logging
 // ---------------------------------------------------------------------------
@@ -186,68 +183,221 @@ pub extern "C" fn cw_pairing_result_free(r: *mut CWPairResult) {
 }
 
 // ---------------------------------------------------------------------------
-// Write channel — C ring (injection), NOT landed yet. Every entry fails
-// honestly with CW_ERR_UNIMPLEMENTED and a message naming the missing
-// ring; nothing here pretends a write happened.
+// Write channel — C ring (injection), implemented in device.rs /
+// stage.rs / atc.rs. All entries are blocking; call from a background
+// thread. Log lines stream through the caller-provided callback.
 // ---------------------------------------------------------------------------
 
 #[no_mangle]
 pub extern "C" fn cw_exploit_run(
-    _pairing_path: *const c_char,
+    pairing_path: *const c_char,
     _target: *const c_char,
-    _log_cb: CWLogCallback,
-    _ctx: *mut c_void,
-    _out_json: *mut *mut c_char,
+    log_cb: CWLogCallback,
+    ctx: *mut c_void,
+    out_json: *mut *mut c_char,
     out_error: *mut *mut c_char,
 ) -> i32 {
-    inject_not_landed("cw_exploit_run（通道探活）", out_error)
+    let pairing = ffi_util::opt_str(pairing_path, "");
+    if pairing.is_empty() {
+        set_out(out_error, "pairing_path 为空（尚未配对）");
+        return CW_ERR_INVALID_ARG;
+    }
+    let logger = Logger::new(log_cb, ctx);
+    match ffi_util::run_async("cw_exploit_run", async move { device::canary(&pairing, &logger).await }) {
+        Ok(Ok(json)) => {
+            set_out(out_json, &json);
+            CW_OK
+        }
+        Ok(Err(e)) => {
+            set_out(out_error, &e);
+            CW_ERR_FAILED
+        }
+        Err(e) => {
+            set_out(out_error, &e);
+            CW_ERR_FAILED
+        }
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn cw_exploit_write_dir(
-    _pairing_path: *const c_char,
-    _source_dir: *const c_char,
-    _target_dir: *const c_char,
-    _log_cb: CWLogCallback,
-    _ctx: *mut c_void,
+    pairing_path: *const c_char,
+    source_dir: *const c_char,
+    target_dir: *const c_char,
+    log_cb: CWLogCallback,
+    ctx: *mut c_void,
     out_error: *mut *mut c_char,
 ) -> i32 {
-    inject_not_landed("cw_exploit_write_dir（整目录写入）", out_error)
+    let pairing = ffi_util::opt_str(pairing_path, "");
+    let source = ffi_util::opt_str(source_dir, "");
+    let target = ffi_util::opt_str(target_dir, "");
+    if pairing.is_empty() || source.is_empty() || target.is_empty() {
+        set_out(out_error, "pairing_path / source_dir / target_dir 不能为空");
+        return CW_ERR_INVALID_ARG;
+    }
+    let logger = Logger::new(log_cb, ctx);
+    let source_path = std::path::PathBuf::from(&source);
+    match ffi_util::run_async("cw_exploit_write_dir", async move {
+        device::write_dir(&pairing, &source_path, &target, &logger).await
+    }) {
+        Ok(Ok(())) => CW_OK,
+        Ok(Err(e)) => {
+            set_out(out_error, &e);
+            CW_ERR_FAILED
+        }
+        Err(e) => {
+            set_out(out_error, &e);
+            CW_ERR_FAILED
+        }
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn cw_exploit_inject_folder(
-    _pairing_path: *const c_char,
-    _folder_path: *const c_char,
-    _target_parent_dir: *const c_char,
-    _dest_name: *const c_char,
-    _log_cb: CWLogCallback,
-    _ctx: *mut c_void,
+    pairing_path: *const c_char,
+    folder_path: *const c_char,
+    target_parent_dir: *const c_char,
+    dest_name: *const c_char,
+    log_cb: CWLogCallback,
+    ctx: *mut c_void,
     out_error: *mut *mut c_char,
 ) -> i32 {
-    inject_not_landed("cw_exploit_inject_folder（文件夹注入）", out_error)
+    let pairing = ffi_util::opt_str(pairing_path, "");
+    let folder = ffi_util::opt_str(folder_path, "");
+    let target = ffi_util::opt_str(target_parent_dir, "");
+    let dest = ffi_util::opt_str(dest_name, "");
+    if pairing.is_empty() || folder.is_empty() || target.is_empty() || dest.is_empty() {
+        set_out(
+            out_error,
+            "pairing_path / folder_path / target_parent_dir / dest_name 不能为空",
+        );
+        return CW_ERR_INVALID_ARG;
+    }
+    let logger = Logger::new(log_cb, ctx);
+    let folder_pathbuf = std::path::PathBuf::from(&folder);
+    match ffi_util::run_async("cw_exploit_inject_folder", async move {
+        device::inject_folder(&pairing, &folder_pathbuf, &target, &dest, &logger).await
+    }) {
+        Ok(Ok(_outcome)) => CW_OK,
+        Ok(Err(e)) => {
+            set_out(out_error, &e);
+            CW_ERR_FAILED
+        }
+        Err(e) => {
+            set_out(out_error, &e);
+            CW_ERR_FAILED
+        }
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn cw_find_app_container(
-    _pairing_path: *const c_char,
-    _bundle_id: *const c_char,
-    _log_cb: CWLogCallback,
-    _ctx: *mut c_void,
-    _out_container: *mut *mut c_char,
+    pairing_path: *const c_char,
+    bundle_id: *const c_char,
+    log_cb: CWLogCallback,
+    ctx: *mut c_void,
+    out_container: *mut *mut c_char,
     out_error: *mut *mut c_char,
 ) -> i32 {
-    inject_not_landed("cw_find_app_container（容器定位）", out_error)
+    let pairing = ffi_util::opt_str(pairing_path, "");
+    let bundle = ffi_util::opt_str(bundle_id, "");
+    if pairing.is_empty() || bundle.is_empty() {
+        set_out(out_error, "pairing_path / bundle_id 不能为空");
+        return CW_ERR_INVALID_ARG;
+    }
+    let logger = Logger::new(log_cb, ctx);
+    match ffi_util::run_async("cw_find_app_container", async move {
+        device::find_container(&pairing, &bundle, &logger).await
+    }) {
+        Ok(Ok(container)) => {
+            set_out(out_container, &container);
+            CW_OK
+        }
+        Ok(Err(e)) => {
+            set_out(out_error, &e);
+            CW_ERR_FAILED
+        }
+        Err(e) => {
+            set_out(out_error, &e);
+            CW_ERR_FAILED
+        }
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn cw_device_respring(
-    _pairing_path: *const c_char,
-    _log_cb: CWLogCallback,
-    _ctx: *mut c_void,
+    pairing_path: *const c_char,
+    log_cb: CWLogCallback,
+    ctx: *mut c_void,
     out_error: *mut *mut c_char,
 ) -> i32 {
-    inject_not_landed("cw_device_respring（设备重启）", out_error)
+    let pairing = ffi_util::opt_str(pairing_path, "");
+    if pairing.is_empty() {
+        set_out(out_error, "pairing_path 为空（尚未配对）");
+        return CW_ERR_INVALID_ARG;
+    }
+    let logger = Logger::new(log_cb, ctx);
+    match ffi_util::run_async("cw_device_respring", async move {
+        device::respring(&pairing, &logger).await
+    }) {
+        Ok(Ok(())) => CW_OK,
+        Ok(Err(e)) => {
+            set_out(out_error, &e);
+            CW_ERR_FAILED
+        }
+        Err(e) => {
+            set_out(out_error, &e);
+            CW_ERR_FAILED
+        }
+    }
+}
+
+/// Full wallpaper apply for one descriptor folder: container lookup,
+/// staging-copy prep (new UUID + identifier rewrite), primary inject,
+/// iOS 18+ dual inject, refresh plist. On success `out_report` is a
+/// JSON object; respring stays a separate explicit step.
+#[no_mangle]
+pub extern "C" fn cw_wallpaper_apply(
+    pairing_path: *const c_char,
+    descriptor_dir: *const c_char,
+    log_cb: CWLogCallback,
+    ctx: *mut c_void,
+    out_report: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> i32 {
+    let pairing = ffi_util::opt_str(pairing_path, "");
+    let descriptor = ffi_util::opt_str(descriptor_dir, "");
+    if pairing.is_empty() || descriptor.is_empty() {
+        set_out(out_error, "pairing_path / descriptor_dir 不能为空");
+        return CW_ERR_INVALID_ARG;
+    }
+    let logger = Logger::new(log_cb, ctx);
+    let descriptor_path = std::path::PathBuf::from(&descriptor);
+    match ffi_util::run_async("cw_wallpaper_apply", async move {
+        device::apply_wallpaper(&pairing, &descriptor_path, &logger).await
+    }) {
+        Ok(Ok(report)) => {
+            let json = serde_json::json!({
+                "uuid": report.uuid,
+                "identifierRewritten": report.identifier_rewritten,
+                "primaryBefore": report.primary_before,
+                "primaryAfter": report.primary_after,
+                "dual": report.dual,
+                "productVersion": report.product_version,
+            })
+            .to_string();
+            set_out(out_report, &json);
+            CW_OK
+        }
+        Ok(Err(e)) => {
+            set_out(out_error, &e);
+            CW_ERR_FAILED
+        }
+        Err(e) => {
+            set_out(out_error, &e);
+            CW_ERR_FAILED
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

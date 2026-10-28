@@ -79,6 +79,17 @@ int32_t cw_device_respring(const char *pairing_path,
                            CWLogCallback log_cb,
                            void *ctx,
                            char **out_error);
+/* Full wallpaper apply for one descriptor folder (container lookup,
+ * staging-copy prep with a fresh UUID + identifier rewrite, primary
+ * inject, iOS 18+ dual inject, PosterBoard refresh plist). Blocking.
+ * On success *out_report receives a JSON object; free with
+ * cw_string_free. Respring stays a separate explicit step. */
+int32_t cw_wallpaper_apply(const char *pairing_path,
+                           const char *descriptor_dir,
+                           CWLogCallback log_cb,
+                           void *ctx,
+                           char **out_report,
+                           char **out_error);
 
 int32_t cw_set_target_host(const char *host);
 void cw_clear_target_hosts(void);

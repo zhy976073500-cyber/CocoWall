@@ -134,6 +134,80 @@ impl DeviceTunnel {
             }
         }
     }
+
+    /// Connect to a raw byte-stream service (e.g. com.apple.atc) and
+    /// return the checked-in socket. RSD: try `<name>.shim.remote`
+    /// first, then the bare name, and run the RSD checkin on the
+    /// connection. Lockdown: plain service connection.
+    pub async fn connect_raw_service(
+        &mut self,
+        base_name: &str,
+        log: &Logger,
+    ) -> Result<Box<dyn ReadWrite>, String> {
+        match self {
+            DeviceTunnel::Rsd { adapter, handshake } => {
+                let mut last_err = String::new();
+                for candidate in [format!("{base_name}.shim.remote"), base_name.to_string()] {
+                    if let Some(svc) = handshake.services.get(&candidate) {
+                        log.log(format!(
+                            "隧道：经 RSD 连接原始服务 {candidate}（端口 {}）",
+                            svc.port
+                        ));
+                        match adapter.connect(svc.port).await {
+                            Ok(stream) => {
+                                let mut dev = Idevice::new(Box::new(stream), "CocoWall");
+                                dev.rsd_checkin()
+                                    .await
+                                    .map_err(|e| format!("RSD checkin（{base_name}）失败: {e:?}"))?;
+                                return dev
+                                    .get_socket()
+                                    .ok_or_else(|| "RSD checkin 后 socket 缺失".to_string());
+                            }
+                            Err(e) => last_err = format!("{e:?}"),
+                        }
+                    }
+                }
+                Err(format!(
+                    "RSD 未发布服务 {base_name}（含 .shim.remote；最后错误：{last_err}）"
+                ))
+            }
+            DeviceTunnel::Lockdown { provider, pairing_file, legacy } => {
+                connect_service_lockdown(provider, pairing_file, *legacy, base_name, log).await
+            }
+        }
+    }
+
+    /// Device ProductVersion ("27.0.1"), best effort on both routes —
+    /// callers treat None as "unknown", never as a specific version.
+    pub async fn product_version(&mut self, log: &Logger) -> Option<String> {
+        let mut lockdown = match self {
+            DeviceTunnel::Rsd { .. } => {
+                let mut dev = self
+                    .connect_plist_service("com.apple.mobile.lockdown", log)
+                    .await
+                    .ok()?;
+                let _ = dev.rsd_checkin().await;
+                LockdownClient::new(dev)
+            }
+            DeviceTunnel::Lockdown { provider, pairing_file, legacy } => {
+                let stream = connect_service_lockdown(
+                    provider,
+                    pairing_file,
+                    *legacy,
+                    "com.apple.mobile.lockdown",
+                    log,
+                )
+                .await
+                .ok()?;
+                LockdownClient::new(Idevice::new(stream, "CocoWall"))
+            }
+        };
+        let value = lockdown
+            .get_value(Some("ProductVersion"), None::<&str>)
+            .await
+            .ok()?;
+        value.as_string().map(|s| s.to_string())
+    }
 }
 
 async fn connect_service_lockdown(
