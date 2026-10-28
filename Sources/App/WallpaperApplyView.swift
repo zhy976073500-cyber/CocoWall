@@ -67,6 +67,11 @@ struct WallpaperApplyView: View {
         }
     }
 
+    private var isIdlePhase: Bool {
+        if case .idle = model.phase { return true }
+        return false
+    }
+
     private var statusTitle: String {
         switch model.phase {
         case .idle: return record.displayName
@@ -119,7 +124,7 @@ struct WallpaperApplyView: View {
                 Button {
                     model.start(record: record, pairingFile: pairingFile)
                 } label: {
-                    Text(model.phase == .idle ? "开始应用" : "重试")
+                    Text(isIdlePhase ? "开始应用" : "重试")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -142,7 +147,6 @@ struct WallpaperApplyView: View {
     }
 }
 
-@MainActor
 final class WallpaperApplyModel: ObservableObject {
     enum Phase {
         case idle
@@ -179,9 +183,10 @@ final class WallpaperApplyModel: ObservableObject {
                 defer { try? FileManager.default.removeItem(at: staging) }
                 let report = try await service.applyWallpaper(
                     descriptorDir: descriptorDir, pairingFile: pairingFile)
-                phase = .succeeded(report)
+                await MainActor.run { phase = .succeeded(report) }
             } catch {
-                phase = .failed(error.localizedDescription)
+                let message = error.localizedDescription
+                await MainActor.run { phase = .failed(message) }
             }
         }
     }
@@ -200,11 +205,16 @@ final class WallpaperApplyModel: ObservableObject {
         Task {
             do {
                 try await service.respring(pairingFile: pairingFile)
-                lines.append("重启指令已发送，设备即将黑屏重启。")
-                phase = previous
+                await MainActor.run {
+                    lines.append("重启指令已发送，设备即将黑屏重启。")
+                    phase = previous
+                }
             } catch {
-                lines.append("重启失败：\(error.localizedDescription)")
-                phase = previous
+                let message = error.localizedDescription
+                await MainActor.run {
+                    lines.append("重启失败：\(message)")
+                    phase = previous
+                }
             }
         }
     }
