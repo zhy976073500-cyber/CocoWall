@@ -1,8 +1,4 @@
 name: CocoWall
-packages:
-  ZIPFoundation:
-    url: https://github.com/weichsel/ZIPFoundation
-    from: 0.9.19
 options:
   bundleIdPrefix: com.coco
   # Generate the project in the Xcode 15.0 format (objectVersion 60).
@@ -33,7 +29,10 @@ targets:
         INFOPLIST_FILE: Sources/App/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_INCLUDE_PATHS: $(SRCROOT)/rust-core/include
-        OTHER_LDFLAGS[sdk=iphoneos*]: $(SRCROOT)/rust-core/target/aarch64-apple-ios/release/libairlift_ffi.a
+        # Direct static-library link of the vendored AirliftFFI core
+        # (upstream packages it as an xcframework instead); -lc++
+        # mirrors upstream because the core pulls in C++ symbols.
+        OTHER_LDFLAGS[sdk=iphoneos*]: $(SRCROOT)/rust-core/target/aarch64-apple-ios/release/libairlift_ffi.a -lc++
     preBuildScripts:
       - name: Build Rust core (libairlift_ffi.a)
         script: |
@@ -44,34 +43,3 @@ targets:
           if [ ! -f "$ICON_DIR/icon-1024.png" ]; then
             base64 -D -i "$SRCROOT/Sources/App/icon-1024.b64" -o "$ICON_DIR/icon-1024.png" || openssl base64 -d -in "$SRCROOT/Sources/App/icon-1024.b64" -out "$ICON_DIR/icon-1024.png"
           fi
-      - name: Generate library cover images from base64
-        script: |
-          # Same trick as the app icon: the wallpaper-library cover
-          # jpgs live in the repo as .b64 text (the push channel only
-          # carries text), decode them into their imagesets here.
-          ASSETS_DIR="$SRCROOT/Sources/App/Assets.xcassets"
-          STITCH_JPG="$ASSETS_DIR/LibraryStitch.imageset/stitch.jpg"
-          if [ ! -f "$STITCH_JPG" ]; then
-            base64 -D -i "$SRCROOT/Sources/App/library-stitch.jpg.b64" -o "$STITCH_JPG" || openssl base64 -d -in "$SRCROOT/Sources/App/library-stitch.jpg.b64" -out "$STITCH_JPG"
-          fi
-          STAR_JPG="$ASSETS_DIR/LibraryStar.imageset/star.jpg"
-          if [ ! -f "$STAR_JPG" ]; then
-            base64 -D -i "$SRCROOT/Sources/App/library-star.jpg.b64" -o "$STAR_JPG" || openssl base64 -d -in "$SRCROOT/Sources/App/library-star.jpg.b64" -out "$STAR_JPG"
-          fi
-          HERO_JPG="$ASSETS_DIR/LibraryHero.imageset/hero.jpg"
-          if [ ! -f "$HERO_JPG" ]; then
-            base64 -D -i "$SRCROOT/Sources/App/library-hero.jpg.b64" -o "$HERO_JPG" || openssl base64 -d -in "$SRCROOT/Sources/App/library-hero.jpg.b64" -out "$HERO_JPG"
-          fi
-    dependencies:
-      - target: CocoWallTunnel
-        embed: true
-      - package: ZIPFoundation
-  CocoWallTunnel:
-    type: app-extension
-    platform: iOS
-    sources:
-      - Sources/Tunnel
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.coco.cocowall.Tunnel
-        INFOPLIST_FILE: Sources/Tunnel/Info.plist
