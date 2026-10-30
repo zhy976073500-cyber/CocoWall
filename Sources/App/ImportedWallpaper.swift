@@ -6,7 +6,7 @@ import UIKit
 /// The archive copy itself lives in Documents/Imported/<storedFileName>;
 /// the extracted descriptor tree is only a staging artefact (see
 /// TendiesPackage) and is re-created from the copy when a write happens.
-struct ImportedWallpaper: Identifiable, Codable {
+struct ImportedWallpaper: Identifiable, Codable, Hashable {
     let id: String
     let descriptorUUID: String
     let descriptorIdentifier: String
@@ -161,17 +161,10 @@ enum ImportedWallpaperStore {
     /// corresponding name nil.
     private static func makePreviews(from pkg: TendiesPackage, storedBase: String)
         -> (preview: String?, floating: String?) {
-        let assets = pkg.previewAssets()
+        let candidates = pkg.previewAssetCandidates()
         var previewName: String?
         var floatingName: String?
-        if let background = assets.background {
-            let name = storedBase + "-preview.jpg"
-            let dest = importedDirectory.appendingPathComponent(name)
-            if writePreviewJPEG(from: background, to: dest) {
-                previewName = name
-            }
-        }
-        if let floating = assets.floating {
+        if let floating = candidates.floatings.first {
             // Copied unchanged — re-encoding would kill the alpha channel
             // the floating layer composites with.
             let ext = floating.pathExtension.isEmpty ? "png" : floating.pathExtension
@@ -180,6 +173,21 @@ enum ImportedWallpaperStore {
             try? FileManager.default.removeItem(at: dest)
             if (try? FileManager.default.copyItem(at: floating, to: dest)) != nil {
                 floatingName = name
+            }
+        }
+        // Still preview: walk the background candidates in score order
+        // until one actually converts — the top-scoring file is not
+        // guaranteed decodable. If no background converts, fall back to
+        // the floating candidates: the preview screen composites the
+        // floating layer over black, so a still rendered from it is
+        // what the user sees there, and the list thumbnail should match
+        // instead of showing a grey placeholder.
+        let name = storedBase + "-preview.jpg"
+        let dest = importedDirectory.appendingPathComponent(name)
+        for source in candidates.backgrounds + candidates.floatings {
+            if writePreviewJPEG(from: source, to: dest) {
+                previewName = name
+                break
             }
         }
         return (previewName, floatingName)
@@ -218,12 +226,18 @@ enum ImportedWallpaperStore {
         return (try? data.write(to: dest, options: .atomic)) != nil
     }
 
-    /// Backfill for wallpapers imported before previews existed: re-parses
-    /// the stored archive and generates the preview files. Returns an
-    /// updated copy of the record, or nil when the record already has a
-    /// preview or none could be produced.
+    /// Backfill / repair for a record whose stored still preview is
+    /// missing or unusable: re-parses the stored archive and regenerates
+    /// the preview files with the current selection logic. The caller
+    /// decides when this is needed by looking at the stored file, not at
+    /// the record's fields — a record can carry a floating-layer file
+    /// (so it looks "has previews") yet still lack a still preview
+    /// because its background pick failed to convert at import time.
+    /// Returns a copy of the record carrying the regenerated file names
+    /// whenever at least one preview file was (re)written — even when
+    /// the names are unchanged, so the caller refreshes its rows and
+    /// the thumbnails re-read the repaired files.
     static func ensurePreview(for record: ImportedWallpaper) -> ImportedWallpaper? {
-        if record.previewFileName != nil { return nil }
         let fm = FileManager.default
         let stored = importedDirectory.appendingPathComponent(record.storedFileName)
         guard fm.fileExists(atPath: stored.path) else { return nil }
@@ -236,6 +250,8 @@ enum ImportedWallpaperStore {
         let storedBase = (record.storedFileName as NSString).deletingPathExtension
         let previews = makePreviews(from: pkg, storedBase: storedBase)
         guard previews.preview != nil || previews.floating != nil else { return nil }
+        let newPreview = previews.preview ?? record.previewFileName
+        let newFloating = previews.floating ?? record.floatingPreviewFileName
         return ImportedWallpaper(
             id: record.id,
             descriptorUUID: record.descriptorUUID,
@@ -245,8 +261,8 @@ enum ImportedWallpaperStore {
             fileName: record.fileName,
             storedFileName: record.storedFileName,
             importedAt: record.importedAt,
-            previewFileName: previews.preview,
-            floatingPreviewFileName: previews.floating ?? record.floatingPreviewFileName
+            previewFileName: newPreview,
+            floatingPreviewFileName: newFloating
         )
     }
 

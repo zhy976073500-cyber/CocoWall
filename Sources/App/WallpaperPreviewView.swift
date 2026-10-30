@@ -66,36 +66,6 @@ struct GlassGroup<Content: View>: View {
     }
 }
 
-/// Background of the preview screen's floating bottom dock.
-/// New build path: real glass (regular variant; the same dark tint
-/// the legacy stack used, so the dock stays legible over bright
-/// wallpapers) in the same rounded-rect shape. Legacy path: the
-/// original darkened ultra-thin material stack, unchanged.
-private struct PreviewDockBackground: View {
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            shape
-                .fill(Color.clear)
-                .glassEffect(.regular.tint(Color.black.opacity(0.22)), in: shape)
-                .shadow(color: .black.opacity(0.25), radius: 16, x: 0, y: 6)
-        } else {
-            legacyBody(shape: shape)
-        }
-        #else
-        legacyBody(shape: shape)
-        #endif
-    }
-
-    private func legacyBody(shape: RoundedRectangle) -> some View {
-        shape.fill(.ultraThinMaterial)
-            .overlay(shape.fill(Color.black.opacity(0.22)))
-            .overlay(shape.stroke(Color.white.opacity(0.35), lineWidth: 1))
-            .shadow(color: .black.opacity(0.25), radius: 16, x: 0, y: 6)
-    }
-}
-
 extension View {
     func glassChrome<S: Shape>(in shape: S) -> some View {
         GlassChrome(shape: shape) { self }
@@ -118,15 +88,22 @@ extension View {
     }
 }
 
-/// Full-screen lock-screen style preview of one imported wallpaper:
-/// background still full bleed, floating layer composited above it,
-/// clock and glass controls on top. When the package ships no static
-/// imagery at all (programmatic CA animation), an honest placeholder
-/// card is shown instead of a faked picture.
+/// Preview of one imported wallpaper, laid out the way the accepted
+/// web prototype does it: white page, the lock-screen composite
+/// rendered inside a centred phone-frame card (about 78% of the
+/// screen width, iPhone screen proportions, corner radius ~13% of
+/// the frame width, soft shadow, no black border), a three-step
+/// strip below the frame and the big apply button below that.
+///
+/// The previous full-bleed layout sized its content from the safe
+/// area inside a full-screen cover, which overflowed the right edge
+/// once the view lived in the tab bar's navigation stack (clock,
+/// date and dock all clipped off-screen). Here everything inside the
+/// frame is sized from the frame's own width and clipped to it, so
+/// nothing can stick out of the frame or the screen.
 struct WallpaperPreviewView: View {
     let record: ImportedWallpaper
     @ObservedObject var pairing: PairingService
-    let onDismiss: () -> Void
     @State private var showApply = false
 
     private var backgroundImage: UIImage? {
@@ -140,42 +117,35 @@ struct WallpaperPreviewView: View {
     }
 
     var body: some View {
-        let background = backgroundImage
-        let floating = floatingImage
-        // Chrome must respect the device safe area explicitly: the image
-        // layers ignore it, which used to stretch the whole ZStack and
-        // push the close button under the status bar / Dynamic Island.
         GeometryReader { geo in
-            ZStack {
-                Color.black.ignoresSafeArea()
-
-                if background != nil || floating != nil {
-                    if let background {
-                        Image(uiImage: background)
-                            .resizable()
-                            .scaledToFill()
-                            .ignoresSafeArea()
+            let frameWidth = geo.size.width * 0.78
+            let frameHeight = frameWidth * 19.5 / 9.0
+            ScrollView {
+                VStack(spacing: 18) {
+                    // Name / identifier small print above the frame.
+                    HStack(spacing: 6) {
+                        Text(record.displayName)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                        Text("编号 \(record.descriptorIdentifier)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
-                    if let floating {
-                        Image(uiImage: floating)
-                            .resizable()
-                            .scaledToFill()
-                            .ignoresSafeArea()
-                    }
-                    clockOverlay
-                } else {
-                    noPreviewCard
-                }
 
-                VStack {
-                    topChrome
-                    Spacer()
-                    bottomChrome(showLockButtons: background != nil || floating != nil)
+                    phoneFrame(width: frameWidth, height: frameHeight)
+
+                    stepsStrip
+
+                    applySection
                 }
-                .padding(.top, geo.safeAreaInsets.top + 2)
-                .padding(.bottom, geo.safeAreaInsets.bottom + 4)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity)
             }
+            .background(Color.white)
         }
+        .toolbar(.hidden, for: .tabBar)
         .sheet(isPresented: $showApply) {
             if let path = pairing.pairingFilePath {
                 WallpaperApplyView(
@@ -185,105 +155,75 @@ struct WallpaperPreviewView: View {
         }
     }
 
-    // MARK: - Chrome
+    // MARK: - Phone frame
 
-    private var topChrome: some View {
-        // The close button and the title pill sit side by side; on
-        // the new build path they render as one glass group.
-        GlassGroup(spacing: 8) {
-        HStack(alignment: .top, spacing: 10) {
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
+    /// The lock-screen composite, clipped to the phone frame: still
+    /// background cover-filled, floating layer above it, clock and
+    /// the two round lock buttons — all sized from the frame width.
+    /// Packages without any static imagery get the honest no-preview
+    /// card inside the frame instead of a faked picture.
+    private func phoneFrame(width: CGFloat, height: CGFloat) -> some View {
+        let background = backgroundImage
+        let floating = floatingImage
+        let corner = width * 0.13
+        return ZStack {
+            Color.black
+
+            if background != nil || floating != nil {
+                if let background {
+                    Image(uiImage: background)
+                        .resizable()
+                        .scaledToFill()
+                }
+                if let floating {
+                    Image(uiImage: floating)
+                        .resizable()
+                        .scaledToFill()
+                }
+                frameClock(width: width)
+                frameLockButtons(width: width)
+            } else {
+                noPreviewCard(maxWidth: width * 0.86)
             }
-            .glassChrome(in: Circle())
-
-            HStack(spacing: 6) {
-                Text(record.displayName)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                Text(record.descriptorIdentifier)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.7))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .glassChrome(in: Capsule())
-
-            Spacer()
         }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 8)
     }
 
-    private var clockOverlay: some View {
-        VStack(spacing: 2) {
+    private func frameClock(width: CGFloat) -> some View {
+        VStack(spacing: 0) {
             Text(Self.dateText)
-                .font(.system(size: 22, weight: .semibold, design: .rounded))
+                .font(.system(size: width * 0.052, weight: .semibold, design: .rounded))
             Text(Self.timeText)
-                .font(.system(size: 76, weight: .semibold, design: .rounded))
+                .font(.system(size: width * 0.185, weight: .semibold, design: .rounded))
         }
         .foregroundStyle(.white)
         .shadow(color: .black.opacity(0.35), radius: 8, x: 0, y: 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, 84)
+        .padding(.top, width * 0.16)
     }
 
-    private func bottomChrome(showLockButtons: Bool) -> some View {
-        VStack(spacing: 14) {
-            if showLockButtons {
-                HStack {
-                    lockButton(systemName: "flashlight.fill")
-                    Spacer()
-                    lockButton(systemName: "camera.fill")
-                }
-                .padding(.horizontal, 46)
-            }
-
-            // Floating glass dock: darkened material so it stays legible
-            // (and visibly glassy) over bright wallpapers.
-            VStack(spacing: 4) {
-                Button {
-                    showApply = true
-                } label: {
-                    Text("设为壁纸")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .primaryGlassButtonStyle()
-                .disabled(pairing.pairingFilePath == nil)
-
-                Text(pairing.pairingFilePath == nil
-                     ? "先在设置页完成本机配对后可写入"
-                     : "经本机配对写入 PosterBoard")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.75))
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .background {
-                PreviewDockBackground()
-            }
-            .padding(.horizontal, 20)
+    private func frameLockButtons(width: CGFloat) -> some View {
+        HStack {
+            lockButton(systemName: "flashlight.fill", diameter: width * 0.115)
+            Spacer()
+            lockButton(systemName: "camera.fill", diameter: width * 0.115)
         }
+        .padding(.horizontal, width * 0.10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .padding(.bottom, width * 0.075)
     }
 
-    private func lockButton(systemName: String) -> some View {
+    private func lockButton(systemName: String, diameter: CGFloat) -> some View {
         Image(systemName: systemName)
-            .font(.body.weight(.semibold))
+            .font(.system(size: diameter * 0.42, weight: .semibold))
             .foregroundStyle(.white)
-            .frame(width: 48, height: 48)
+            .frame(width: diameter, height: diameter)
             .glassChrome(in: Circle())
     }
 
-    private var noPreviewCard: some View {
+    private func noPreviewCard(maxWidth: CGFloat) -> some View {
         VStack(spacing: 10) {
             Image(systemName: "photo.on.rectangle.angled")
                 .font(.largeTitle)
@@ -298,9 +238,78 @@ struct WallpaperPreviewView: View {
                 .multilineTextAlignment(.center)
         }
         .foregroundStyle(.white)
-        .padding(24)
-        .frame(maxWidth: 300)
+        .padding(20)
+        .frame(maxWidth: maxWidth)
         .glassChrome(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    // MARK: - Steps strip
+
+    /// 1 连接隧道 → 2 完成配对 → 3 应用壁纸. The pairing step shows a
+    /// check once a pairing file exists; the strip reflects state, it
+    /// is not itself a control.
+    private var stepsStrip: some View {
+        HStack(alignment: .top, spacing: 4) {
+            stepItem(number: 1, title: "连接隧道", done: false)
+            stepChevron
+            stepItem(number: 2, title: "完成配对", done: pairing.pairingFilePath != nil)
+            stepChevron
+            stepItem(number: 3, title: "应用壁纸", done: false)
+        }
+    }
+
+    private func stepItem(number: Int, title: String, done: Bool) -> some View {
+        VStack(spacing: 5) {
+            ZStack {
+                Circle()
+                    .fill(done ? Color.green : Color.secondary.opacity(0.15))
+                    .frame(width: 26, height: 26)
+                if done {
+                    Image(systemName: "checkmark")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                } else {
+                    Text("\(number)")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+        }
+        .frame(minWidth: 64)
+    }
+
+    private var stepChevron: some View {
+        Image(systemName: "chevron.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .padding(.top, 8)
+    }
+
+    // MARK: - Apply
+
+    private var applySection: some View {
+        VStack(spacing: 8) {
+            Button {
+                showApply = true
+            } label: {
+                Text("设为壁纸")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            }
+            .primaryGlassButtonStyle()
+            .disabled(pairing.pairingFilePath == nil)
+
+            Text(pairing.pairingFilePath == nil
+                 ? "先在设置页完成本机配对后可写入"
+                 : "经本机配对写入 PosterBoard")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     // MARK: - Clock text

@@ -156,10 +156,8 @@ struct WallpaperListView: View {
                 records = ImportedWallpaperStore.load()
                 backfillPreviews()
             }
-            .fullScreenCover(item: $selectedRecord) { record in
-                WallpaperPreviewView(record: record, pairing: pairing) {
-                    selectedRecord = nil
-                }
+            .navigationDestination(item: $selectedRecord) { record in
+                WallpaperPreviewView(record: record, pairing: pairing)
             }
             .sheet(isPresented: $showImporter) {
                 DocumentPicker { url in
@@ -215,22 +213,29 @@ struct WallpaperListView: View {
         }
     }
 
-    /// Wallpapers imported by older builds have no preview files yet;
-    /// generate them once from the stored archives. Records that already
-    /// have either preview field set are skipped, so a package that
-    /// legitimately has no background still (floating only, or none) is
-    /// not re-parsed on every appearance.
+    /// Generates or repairs still previews from the stored archives.
+    /// The trigger is the state of the stored preview file — missing or
+    /// undecodable — not the record's fields: a record whose import
+    /// produced a floating-layer file but no still (its background pick
+    /// failed to convert) has a non-nil floating field, and the old
+    /// "both fields empty" check skipped exactly those records forever,
+    /// leaving their rows on the grey placeholder.
     private func backfillPreviews() {
         var changed = false
-        for index in records.indices
-        where records[index].previewFileName == nil
-            && records[index].floatingPreviewFileName == nil {
+        for index in records.indices where previewNeedsBackfill(records[index]) {
             if let updated = ImportedWallpaperStore.ensurePreview(for: records[index]) {
                 records[index] = updated
                 changed = true
             }
         }
         if changed { ImportedWallpaperStore.save(records) }
+    }
+
+    /// True when the record's stored still preview is absent or cannot
+    /// be decoded into an image.
+    private func previewNeedsBackfill(_ record: ImportedWallpaper) -> Bool {
+        guard let url = ImportedWallpaperStore.previewURL(for: record) else { return true }
+        return UIImage(contentsOfFile: url.path) == nil
     }
 
     private func deleteRecord(_ record: ImportedWallpaper) {

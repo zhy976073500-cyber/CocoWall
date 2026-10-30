@@ -89,13 +89,24 @@ struct TendiesPackage: Identifiable {
     /// (nil when the package only ships floating imagery, e.g. a purely
     /// programmatic CA wallpaper, in which case both may be nil).
     func previewAssets() -> (background: URL?, floating: URL?) {
+        let candidates = previewAssetCandidates()
+        return (candidates.backgrounds.first, candidates.floatings.first)
+    }
+
+    /// The same scoring as previewAssets(), but returns every candidate
+    /// in best-first order instead of only the winners. Callers that
+    /// convert the pick into a thumbnail need the runners-up: the top
+    /// scoring file can turn out to be one ImageIO cannot decode (an
+    /// exotic encoding inside a .ca bundle, say), and the next
+    /// candidate down is usually a perfectly usable still.
+    func previewAssetCandidates() -> (backgrounds: [URL], floatings: [URL]) {
         let fm = FileManager.default
         let imageExtensions: Set<String> = ["heic", "png", "jpg", "jpeg"]
         var scored: [(url: URL, score: Int, size: Int64)] = []
         guard let enumerator = fm.enumerator(
             at: extractedURL,
             includingPropertiesForKeys: [.fileSizeKey],
-            options: []) else { return (nil, nil) }
+            options: []) else { return ([], []) }
         while let item = enumerator.nextObject() as? URL {
             let pathLower = item.path.lowercased()
             if pathLower.contains("__macosx") { continue }
@@ -111,13 +122,13 @@ struct TendiesPackage: Identifiable {
                 .fileSize.map(Int64.init) ?? 0
             scored.append((url: item, score: score, size: size))
         }
-        func best(_ candidates: [(url: URL, score: Int, size: Int64)]) -> URL? {
+        func ranked(_ candidates: [(url: URL, score: Int, size: Int64)]) -> [URL] {
             candidates.sorted { a, b in
                 a.score != b.score ? a.score > b.score : a.size > b.size
-            }.first?.url
+            }.map(\.url)
         }
-        let floating = best(scored.filter { $0.url.path.lowercased().contains("floating") })
-        let background = best(scored.filter { !$0.url.path.lowercased().contains("floating") })
-        return (background, floating)
+        let floatings = ranked(scored.filter { $0.url.path.lowercased().contains("floating") })
+        let backgrounds = ranked(scored.filter { !$0.url.path.lowercased().contains("floating") })
+        return (backgrounds, floatings)
     }
 }
