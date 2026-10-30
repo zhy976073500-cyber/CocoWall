@@ -2,18 +2,74 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// v1 shell: 壁纸 (import / apply / manage) + 设置 (pairing / tunnel).
+/// App 根视图：四个页签——壁纸｜壁纸库｜制作｜设置。
+///
+/// 底栏用系统 TabView，不自绘：用 iOS 26 SDK 编译后，系统自带
+/// 液态玻璃悬浮胶囊和选中胶囊滑动（旧系统上就是系统原生的栏）。
+/// 在此之上给每个页签图标加一次点击反馈：选中变化时对应图标
+/// 用 symbolEffect 的 bounce 弹跳一下（系统符号动画，不自绘）。
 struct ContentView: View {
     @StateObject private var tunnel = TunnelManager()
     @StateObject private var pairing = PairingService()
     @Environment(\.scenePhase) private var scenePhase
 
+    private enum Tab: Hashable {
+        case wallpaper, library, maker, settings
+    }
+
+    @State private var selection: Tab = .wallpaper
+    /// 每个页签图标的弹跳计数：选中哪个页签，就把它的计数 +1，
+    /// 绑定这个值的 symbolEffect 随之播一次 bounce。
+    @State private var bounceCounts: [Tab: Int] = [:]
+
     var body: some View {
-        TabView {
+        TabView(selection: $selection) {
             WallpaperListView(pairing: pairing, tunnel: tunnel)
-                .tabItem { Label("壁纸", systemImage: "photo.on.rectangle.angled") }
+                .tabItem {
+                    Label {
+                        Text("壁纸")
+                    } icon: {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .symbolEffect(.bounce, value: bounceCounts[.wallpaper, default: 0])
+                    }
+                }
+                .tag(Tab.wallpaper)
+
+            LibraryView()
+                .tabItem {
+                    Label {
+                        Text("壁纸库")
+                    } icon: {
+                        Image(systemName: "photo.stack")
+                            .symbolEffect(.bounce, value: bounceCounts[.library, default: 0])
+                    }
+                }
+                .tag(Tab.library)
+
+            MakerView()
+                .tabItem {
+                    Label {
+                        Text("制作")
+                    } icon: {
+                        Image(systemName: "wand.and.stars")
+                            .symbolEffect(.bounce, value: bounceCounts[.maker, default: 0])
+                    }
+                }
+                .tag(Tab.maker)
+
             SettingsView(tunnel: tunnel, pairing: pairing)
-                .tabItem { Label("设置", systemImage: "gearshape") }
+                .tabItem {
+                    Label {
+                        Text("设置")
+                    } icon: {
+                        Image(systemName: "gearshape")
+                            .symbolEffect(.bounce, value: bounceCounts[.settings, default: 0])
+                    }
+                }
+                .tag(Tab.settings)
+        }
+        .onChange(of: selection) { _, newTab in
+            bounceCounts[newTab, default: 0] += 1
         }
         .task { await tunnel.refresh() }
         .onChange(of: scenePhase) { _, phase in
@@ -29,6 +85,9 @@ struct ContentView: View {
     }
 }
 
+/// 壁纸页：和网页版对齐的版式——纯白底、大标题、卡片式列表。
+/// 数据与功能沿用原有实现：ImportedWallpaperStore 的记录、
+/// DocumentPicker 导入、文稿目录扫描、点开进 WallpaperPreviewView。
 struct WallpaperListView: View {
     @ObservedObject var pairing: PairingService
     @ObservedObject var tunnel: TunnelManager
@@ -36,34 +95,54 @@ struct WallpaperListView: View {
     @State private var showImporter = false
     @State private var selectedRecord: ImportedWallpaper?
     @State private var errorMessage: String?
-
     @State private var scanMessage: String?
 
     var body: some View {
         NavigationStack {
-            List {
-                if records.isEmpty {
-                    Text("尚未导入壁纸。从“文件”选择 .tendies，或在其他 App 中用 CocoWall 打开。")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(records) { record in
-                    Button {
-                        selectedRecord = record
-                    } label: {
-                        HStack(spacing: 12) {
-                            WallpaperThumbnail(record: record)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(record.displayName).font(.headline)
-                                Text("编号 \(record.descriptorIdentifier) · \(record.fileName)")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        .contentShape(Rectangle())
+            ScrollView {
+                LazyVStack(spacing: 14) {
+                    if records.isEmpty {
+                        Text("尚未导入壁纸。从“文件”选择 .tendies，或在其他 App 中用 CocoWall 打开。")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(16)
+                            .background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
                     }
-                    .buttonStyle(.plain)
+                    ForEach(records) { record in
+                        Button {
+                            selectedRecord = record
+                        } label: {
+                            HStack(spacing: 14) {
+                                WallpaperThumbnail(record: record)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(record.displayName)
+                                        .font(.headline)
+                                        .foregroundStyle(.primary)
+                                    Text("编号 \(record.descriptorIdentifier) · \(record.fileName)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(12)
+                            .background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button("删除", role: .destructive) { deleteRecord(record) }
+                        }
+                    }
                 }
-                .onDelete(perform: delete)
+                .padding(20)
             }
+            .background(Color.white)
             .navigationTitle("壁纸")
             .toolbar {
                 Menu {
@@ -154,135 +233,10 @@ struct WallpaperListView: View {
         if changed { ImportedWallpaperStore.save(records) }
     }
 
-    private func delete(at offsets: IndexSet) {
-        for index in offsets {
-            ImportedWallpaperStore.removeFile(for: records[index])
-        }
-        records.remove(atOffsets: offsets)
+    private func deleteRecord(_ record: ImportedWallpaper) {
+        ImportedWallpaperStore.removeFile(for: record)
+        records.removeAll { $0.id == record.id }
         ImportedWallpaperStore.save(records)
-    }
-}
-
-struct SettingsView: View {
-    @ObservedObject var tunnel: TunnelManager
-    @ObservedObject var pairing: PairingService
-    @State private var showPairingImporter = false
-    @State private var deviceMessage: String?
-
-    private let deviceService: DeviceService = FFIDeviceService()
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("本机配对（iOS 27）") {
-                    switch pairing.state {
-                    case .unpaired:
-                        Text("尚未配对").foregroundStyle(.secondary)
-                    case .hosting(let pin):
-                        if let pin {
-                            // The core only issues a PIN once the
-                            // system has connected and pair-setup has
-                            // begun — this phase is proof of connection.
-                            Text("系统已连接，配对进行中")
-                                .foregroundStyle(.green)
-                            Text("配对码（配对结束前会一直显示在这里）")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Text(pin)
-                                .font(.system(size: 34, weight: .bold, design: .monospaced))
-                                .tracking(6)
-                            Text("切回 系统设置 › 隐私与安全性 › 开发者模式，把这串配对码填进刚才点的配对设备里。")
-                                .font(.caption).foregroundStyle(.secondary)
-                        } else if let serviceID = pairing.hostServiceID {
-                            Text("广播中，等待系统连接…")
-                            Text("去 系统设置 › 隐私与安全性 › 开发者模式 ›「配对设备」，点「\(serviceID)」；系统连上后，这里会给出配对码。")
-                                .font(.caption).foregroundStyle(.secondary)
-                        } else {
-                            Text("正在启动配对广播…")
-                                .foregroundStyle(.secondary)
-                        }
-                    case .paired:
-                        Text("已配对").foregroundStyle(.green)
-                        if let path = pairing.pairingFilePath {
-                            Text(URL(fileURLWithPath: path).lastPathComponent)
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    case .failed(let msg):
-                        Text(msg).foregroundStyle(.red)
-                    }
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("1. 打开「开发者模式」：系统设置 → 隐私与安全性 → 开发者模式，打开后按提示重启确认（首次才需要）。")
-                        Text("2. 先开回环：在下方「回环隧道」里点「连接回环隧道」，看到状态栏 VPN 标志后再回来。")
-                        Text("3. 点下方「开始配对」，切到开发者模式的「配对设备」，点以 idevice_pair 开头的那一条。")
-                        Text("4. 回到本 App，配对码会大字显示且全程保留；再回设置把码填进去。成功后配对记录保存在本机，以后不用重复配对。")
-                    }
-                    .font(.caption).foregroundStyle(.secondary)
-                    if #available(iOS 27.0, *) {
-                        Button("开始配对") { pairing.startOnDevicePairing() }
-                    } else {
-                        Text("机内配对需 iOS 27 及以上；系统低于 iOS 27 请用下方导入配对文件。")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Button("导入配对文件…") { showPairingImporter = true }
-                    if pairing.pairingFilePath != nil {
-                        Button("删除配对文件", role: .destructive) { pairing.forget() }
-                    }
-                }
-                Section("回环隧道") {
-                    switch tunnel.state {
-                    case .disconnected: Text("未连接").foregroundStyle(.secondary)
-                    case .connecting: Text("正在连接…")
-                    case .connected: Text("已连接").foregroundStyle(.green)
-                    case .failed(let msg): Text(msg).foregroundStyle(.red)
-                    }
-                    Button("连接回环隧道") { Task { await tunnel.connect() } }
-                    Button("断开回环隧道") { tunnel.disconnect() }
-                }
-                Section("壁纸写入") {
-                    Text("Rust 核心已链接：\(FFIDeviceService.coreVersion)")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("注入环（AFC 暂存 + AirTraffic 同步）尚未落地：检测与写入会由核心返回明确的「注入环未落地」错误，不会假装成功。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Button("检测 PosterBoard 容器") { Task { await probeContainer() } }
-                    if let deviceMessage {
-                        Text(deviceMessage).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .navigationTitle("设置")
-            .onAppear { pairing.refreshFromDisk() }
-            .sheet(isPresented: $showPairingImporter) {
-                DocumentPicker { url in
-                    showPairingImporter = false
-                    handlePairingPick(url)
-                } onCancel: {
-                    showPairingImporter = false
-                }
-                .ignoresSafeArea()
-            }
-        }
-    }
-
-    private func handlePairingPick(_ url: URL) {
-        do {
-            let data = try Data(contentsOf: url)
-            pairing.importPairing(data: data)
-        } catch {
-            pairing.importFailed(error)
-        }
-    }
-
-    private func probeContainer() async {
-        guard let path = pairing.pairingFilePath else {
-            deviceMessage = "请先导入配对文件。"
-            return
-        }
-        do {
-            let container = try await deviceService.detectPosterBoardContainer(
-                pairingFile: URL(fileURLWithPath: path))
-            deviceMessage = "PosterBoard 容器：\(container)"
-        } catch {
-            deviceMessage = error.localizedDescription
-        }
     }
 }
 
