@@ -14,7 +14,7 @@ struct LibraryView: View {
                 }
                 .padding(.vertical, 16)
             }
-            .background(Color.white)
+            .background(Color(UIColor.systemBackground))
             .navigationTitle("壁纸库")
             .sheet(item: $selectedItem) { item in
                 LibraryDetailView(item: item)
@@ -191,7 +191,7 @@ struct LibraryDetailView: View {
                 }
                 .padding(.bottom, 24)
             }
-            .background(Color.white)
+            .background(Color(UIColor.systemBackground))
             .navigationTitle(item.numberText)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

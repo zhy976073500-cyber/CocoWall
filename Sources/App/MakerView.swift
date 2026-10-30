@@ -34,7 +34,7 @@ struct MakerView: View {
                 }
                 .padding(20)
             }
-            .background(Color.white)
+            .background(Color(UIColor.systemBackground))
             .navigationTitle("制作")
         }
     }
@@ -71,7 +71,7 @@ struct MakerView: View {
                     Spacer()
                 }
                 .padding(16)
-                .background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .background(Color(UIColor.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
             }
         }

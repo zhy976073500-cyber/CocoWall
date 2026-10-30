@@ -74,6 +74,7 @@ final class AppViewModel: ObservableObject {
     @Published var tendiesFlashProgress: Double = 0
     @Published var tendiesFlashLog: [String] = []
     @Published var isNeoSpringing: Bool = false
+    private var previewRegenInFlight: Set<UUID> = []
 
     // MARK: - AirCard UI States & Properties
     static var detectedDeviceLanguage: PasscodeLanguageTarget {
@@ -661,7 +662,7 @@ final class AppViewModel: ObservableObject {
                 bold: passcodeBoldTarget
             )
             let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("AirCard_Custom_\(Int(Date().timeIntervalSince1970)).passthm")
+                .appendingPathComponent("CocoWall_Custom_\(Int(Date().timeIntervalSince1970)).passthm")
             try zipData.write(to: tempURL)
             self.exportedThemeURL = tempURL
             self.showShareSheet = true
@@ -700,7 +701,14 @@ final class AppViewModel: ObservableObject {
     func loadSavedTendies() {
         if let data = UserDefaults.standard.data(forKey: "aircard.saved_tendies"),
            let items = try? JSONDecoder().decode([TendieItem].self, from: data) {
-            self.tendieItems = items.filter { FileManager.default.fileExists(atPath: $0.fileURL.path) }
+            // 选择状态不跨启动保留：每次载入都回到未选中，由用户手动勾选。
+            self.tendieItems = items
+                .filter { FileManager.default.fileExists(atPath: $0.fileURL.path) }
+                .map { item in
+                    var item = item
+                    item.isSelected = false
+                    return item
+                }
         }
     }
 
@@ -710,13 +718,116 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Tendies 预览再生
+
+    /// 条目展示时若已存预览缺失或解码失败，从其 .tendies 包内重新提取并回写。
+    /// 导入时的提取只在导入当下跑一次、失败静默置空，结果又随条目持久化，
+    /// 展示侧原本只读已存数据、从不重试，所以在这里补一层展示时再生。
+    func regenerateTendiePreview(itemID: UUID) {
+        guard let idx = tendieItems.firstIndex(where: { $0.id == itemID }) else { return }
+        let item = tendieItems[idx]
+        if let data = item.previewImageData, UIImage(data: data) != nil { return }
+        guard !previewRegenInFlight.contains(itemID) else { return }
+        previewRegenInFlight.insert(itemID)
+        let packageURL = item.fileURL
+        Task {
+            let data = await Task.detached(priority: .utility) {
+                AppViewModel.extractPreviewData(from: packageURL)
+            }.value
+            previewRegenInFlight.remove(itemID)
+            guard let data,
+                  let current = tendieItems.firstIndex(where: { $0.id == itemID }) else { return }
+            tendieItems[current].previewImageData = data
+            saveTendieItems()
+        }
+    }
+
+    /// 从 .tendies 包提取预览图：先按导入时同一套打分规则在图片资产里选，
+    /// 候选全灭时放宽到包内第一张可解码的位图资产（按内容嗅探，不看扩展名）。
+    /// 返回下采样后的 JPEG 数据，规格与导入时一致（最长边 600、质量 0.85）。
+    nonisolated static func extractPreviewData(from packageURL: URL) -> Data? {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tendie_preview_\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let rc = packageURL.path.withCString { arcC in
+            tempDir.path.withCString { dstC in
+                al_zip_extract_all(arcC, dstC)
+            }
+        }
+        guard rc == 0 else { return nil }
+
+        let fileManager = FileManager.default
+        guard let enumerator = fileManager.enumerator(
+            at: tempDir,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        var allFiles: [URL] = []
+        var candidates: [(url: URL, score: Int)] = []
+        while let url = enumerator.nextObject() as? URL {
+            let pathLower = url.path.lowercased()
+            let nameLower = url.lastPathComponent.lowercased()
+            if pathLower.contains("__macosx") || nameLower == ".ds_store" { continue }
+            if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { continue }
+            allFiles.append(url)
+
+            let ext = url.pathExtension.lowercased()
+            if ["heic", "png", "jpg", "jpeg"].contains(ext) {
+                var score = 10
+                if pathLower.contains("proxy") || pathLower.contains("adjusted") {
+                    score += 90
+                } else if pathLower.contains("background") || pathLower.contains("settling") {
+                    score += 70
+                } else if pathLower.contains("preview") || pathLower.contains("thumb") {
+                    score += 50
+                } else if pathLower.contains("asset.resource") {
+                    score += 40
+                }
+                candidates.append((url, score))
+            }
+        }
+
+        candidates.sort { $0.score > $1.score }
+        for candidate in candidates {
+            if let data = jpegThumbnail(fromFile: candidate.url) { return data }
+        }
+
+        let skipExts: Set<String> = ["plist", "json", "txt", "strings", "ca", "car", "zip", "mlmodel", "bin"]
+        for url in allFiles {
+            if skipExts.contains(url.pathExtension.lowercased()) { continue }
+            if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 40_000_000 { continue }
+            if let data = jpegThumbnail(fromFile: url) { return data }
+        }
+        return nil
+    }
+
+    /// 读图、下采样、转 JPEG（与导入时的预览生成规格一致）。
+    nonisolated static func jpegThumbnail(fromFile url: URL) -> Data? {
+        guard let image = UIImage(contentsOfFile: url.path) else { return nil }
+        let size = image.size
+        let maxSide = max(size.width, size.height)
+        var thumb = image
+        if maxSide > 600 {
+            let scale = 600 / maxSide
+            let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+            let renderer = UIGraphicsImageRenderer(size: newSize)
+            thumb = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: newSize)) }
+        }
+        return thumb.jpegData(compressionQuality: 0.85)
+    }
+
     func importTendieFiles(urls: [URL]) async {
         guard !urls.isEmpty else { return }
         var importedCount = 0
         var lastImportedName = ""
         for url in urls {
             do {
-                let item = try await TendiesEngine.shared.importTendie(from: url)
+                var item = try await TendiesEngine.shared.importTendie(from: url)
+                // 导入后默认不勾选（引擎构造时为选中，这里在导入赋值处改回未选中）。
+                item.isSelected = false
                 await MainActor.run {
                     self.tendieItems.removeAll(where: { $0.fileName == item.fileName })
                     self.tendieItems.append(item)

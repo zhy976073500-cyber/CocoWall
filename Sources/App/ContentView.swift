@@ -203,7 +203,7 @@ struct DonateView: View {
                 )
             }
 
-            Text("非常感谢你对 AirCard-iOS 开发的支持！❤️")
+            Text("非常感谢你对 CocoWall 开发的支持！❤️")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -229,7 +229,7 @@ struct SupportPopupSheet: View {
                             .font(.system(size: 56))
                             .foregroundStyle(.pink)
 
-                        Text("欢迎使用 AirCard-iOS！")
+                        Text("欢迎使用 CocoWall！")
                             .font(.title2.bold())
 
                         Text("免费与开源 • 由 @mak5er 开发")
@@ -343,7 +343,7 @@ struct CreditsSheet: View {
                     .font(.system(size: 64))
                     .foregroundStyle(.blue)
 
-                Text("AirCard-iOS")
+                Text("CocoWall")
                     .font(.title2.bold())
 
                 Text("密码盘主题与 .tendies 壁纸（iOS 18.0 – 27.2 b2）")
@@ -851,10 +851,6 @@ struct ContentView: View {
                 .tabItem { Label("制作", systemImage: "wand.and.stars") }
                 .tag(AppTab.maker)
 
-            PairingTab()
-                .tabItem { Label("配对", systemImage: "antenna.radiowaves.left.and.right") }
-                .tag(AppTab.pairing)
-
             PasscodeThemeTab()
                 .tabItem { Label("密码盘", systemImage: "lock.circle.fill") }
                 .tag(AppTab.passcodeThemes)
@@ -926,7 +922,7 @@ struct PairingTab: View {
                             Image(systemName: "creditcard.circle.fill")
                                 .font(.title2)
                                 .foregroundStyle(.blue)
-                            Text("AirCard-iOS")
+                            Text("CocoWall")
                                 .font(.title2.bold())
                             Spacer()
                             Text("iOS \(ProcessInfo.processInfo.operatingSystemVersion.majorVersion) · v1.3.2")
@@ -1203,7 +1199,7 @@ struct PairingTab: View {
             .safeAreaInset(edge: .bottom) {
                 Color.clear.frame(height: 60)
             }
-            .navigationTitle("AirCard-iOS")
+            .navigationTitle("CocoWall")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {

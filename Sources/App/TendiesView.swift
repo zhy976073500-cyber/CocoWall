@@ -251,6 +251,7 @@ struct TendiesView: View {
 // MARK: - Tendie Row View
 
 struct TendieRowView: View {
+    @EnvironmentObject var vm: AppViewModel
     @Binding var item: TendieItem
     let onInspect: () -> Void
     let onDelete: () -> Void
@@ -320,6 +321,10 @@ struct TendieRowView: View {
             .buttonStyle(.borderless)
         }
         .padding(.vertical, 4)
+        .task {
+            // 已存预览缺失或解码失败时，从包内重新提取（导入时只提取一次且不重试）。
+            vm.regenerateTendiePreview(itemID: item.id)
+        }
     }
 }
 
