@@ -1,0 +1,26 @@
+NOTICE
+
+Grappa token data
+-----------------
+The candidate Grappa tokens stored in Sources/App/grappa-tokens.txt.b64
+(base64 text; decoded at build time into GrappaToken.txt in the app
+bundle, one candidate per line) come from the AirCard-iOS project:
+
+  Project:  AirCard-iOS
+  Author:   Johnny Franks (Mak5er)
+  Source:   https://github.com/Mak5er/AirCard-iOS
+  File:     ios-app/GrappaHelper.m (kAuthenticGrappaTokens table)
+  License:  MIT License, Copyright (c) 2026 Johnny Franks
+
+The tokens are used as a last-resort fallback only, after every
+on-device runtime generation route has failed; each candidate is
+verified on the device before use (see Sources/App/GrappaHelper.m).
+
+MIT License summary: permission is granted, free of charge, to any
+person obtaining a copy of the software and associated documentation
+files, to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies, subject to including the copyright notice and
+permission notice in all copies or substantial portions of the
+software. The software is provided "as is", without warranty of any
+kind. The full license text ships with the upstream project at
+https://github.com/Mak5er/AirCard-iOS/blob/main/LICENSE

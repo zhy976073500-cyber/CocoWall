@@ -70,9 +70,14 @@ targets:
           # only — runtime generation always runs first (see
           # Sources/App/GrappaHelper.m). Generation failure must be loud
           # but must NOT block the build: a GRAPPA-GEN FAILURE banner and an
-          # error: line go into the build log, no token file is embedded,
-          # and the app then behaves exactly like the runtime-only build
-          # (its own log also reports the missing bundled token).
+          # error: line go into the build log, and the fallback then
+          # decodes the bundled candidate table
+          # (Sources/App/grappa-tokens.txt.b64 — token data from
+          # AirCard-iOS, MIT, by Johnny Franks / Mak5er; see NOTICE)
+          # into GrappaToken.txt instead, one candidate per line. The
+          # build log always states the token source ("generator" or
+          # "bundled-table"); only if the table is missing or undecodable
+          # is no token file embedded at all.
           #
           # Debug round 3 (grappa-gen-macos-target): runs #26-#28 died
           # with SIGKILL (exit 137) before main() - even a trivial C
@@ -134,16 +139,39 @@ targets:
           GEN_MACOS_TARGET="arm64-apple-macos14.0"
           echo "=== GRAPPA-GEN ENV: macosx SDK path = ${GEN_SDK_PATH:-UNRESOLVED}"
           echo "=== GRAPPA-GEN ENV: pinned compile target = $GEN_MACOS_TARGET (every tool's LC_BUILD_VERSION platform must be 1 = MACOS)"
+          # embed_bundled_table: decode the bundled candidate table
+          # (Sources/App/grappa-tokens.txt.b64) into the app bundle as
+          # GrappaToken.txt, one candidate per line. Used whenever the
+          # generator produced no token. Never deletes an existing
+          # GrappaToken.txt.
+          embed_bundled_table() {
+            BT_SRC="$SRCROOT/Sources/App/grappa-tokens.txt.b64"
+            if [ -z "${TARGET_BUILD_DIR:-}" ] || [ -z "${UNLOCALIZED_RESOURCES_FOLDER_PATH:-}" ]; then
+              echo "=== BUNDLED-TABLE: TARGET_BUILD_DIR/UNLOCALIZED_RESOURCES_FOLDER_PATH unset - cannot locate app bundle, no GrappaToken.txt embedded"
+              return 0
+            fi
+            if [ ! -f "$BT_SRC" ]; then
+              echo "=== BUNDLED-TABLE: $BT_SRC missing - no GrappaToken.txt embedded"
+              return 0
+            fi
+            BT_TMP="$GEN_DIR/GrappaToken.bundled.txt"
+            if base64 -D -i "$BT_SRC" -o "$BT_TMP" 2>/dev/null || openssl base64 -d -in "$BT_SRC" -out "$BT_TMP" 2>/dev/null; then
+              BT_LINES="$(grep -c . "$BT_TMP" || true)"
+              mkdir -p "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
+              cp "$BT_TMP" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/GrappaToken.txt"
+              echo "=== GRAPPA TOKEN SOURCE: bundled-table (decoded Sources/App/grappa-tokens.txt.b64, $BT_LINES candidate line(s)) embedded as GrappaToken.txt"
+            else
+              echo "=== BUNDLED-TABLE: base64 decode of grappa-tokens.txt.b64 FAILED - no GrappaToken.txt embedded"
+            fi
+          }
           grappa_gen_fail() {
             echo "======================================================================"
             echo "=== GRAPPA-GEN FAILURE: $1"
-            echo "=== Building WITHOUT a bundled Grappa token (GrappaToken.txt)."
-            echo "=== The app will rely on runtime Grappa generation only."
+            echo "=== Falling back to the bundled Grappa token table"
+            echo "=== (Sources/App/grappa-tokens.txt.b64) for GrappaToken.txt."
             echo "======================================================================"
-            echo "error: GRAPPA-GEN FAILURE: $1 - building without bundled GrappaToken.txt"
-            if [ -n "${TARGET_BUILD_DIR:-}" ] && [ -n "${UNLOCALIZED_RESOURCES_FOLDER_PATH:-}" ]; then
-              rm -f "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/GrappaToken.txt"
-            fi
+            echo "error: GRAPPA-GEN FAILURE: $1 - falling back to bundled token table"
+            embed_bundled_table
           }
           # check_platform LABEL BIN: prints the binary's
           # LC_BUILD_VERSION block and sets PLAT_OK=1 only when its
@@ -300,6 +328,7 @@ targets:
                   BUNDLE_DIR="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
                   mkdir -p "$BUNDLE_DIR"
                   cp "$GEN_HEX" "$BUNDLE_DIR/GrappaToken.txt"
+                  echo "=== GRAPPA TOKEN SOURCE: generator (tools/grappa-gen on this build host)"
                   echo "=== GRAPPA-GEN OK: bundled Grappa token generated on build host and embedded as GrappaToken.txt (hex chars: $HEX_CHARS, prefix: $HEX_PREFIX)"
                 else
                   grappa_gen_fail "TARGET_BUILD_DIR/UNLOCALIZED_RESOURCES_FOLDER_PATH unset - cannot locate app bundle"
