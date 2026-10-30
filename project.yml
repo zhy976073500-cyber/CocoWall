@@ -5,6 +5,13 @@ packages:
     from: 0.9.19
 options:
   bundleIdPrefix: com.coco
+  # Generate the project in the Xcode 15.0 format (objectVersion 60).
+  # XcodeGen's default is xcode16_0 (objectVersion 77), which Xcode 15.4
+  # on the macos-14 runner cannot open ("future Xcode project file
+  # format (77)") - run #34 died before any build phase ran, so the
+  # pre-build scripts (Rust core, grappa-gen) never executed. Newer
+  # Xcode (macos-26 / Xcode 26) opens this older format fine.
+  projectFormat: xcode15_0
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
