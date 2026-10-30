@@ -176,6 +176,52 @@ fn log_installed_assets(
     }
 }
 
+/// Diagnostic dump of one AssetManifest message: the full message,
+/// every string in its Params, and whether each watched identifier
+/// (our staged Book assets) appears among them. The manifest is the
+/// daemon's own list of what it intends to pull, so its membership
+/// verdicts say whether the daemon ever asked for our assets at all.
+/// Read-only, like the InstalledAssets dump — nothing branches on it.
+fn log_asset_manifest(
+    dict: &plist::Dictionary,
+    watch_ids: &[String],
+    log: &Logger,
+    label: &str,
+) {
+    log.log(format!("{label}：AssetManifest 完整内容：{dict:?}"));
+    let mut strings = Vec::new();
+    if let Some(params) = dict.get("Params") {
+        collect_strings(params, &mut strings);
+    }
+    log.log(format!(
+        "{label}：AssetManifest 中共 {} 个字符串：{}",
+        strings.len(),
+        strings.join(" | ")
+    ));
+    for id in watch_ids {
+        let present = strings.iter().any(|s| s == id);
+        log.log(format!(
+            "{label}：暂存资产 '{id}' 在 AssetManifest 中：{}",
+            if present { "在" } else { "不在" }
+        ));
+    }
+}
+
+/// Whether a daemon message carries an error-shaped field — any key
+/// whose name contains "Error" (ErrorCode, ErrorDomain, …), at the
+/// top level or inside Params. Used only to flag such messages in
+/// the post-FileComplete observation window.
+fn has_error_field(dict: &plist::Dictionary) -> bool {
+    let key_has_error = |d: &plist::Dictionary| d.iter().any(|(k, _)| k.contains("Error"));
+    if key_has_error(dict) {
+        return true;
+    }
+    match dict.get("Params").and_then(|p| p.as_dictionary()) {
+        Some(params) => key_has_error(params),
+        None => false,
+    }
+}
+
 fn build_host_info(grappa_token: &Option<Vec<u8>>, library_id: &str) -> plist::Dictionary {
     let mut host = plist::Dictionary::new();
     host.insert("Type".into(), plist::Value::String("iTunes".into()));
@@ -245,6 +291,9 @@ impl AtcSession {
                         log.log(format!("{label}：收到守护进程消息 '{name}'"));
                         if name == "InstalledAssets" {
                             log_installed_assets(&dict, watch_ids, log, label);
+                        }
+                        if name == "AssetManifest" {
+                            log_asset_manifest(&dict, watch_ids, log, label);
                         }
                         if name == "Capabilities" {
                             if let Some(gi) = dict
@@ -356,7 +405,12 @@ impl AtcSession {
                                 let pong = make_msg("Pong", 1, None);
                                 let _ = send_msg(&mut self.stream, &pong).await;
                             }
-                            "ReadyForSync" | "AssetManifest" => {
+                            "ReadyForSync" => {
+                                ready = true;
+                                break;
+                            }
+                            "AssetManifest" => {
+                                log_asset_manifest(&dict, watch_ids, log, "同步");
                                 ready = true;
                                 break;
                             }
@@ -413,7 +467,15 @@ impl AtcSession {
                                 let pong = make_msg("Pong", 1, None);
                                 let _ = send_msg(&mut self.stream, &pong).await;
                             }
-                            "AssetManifest" | "SyncFinished" => {
+                            "AssetManifest" => {
+                                log_asset_manifest(&dict, watch_ids, log, "同步");
+                                manifest = true;
+                                break;
+                            }
+                            "SyncFinished" => {
+                                log.log(format!(
+                                    "同步：清单阶段收到 SyncFinished，全文：{dict:?}"
+                                ));
                                 manifest = true;
                                 break;
                             }
@@ -470,45 +532,81 @@ impl AtcSession {
         Ok(())
     }
 
-    /// Settle briefly after the last FileComplete, mirroring the
-    /// reference flow: it waits ~2s and drops the connection without
-    /// awaiting any daemon confirmation. Messages in the window are
-    /// only observed — Pings are answered with Pong, and a SyncFailed
-    /// here is logged as a notice, not a verdict: the reference treats
+    /// Settle after the last FileComplete, mirroring the reference
+    /// flow: it waits and drops the connection without awaiting any
+    /// daemon confirmation. Messages in the window are only observed
+    /// — Pings are answered with Pong, and a SyncFailed here is
+    /// logged as a notice, not a verdict: the reference treats
     /// SyncFailed as non-fatal throughout the session (it commonly
     /// reports a stale prior-session cancellation), and delivery is
     /// already decided by the completed FileComplete sequence.
+    ///
+    /// Diagnostic build: the window runs 6s instead of the
+    /// reference's ~2s, and every message in it is dumped in full
+    /// (SyncFinished, SyncFailed and error-carrying messages are
+    /// flagged), with a summary line when the window closes. Still
+    /// pure observation — nothing branches on what arrives.
     pub async fn drain_after_file_complete(&mut self, log: &Logger, watch_ids: &[String]) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+        let mut received: Vec<String> = Vec::new();
         loop {
             let now = tokio::time::Instant::now();
             if now >= deadline {
-                return;
+                break;
             }
             match tokio::time::timeout(deadline - now, read_msg(&mut self.stream)).await {
                 Ok(Ok(dict)) => {
-                    if let Some(name) = msg_name(&dict) {
-                        log.log(format!("同步：FileComplete 后守护进程状态 '{name}'"));
-                        match name.as_str() {
-                            "Ping" => {
-                                let pong = make_msg("Pong", 1, None);
-                                let _ = send_msg(&mut self.stream, &pong).await;
-                            }
-                            "SyncFailed" => {
-                                log.log(format!(
-                                    "同步：FileComplete 后守护进程报 SyncFailed（按参考流程仅记录，不改变交付结论）：{dict:?}"
-                                ));
-                            }
-                            "InstalledAssets" => {
-                                log_installed_assets(&dict, watch_ids, log, "同步");
-                            }
-                            _ => {}
+                    let name = msg_name(&dict);
+                    let shown = name.clone().unwrap_or_else(|| "（无命令名）".to_string());
+                    received.push(shown.clone());
+                    log.log(format!(
+                        "同步：FileComplete 后守护进程消息 [{}] '{shown}'，全文：{dict:?}",
+                        received.len()
+                    ));
+                    match name.as_deref() {
+                        Some("Ping") => {
+                            let pong = make_msg("Pong", 1, None);
+                            let _ = send_msg(&mut self.stream, &pong).await;
                         }
+                        Some("SyncFinished") => {
+                            log.log("同步：特别标注：观察窗口内收到 SyncFinished".to_string());
+                        }
+                        Some("SyncFailed") => {
+                            log.log(
+                                "同步：特别标注：观察窗口内收到 SyncFailed（按参考流程仅记录，不改变交付结论）"
+                                    .to_string(),
+                            );
+                        }
+                        Some("InstalledAssets") => {
+                            log_installed_assets(&dict, watch_ids, log, "同步");
+                        }
+                        _ => {}
+                    }
+                    if has_error_field(&dict) {
+                        log.log(format!(
+                            "同步：特别标注：消息 '{shown}' 带有 Error 字段"
+                        ));
                     }
                 }
-                Ok(Err(_)) => return,
-                Err(_) => return,
+                Ok(Err(e)) => {
+                    log.log(format!(
+                        "同步：FileComplete 后观察窗口因读取中断提前结束：{e}"
+                    ));
+                    break;
+                }
+                Err(_) => break,
             }
+        }
+        if received.is_empty() {
+            log.log(
+                "同步：FileComplete 后观察窗口结束（6 秒）：共收到 0 条守护进程消息".to_string(),
+            );
+        } else {
+            log.log(format!(
+                "同步：FileComplete 后观察窗口结束（6 秒）：共收到 {} 条守护进程消息：{}",
+                received.len(),
+                received.join("、")
+            ));
         }
     }
 }

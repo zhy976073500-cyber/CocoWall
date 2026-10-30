@@ -258,7 +258,20 @@ async fn run_staged_sync(
                 .wait_sync_allowed(log, "复查", &staged.identifiers)
                 .await
             {
-                Ok(_) => log.log("复查：第二次会话的守护进程公告已记录".to_string()),
+                Ok(_) => {
+                    log.log("复查：第二次会话的守护进程公告已记录".to_string());
+                    // The probe never sends a sync request of its own,
+                    // so it stops at the announcement stage and has no
+                    // manifest stage; say so plainly instead of leaving
+                    // the absence of a probe-side manifest dump
+                    // ambiguous. (Any AssetManifest the daemon did
+                    // send during the announcements would have been
+                    // dumped in full by wait_sync_allowed itself.)
+                    log.log(
+                        "复查：复查会话止步于守护进程公告阶段（未发送同步请求），没有清单阶段；AssetManifest 全文与成员判定见同步会话的清单转储"
+                            .to_string(),
+                    );
+                }
                 Err(e) => log.log(format!(
                     "复查：第二次会话读取守护进程公告失败（仅诊断，忽略）: {e}"
                 )),

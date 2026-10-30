@@ -417,8 +417,9 @@ async fn finish_staging(
     let books = build_books_plist(&staged.identifiers)?;
     afc_write_file(afc, BOOKS_PLIST_PATH, &books).await?;
     log.log(format!(
-        "暂存：Books.plist 已改写（{} 个 Book 资产）",
-        staged.identifiers.len()
+        "暂存：Books.plist 已改写（{} 个 Book 资产，共 {} 字节）",
+        staged.identifiers.len(),
+        books.len()
     ));
 
     Ok(staged)
