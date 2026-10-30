@@ -801,23 +801,36 @@ pub async fn apply_wallpaper(
     descriptor_dir: &Path,
     log: &Logger,
 ) -> Result<ApplyReport, String> {
-    let mut tunnel = open_tunnel(pairing_path, log).await?;
-    let product_version = tunnel.product_version(log).await;
-    let major: Option<u64> = product_version
-        .as_deref()
-        .and_then(|v| v.split('.').next())
-        .and_then(|m| m.parse().ok());
+    // Session topology mirrors the reference flow: the version and
+    // container lookup below uses a short-lived tunnel of its own, and
+    // every write operation further down (primary inject, dual inject,
+    // each refresh write) establishes a fresh tunnel connection that
+    // is dropped when the operation ends — the reference reconnects
+    // for every operation instead of sharing one tunnel across the
+    // whole apply. Only the connection lifecycle changes here;
+    // staging, ATC message content and order, Books snapshot/restore
+    // (already inside each operation) and the delivery criteria are
+    // untouched.
+    let (product_version, major, container) = {
+        let mut tunnel = open_tunnel(pairing_path, log).await?;
+        let product_version = tunnel.product_version(log).await;
+        let major: Option<u64> = product_version
+            .as_deref()
+            .and_then(|v| v.split('.').next())
+            .and_then(|m| m.parse().ok());
 
-    log.log(format!(
-        "诊断：设备系统版本 {}（大版本 {}），STORE_VERSION={STORE_VERSION}",
-        product_version.as_deref().unwrap_or("<未知>"),
-        major
-            .map(|m| m.to_string())
-            .unwrap_or_else(|| "<未知>".to_string())
-    ));
+        log.log(format!(
+            "诊断：设备系统版本 {}（大版本 {}），STORE_VERSION={STORE_VERSION}",
+            product_version.as_deref().unwrap_or("<未知>"),
+            major
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| "<未知>".to_string())
+        ));
 
-    let container = container_via(&mut tunnel, POSTERBOARD_BUNDLE_ID, log).await?;
-    log.log(format!("壁纸应用：PosterBoard 容器 {container}"));
+        let container = container_via(&mut tunnel, POSTERBOARD_BUNDLE_ID, log).await?;
+        log.log(format!("壁纸应用：PosterBoard 容器 {container}"));
+        (product_version, major, container)
+    };
 
     // Descriptor-side diagnostic dumps, all read-only: the original
     // UUID (the descriptor folder's name), providerInfo.plist's key
@@ -862,7 +875,9 @@ pub async fn apply_wallpaper(
     log.log(format!(
         "诊断：主注入 descriptor 最终目标路径：{primary_parent}/{uuid}（ext={COLLECTIONS_EXT}）"
     ));
-    let primary = inject_folder_via(&mut tunnel, &prep_dir, &primary_parent, &uuid, log).await;
+    // The public inject_folder entry opens a fresh tunnel for this
+    // operation alone and drops it on return (per-operation reconnect).
+    let primary = inject_folder(pairing_path, &prep_dir, &primary_parent, &uuid, log).await;
     let primary = match primary {
         Ok(o) => o,
         Err(e) => {
@@ -890,7 +905,7 @@ pub async fn apply_wallpaper(
         log.log(format!(
             "诊断：双写执行，descriptor 最终目标路径：{modern_parent}/{uuid}"
         ));
-        match inject_folder_via(&mut tunnel, &prep_dir, &modern_parent, &uuid, log).await {
+        match inject_folder(pairing_path, &prep_dir, &modern_parent, &uuid, log).await {
             Ok(o) => {
                 log.log(format!(
                     "壁纸应用：{}",
@@ -922,16 +937,24 @@ pub async fn apply_wallpaper(
     log.log(format!(
         "诊断：刷新偏好目标 1（容器）：{refresh_target_1}/{REFRESH_PLIST_NAME}"
     ));
-    write_files_via(&mut tunnel, &files, &refresh_target_1, log)
-        .await
-        .map_err(|e| format!("写入刷新 plist（容器 Preferences）失败: {e}"))?;
+    // Fresh tunnel for this refresh write, dropped when it ends.
+    let refresh_1 = match open_tunnel(pairing_path, log).await {
+        Ok(mut tunnel) => write_files_via(&mut tunnel, &files, &refresh_target_1, log).await,
+        Err(e) => Err(e),
+    };
+    refresh_1.map_err(|e| format!("写入刷新 plist（容器 Preferences）失败: {e}"))?;
     log.log(format!(
         "诊断：刷新偏好目标 1 写入结果：成功（{refresh_target_1}/{REFRESH_PLIST_NAME}）"
     ));
     log.log(format!(
         "诊断：刷新偏好目标 2（全局）：{refresh_target_2}/{REFRESH_PLIST_NAME}"
     ));
-    match write_files_via(&mut tunnel, &files, &refresh_target_2, log).await {
+    // Fresh tunnel for this refresh write too, dropped when it ends.
+    let refresh_2 = match open_tunnel(pairing_path, log).await {
+        Ok(mut tunnel) => write_files_via(&mut tunnel, &files, &refresh_target_2, log).await,
+        Err(e) => Err(e),
+    };
+    match refresh_2 {
         Ok(_) => log.log(format!(
             "诊断：刷新偏好目标 2 写入结果：成功（{refresh_target_2}/{REFRESH_PLIST_NAME}）"
         )),
