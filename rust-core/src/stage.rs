@@ -499,6 +499,21 @@ pub async fn stage_folder(
         link_destination.clone(),
         format!("{link_destination}/{dest_name}"),
     ];
+    // Diagnostic dump: the exact strings the daemon will see — the
+    // symlink's relative target, the Book asset identifiers, and the
+    // FileComplete destinations. Log-only; staging is unchanged.
+    let target_tail = target_parent_dir.trim_start_matches('/');
+    log.log(format!(
+        "诊断：暂存 symlink 目标字符串全文：'../../../{target_tail}'（link 落点：Media/{link_destination}）"
+    ));
+    log.log(format!(
+        "诊断：暂存资产标识全文：{}",
+        identifiers.join(" | ")
+    ));
+    log.log(format!(
+        "诊断：FileComplete 目标全文：{}",
+        destinations.join(" | ")
+    ));
     let verify = vec![format!("{source}/payload")];
     finish_staging(
         tunnel,
@@ -544,6 +559,21 @@ pub async fn stage_files(
         destinations.push(format!("{link_destination}/{name}"));
         verify.push(format!("{source}/payload_{idx}"));
     }
+
+    // Same diagnostic dump as stage_folder: symlink target string,
+    // asset identifiers, FileComplete destinations. Log-only.
+    let target_tail = target_parent_dir.trim_start_matches('/');
+    log.log(format!(
+        "诊断：暂存 symlink 目标字符串全文：'../../../{target_tail}'（link 落点：Media/{link_destination}）"
+    ));
+    log.log(format!(
+        "诊断：暂存资产标识全文：{}",
+        identifiers.join(" | ")
+    ));
+    log.log(format!(
+        "诊断：FileComplete 目标全文：{}",
+        destinations.join(" | ")
+    ));
 
     finish_staging(
         tunnel,

@@ -93,7 +93,19 @@ async fn container_via(
         .get("Container")
         .and_then(|v| v.as_string())
         .ok_or_else(|| format!("{bundle_id} 的应用信息缺少 Container"))?;
-    Ok(container.replace("/private/var/", "/var/"))
+    // Diagnostic: the raw container path exactly as InstallationProxy
+    // reported it, and the normalized form every target path is
+    // built from.
+    let normalized = container.replace("/private/var/", "/var/");
+    log.log(format!(
+        "诊断：InstallationProxy 返回 {bundle_id} 容器原始路径：{container}"
+    ));
+    if normalized != container {
+        log.log(format!(
+            "诊断：{bundle_id} 容器归一化后路径：{normalized}"
+        ));
+    }
+    Ok(normalized)
 }
 
 pub async fn find_container(
@@ -211,8 +223,10 @@ async fn run_staged_sync(
     };
 
     let mut atc = AtcSession::connect(tunnel, log).await?;
-    let grappa_info = atc.wait_sync_allowed(log).await?;
-    atc.handshake(grappa_info, log).await?;
+    let grappa_info = atc
+        .wait_sync_allowed(log, "同步", &staged.identifiers)
+        .await?;
+    atc.handshake(grappa_info, log, &staged.identifiers).await?;
 
     // Every FileComplete, link first. The payload must never wait
     // behind a readback again.
@@ -227,8 +241,33 @@ async fn run_staged_sync(
     // Reference closing semantics: once every FileComplete is sent
     // the sync counts as delivered; the short settle window only
     // observes late daemon messages, it cannot revoke delivery.
-    atc.drain_after_file_complete(log).await;
+    atc.drain_after_file_complete(log, &staged.identifiers).await;
     log.log("同步：全部 FileComplete 已发送——同步已交付".to_string());
+
+    // Diagnostic second look (read-only): a fresh ATC session purely
+    // to record the daemon's opening announcements again — above all
+    // whether its InstalledAssets now lists our staged assets as
+    // installed. Nothing branches on this probe; delivery and
+    // confirmation are already decided, and a probe failure is only
+    // logged. The sync session is dropped first, like the reference
+    // flow drops its connection after the settle window.
+    drop(atc);
+    match AtcSession::connect(tunnel, log).await {
+        Ok(mut probe) => {
+            match probe
+                .wait_sync_allowed(log, "复查", &staged.identifiers)
+                .await
+            {
+                Ok(_) => log.log("复查：第二次会话的守护进程公告已记录".to_string()),
+                Err(e) => log.log(format!(
+                    "复查：第二次会话读取守护进程公告失败（仅诊断，忽略）: {e}"
+                )),
+            }
+        }
+        Err(e) => log.log(format!(
+            "复查：第二次 ATC 会话连接失败（仅诊断，忽略）: {e}"
+        )),
+    }
 
     // Best-effort confirmation readback; its result never fails the
     // sync, it only decides confirmed vs. unconfirmed.
@@ -395,10 +434,14 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// wallpaperRepresentingIdentifier, and in every Wallpaper.plist's
 /// identifier. Returns true when anything was rewritten.
 fn rewrite_descriptor_identifiers(dir: &Path, new_id: u32, log: &Logger) -> bool {
-    if dir
+    let has_suggestion_metadata = dir
         .join("com.apple.posterkit.provider.identifierURL.suggestionMetadata.plist")
-        .exists()
-    {
+        .exists();
+    log.log(format!(
+        "诊断：suggestionMetadata 存在：{}",
+        if has_suggestion_metadata { "是" } else { "否" }
+    ));
+    if has_suggestion_metadata {
         log.log("壁纸准备：包内带 suggestionMetadata，标识符保持原样".to_string());
         return false;
     }
@@ -415,35 +458,68 @@ fn rewrite_descriptor_identifiers(dir: &Path, new_id: u32, log: &Logger) -> bool
         }
         match name.as_str() {
             "com.apple.posterkit.provider.descriptor.identifier" => {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if content.trim().parse::<i64>().is_ok() {
-                        if std::fs::write(&path, new_id.to_string()).is_ok() {
-                            rewritten = true;
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => {
+                        let old = content.trim().to_string();
+                        if old.parse::<i64>().is_ok() {
+                            match std::fs::write(&path, new_id.to_string()) {
+                                Ok(()) => {
+                                    rewritten = true;
+                                    log.log(format!(
+                                        "诊断：改写命中 descriptor.identifier：'{old}' → '{new_id}'"
+                                    ));
+                                }
+                                Err(e) => log.log(format!(
+                                    "诊断：改写 descriptor.identifier 失败（旧值 '{old}'）：{e}"
+                                )),
+                            }
+                        } else {
+                            log.log(format!(
+                                "诊断：descriptor.identifier 内容 '{old}' 非纯数字，不改写"
+                            ));
                         }
                     }
+                    Err(e) => log.log(format!(
+                        "诊断：读取 descriptor.identifier 失败：{e}"
+                    )),
                 }
             }
             "com.apple.posterkit.provider.contents.userInfo" => {
                 if let Some(mut value) = read_plist_file(&path) {
                     let mut touched = false;
                     if let Some(dict) = value.as_dictionary_mut() {
-                        if dict.get("wallpaperRepresentingIdentifier").is_some() {
-                            dict.insert(
-                                "wallpaperRepresentingIdentifier".into(),
-                                plist::Value::Integer((new_id as i64).into()),
-                            );
-                            touched = true;
+                        match dict.get("wallpaperRepresentingIdentifier").cloned() {
+                            Some(old) => {
+                                log.log(format!(
+                                    "诊断：改写命中 contents.userInfo 的 wallpaperRepresentingIdentifier：{old:?} → {new_id}"
+                                ));
+                                dict.insert(
+                                    "wallpaperRepresentingIdentifier".into(),
+                                    plist::Value::Integer((new_id as i64).into()),
+                                );
+                                touched = true;
+                            }
+                            None => log.log(
+                                "诊断：contents.userInfo 无 wallpaperRepresentingIdentifier 键，不改写"
+                                    .to_string(),
+                            ),
                         }
                     }
                     if touched && write_plist_file(&path, &value) {
                         rewritten = true;
                     }
+                } else {
+                    log.log("诊断：contents.userInfo 不可解析，不改写".to_string());
                 }
             }
             _ if name.ends_with("Wallpaper.plist") => {
                 if let Some(mut value) = read_plist_file(&path) {
                     let mut touched = false;
                     if let Some(dict) = value.as_dictionary_mut() {
+                        let old = dict.get("identifier").cloned();
+                        log.log(format!(
+                            "诊断：改写命中 {name} 的 identifier：{old:?} → {new_id}"
+                        ));
                         dict.insert(
                             "identifier".into(),
                             plist::Value::Integer((new_id as i64).into()),
@@ -453,6 +529,8 @@ fn rewrite_descriptor_identifiers(dir: &Path, new_id: u32, log: &Logger) -> bool
                     if touched && write_plist_file(&path, &value) {
                         rewritten = true;
                     }
+                } else {
+                    log.log(format!("诊断：{name} 不可解析，不改写"));
                 }
             }
             _ => {}
@@ -478,6 +556,153 @@ fn write_plist_file(path: &Path, value: &plist::Value) -> bool {
         Ok(mut file) => plist::to_writer_binary(&mut file, value).is_ok(),
         Err(_) => false,
     }
+}
+
+/// Every string value inside a plist value, recursively (device-side
+/// twin of the helper in atc.rs, for the descriptor dumps below).
+fn collect_value_strings(value: &plist::Value, out: &mut Vec<String>) {
+    match value {
+        plist::Value::String(s) => out.push(s.clone()),
+        plist::Value::Array(items) => {
+            for item in items {
+                collect_value_strings(item, out);
+            }
+        }
+        plist::Value::Dictionary(dict) => {
+            for (_, v) in dict.iter() {
+                collect_value_strings(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Diagnostic dump of the descriptor's providerInfo.plist: the
+/// keyed-archiver header and every entry of its object table, so the
+/// provider identity and version fields can be compared against what
+/// the current iOS expects. Read-only; nothing branches on it.
+fn log_provider_info(descriptor_dir: &Path, log: &Logger) {
+    let path = descriptor_dir.join("providerInfo.plist");
+    match read_plist_file(&path) {
+        None => log.log("诊断：providerInfo.plist 不存在或不可解析".to_string()),
+        Some(value) => {
+            let Some(root) = value.as_dictionary() else {
+                log.log("诊断：providerInfo.plist 顶层不是字典".to_string());
+                return;
+            };
+            log.log(format!(
+                "诊断：providerInfo：$archiver={:?}，$version={:?}",
+                root.get("$archiver"),
+                root.get("$version")
+            ));
+            match root.get("$objects").and_then(|v| v.as_array()) {
+                Some(objects) => {
+                    log.log(format!(
+                        "诊断：providerInfo $objects 共 {} 项",
+                        objects.len()
+                    ));
+                    for (i, obj) in objects.iter().enumerate() {
+                        match obj {
+                            plist::Value::String(s) => log.log(format!(
+                                "诊断：providerInfo $objects[{i}] 字符串：'{s}'"
+                            )),
+                            plist::Value::Dictionary(d) => {
+                                let mut keys: Vec<&str> =
+                                    d.iter().map(|(k, _)| k.as_str()).collect();
+                                keys.sort_unstable();
+                                let mut line = format!(
+                                    "诊断：providerInfo $objects[{i}] 字典键：{}",
+                                    keys.join(", ")
+                                );
+                                if let Some(cn) =
+                                    d.get("$classname").and_then(|v| v.as_string())
+                                {
+                                    line.push_str(&format!("（类 {cn}）"));
+                                }
+                                log.log(line);
+                            }
+                            plist::Value::Data(data) => log.log(format!(
+                                "诊断：providerInfo $objects[{i}] 数据 {} 字节",
+                                data.len()
+                            )),
+                            other => log.log(format!(
+                                "诊断：providerInfo $objects[{i}]：{other:?}"
+                            )),
+                        }
+                    }
+                }
+                None => {
+                    let mut keys: Vec<&str> =
+                        root.iter().map(|(k, _)| k.as_str()).collect();
+                    keys.sort_unstable();
+                    log.log(format!(
+                        "诊断：providerInfo 无 $objects（非 NSKeyedArchiver 结构），顶层键：{}",
+                        keys.join(", ")
+                    ));
+                }
+            }
+        }
+    }
+    // The descriptor's version directories are part of its version
+    // story; list them alongside the provider dump.
+    match std::fs::read_dir(descriptor_dir.join("versions")) {
+        Ok(rd) => {
+            let mut names: Vec<String> = rd
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            names.sort();
+            log.log(format!(
+                "诊断：descriptor versions 子目录：{}",
+                names.join(", ")
+            ));
+        }
+        Err(e) => log.log(format!("诊断：descriptor versions 子目录不可读：{e}")),
+    }
+}
+
+/// Log-only mirror of the reference implementation's per-descriptor
+/// extension resolution (AirCard's determineExtension, minus the
+/// path-component and path-hint rules, which cannot apply to a
+/// freshly extracted package): suggestionMetadata object strings
+/// first, then the descriptor identifier's shape. Our inject path
+/// keeps its fixed primary extension — this only records what the
+/// reference rules would have chosen for this descriptor.
+fn log_reference_extension(descriptor_dir: &Path, log: &Logger) {
+    let mut resolved: Option<String> = None;
+    let meta_path = descriptor_dir
+        .join("com.apple.posterkit.provider.identifierURL.suggestionMetadata.plist");
+    if let Some(value) = read_plist_file(&meta_path) {
+        let mut strings = Vec::new();
+        collect_value_strings(&value, &mut strings);
+        log.log(format!(
+            "诊断：suggestionMetadata 中的字符串：{}",
+            strings.join(" | ")
+        ));
+        if let Some(s) = strings
+            .iter()
+            .find(|s| s.starts_with("com.apple.") && s.contains("Poster"))
+        {
+            resolved = Some(s.clone());
+        }
+    }
+    let id_text = std::fs::read_to_string(
+        descriptor_dir.join("com.apple.posterkit.provider.descriptor.identifier"),
+    )
+    .map(|s| s.trim().to_string())
+    .unwrap_or_else(|_| "<不可读>".to_string());
+    if resolved.is_none()
+        && (id_text.starts_with("v6")
+            || id_text.starts_with("v5")
+            || id_text.starts_with("v4")
+            || id_text.contains(".color"))
+    {
+        resolved = Some("com.apple.MercuryPoster".to_string());
+    }
+    let resolved = resolved.unwrap_or_else(|| COLLECTIONS_EXT.to_string());
+    log.log(format!(
+        "诊断：按参考实现规则本包 ext 解析为 {resolved}（descriptor.identifier 内容 '{id_text}'，无任何特征命中时默认 {COLLECTIONS_EXT}）；本应用主注入写死为 {COLLECTIONS_EXT}"
+    ));
 }
 
 /// The PosterBoard refresh plist: asks PosterBoard to reset file
@@ -570,8 +795,29 @@ pub async fn apply_wallpaper(
         .and_then(|v| v.split('.').next())
         .and_then(|m| m.parse().ok());
 
+    log.log(format!(
+        "诊断：设备系统版本 {}（大版本 {}），STORE_VERSION={STORE_VERSION}",
+        product_version.as_deref().unwrap_or("<未知>"),
+        major
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| "<未知>".to_string())
+    ));
+
     let container = container_via(&mut tunnel, POSTERBOARD_BUNDLE_ID, log).await?;
     log.log(format!("壁纸应用：PosterBoard 容器 {container}"));
+
+    // Descriptor-side diagnostic dumps, all read-only: the original
+    // UUID (the descriptor folder's name), providerInfo.plist's key
+    // fields, and the extension the reference rules would resolve.
+    let original_uuid = descriptor_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    log.log(format!(
+        "诊断：原 descriptor 文件夹名（原 UUID）：{original_uuid}"
+    ));
+    log_provider_info(descriptor_dir, log);
+    log_reference_extension(descriptor_dir, log);
 
     // Prep a staging copy — the user's imported package is never mutated.
     let uuid = stage::new_uuid_upper();
@@ -600,6 +846,9 @@ pub async fn apply_wallpaper(
         "{container}/Library/Application Support/PRBPosterExtensionDataStore/{STORE_VERSION}/Extensions"
     );
     let primary_parent = format!("{store_base}/{COLLECTIONS_EXT}/descriptors");
+    log.log(format!(
+        "诊断：主注入 descriptor 最终目标路径：{primary_parent}/{uuid}（ext={COLLECTIONS_EXT}）"
+    ));
     let primary = inject_folder_via(&mut tunnel, &prep_dir, &primary_parent, &uuid, log).await;
     let primary = match primary {
         Ok(o) => o,
@@ -614,45 +863,67 @@ pub async fn apply_wallpaper(
     ));
 
     // iOS 18+ dual write into the modern extension store (best effort,
-    // mirroring the reference flow's `try?`).
+    // mirroring the reference flow's `try?`). Every step of the dual
+    // branch is logged explicitly — decision, target, result — so a
+    // device log shows whether it ran and where it wrote.
+    log.log(format!(
+        "诊断：双写判定输入：iOS 大版本 {}，主 ext={COLLECTIONS_EXT}，候选双写 ext={MODERN_COLLECTIONS_EXT}",
+        major
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| "<未知>".to_string())
+    ));
     let dual = if major.map(|m| m >= 18).unwrap_or(true) {
         let modern_parent = format!("{store_base}/{MODERN_COLLECTIONS_EXT}/descriptors");
+        log.log(format!(
+            "诊断：双写执行，descriptor 最终目标路径：{modern_parent}/{uuid}"
+        ));
         match inject_folder_via(&mut tunnel, &prep_dir, &modern_parent, &uuid, log).await {
             Ok(o) => {
                 log.log(format!(
                     "壁纸应用：{}",
                     describe_outcome("双写", &o)
                 ));
+                log.log("诊断：双写结果：ok".to_string());
                 "ok".to_string()
             }
             Err(e) => {
                 log.log(format!("壁纸应用：双写失败（不影响主注入）: {e}"));
+                log.log(format!("诊断：双写结果：failed: {e}"));
                 format!("failed: {e}")
             }
         }
     } else {
         log.log("壁纸应用：iOS 18 以下，跳过双写".to_string());
+        log.log("诊断：双写结果：skipped（iOS 大版本 < 18）".to_string());
         "skipped".to_string()
     };
 
     // Refresh plist into the container preferences (fatal on failure —
     // without it PosterBoard may never surface the new descriptor),
     // plus a best-effort copy into the global mobile preferences.
+    // Both targets and both results are logged explicitly.
     let refresh = refresh_plist_bytes()?;
     let files = vec![(REFRESH_PLIST_NAME.to_string(), refresh)];
-    write_files_via(
-        &mut tunnel,
-        &files,
-        &format!("{container}/Library/Preferences"),
-        log,
-    )
-    .await
-    .map_err(|e| format!("写入刷新 plist（容器 Preferences）失败: {e}"))?;
-    log.log("壁纸应用：刷新 plist 已写入容器 Preferences".to_string());
-    match write_files_via(&mut tunnel, &files, "/var/mobile/Library/Preferences", log).await {
-        Ok(_) => log.log("壁纸应用：刷新 plist 已写入全局 Preferences".to_string()),
+    let refresh_target_1 = format!("{container}/Library/Preferences");
+    let refresh_target_2 = "/var/mobile/Library/Preferences".to_string();
+    log.log(format!(
+        "诊断：刷新偏好目标 1（容器）：{refresh_target_1}/{REFRESH_PLIST_NAME}"
+    ));
+    write_files_via(&mut tunnel, &files, &refresh_target_1, log)
+        .await
+        .map_err(|e| format!("写入刷新 plist（容器 Preferences）失败: {e}"))?;
+    log.log(format!(
+        "诊断：刷新偏好目标 1 写入结果：成功（{refresh_target_1}/{REFRESH_PLIST_NAME}）"
+    ));
+    log.log(format!(
+        "诊断：刷新偏好目标 2（全局）：{refresh_target_2}/{REFRESH_PLIST_NAME}"
+    ));
+    match write_files_via(&mut tunnel, &files, &refresh_target_2, log).await {
+        Ok(_) => log.log(format!(
+            "诊断：刷新偏好目标 2 写入结果：成功（{refresh_target_2}/{REFRESH_PLIST_NAME}）"
+        )),
         Err(e) => log.log(format!(
-            "壁纸应用：全局 Preferences 写入失败（尽力而为，忽略）: {e}"
+            "诊断：刷新偏好目标 2 写入结果：失败（尽力而为，忽略）：{e}"
         )),
     }
 

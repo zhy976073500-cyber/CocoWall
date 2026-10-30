@@ -126,6 +126,56 @@ fn msg_name(dict: &plist::Dictionary) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Every string value inside a plist value, recursively — used to
+/// search a daemon message for our staged asset identifiers without
+/// assuming the message's exact schema.
+fn collect_strings(value: &plist::Value, out: &mut Vec<String>) {
+    match value {
+        plist::Value::String(s) => out.push(s.clone()),
+        plist::Value::Array(items) => {
+            for item in items {
+                collect_strings(item, out);
+            }
+        }
+        plist::Value::Dictionary(dict) => {
+            for (_, v) in dict.iter() {
+                collect_strings(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Diagnostic dump of one InstalledAssets message: the full message,
+/// every string in its Params, and whether each watched identifier
+/// (our staged Book assets) appears among them. Read-only — callers
+/// keep their existing handling of the message; nothing in the sync
+/// flow branches on what is logged here.
+fn log_installed_assets(
+    dict: &plist::Dictionary,
+    watch_ids: &[String],
+    log: &Logger,
+    label: &str,
+) {
+    log.log(format!("{label}：InstalledAssets 完整内容：{dict:?}"));
+    let mut strings = Vec::new();
+    if let Some(params) = dict.get("Params") {
+        collect_strings(params, &mut strings);
+    }
+    log.log(format!(
+        "{label}：InstalledAssets 中共 {} 个字符串：{}",
+        strings.len(),
+        strings.join(" | ")
+    ));
+    for id in watch_ids {
+        let present = strings.iter().any(|s| s == id);
+        log.log(format!(
+            "{label}：暂存资产 '{id}' 在 InstalledAssets 中：{}",
+            if present { "在" } else { "不在" }
+        ));
+    }
+}
+
 fn build_host_info(grappa_token: &Option<Vec<u8>>, library_id: &str) -> plist::Dictionary {
     let mut host = plist::Dictionary::new();
     host.insert("Type".into(), plist::Value::String("iTunes".into()));
@@ -174,10 +224,16 @@ impl AtcSession {
 
     /// Wait for the daemon's opening messages; returns the
     /// GrappaSupportInfo triple (version, deviceType, protocolVersion)
-    /// when a Capabilities message carried one.
+    /// when a Capabilities message carried one. `label` prefixes the
+    /// log lines so a diagnostic second session ("复查") reads
+    /// differently from the sync session itself ("同步");
+    /// `watch_ids` are the staged asset identifiers checked against
+    /// any InstalledAssets announcement.
     pub async fn wait_sync_allowed(
         &mut self,
         log: &Logger,
+        label: &str,
+        watch_ids: &[String],
     ) -> Result<Option<(u32, u32, u32)>, String> {
         let mut grappa_info = None;
         for _ in 0..12 {
@@ -186,7 +242,10 @@ impl AtcSession {
             {
                 Ok(Ok(dict)) => {
                     if let Some(name) = msg_name(&dict) {
-                        log.log(format!("同步：收到守护进程消息 '{name}'"));
+                        log.log(format!("{label}：收到守护进程消息 '{name}'"));
+                        if name == "InstalledAssets" {
+                            log_installed_assets(&dict, watch_ids, log, label);
+                        }
                         if name == "Capabilities" {
                             if let Some(gi) = dict
                                 .get("Params")
@@ -208,7 +267,7 @@ impl AtcSession {
                                     .unwrap_or(1) as u32;
                                 grappa_info = Some((ver, dt, pv));
                                 log.log(format!(
-                                    "同步：守护进程 GrappaSupportInfo：version={ver} deviceType={dt} protocolVersion={pv}"
+                                    "{label}：守护进程 GrappaSupportInfo：version={ver} deviceType={dt} protocolVersion={pv}"
                                 ));
                             }
                         }
@@ -226,10 +285,12 @@ impl AtcSession {
 
     /// HostInfo → RequestingSync → ReadyForSync → FinishedSyncingMetadata
     /// → AssetManifest. After this returns, FileComplete messages can go.
+    /// `watch_ids` only feeds the InstalledAssets diagnostic dump.
     pub async fn handshake(
         &mut self,
         grappa_info: Option<(u32, u32, u32)>,
         log: &Logger,
+        watch_ids: &[String],
     ) -> Result<(), String> {
         let grappa_token = grappa::generate_grappa_token(grappa_info, log);
         match &grappa_token {
@@ -308,6 +369,9 @@ impl AtcSession {
                                     "同步：守护进程报 SyncFailed（继续等待）：{dict:?}"
                                 ));
                             }
+                            "InstalledAssets" => {
+                                log_installed_assets(&dict, watch_ids, log, "同步");
+                            }
                             _ => {}
                         }
                     }
@@ -357,6 +421,9 @@ impl AtcSession {
                                 log.log(format!(
                                     "同步：守护进程报 SyncFailed（清单阶段，继续等待）：{dict:?}"
                                 ));
+                            }
+                            "InstalledAssets" => {
+                                log_installed_assets(&dict, watch_ids, log, "同步");
                             }
                             _ => {}
                         }
@@ -411,7 +478,7 @@ impl AtcSession {
     /// SyncFailed as non-fatal throughout the session (it commonly
     /// reports a stale prior-session cancellation), and delivery is
     /// already decided by the completed FileComplete sequence.
-    pub async fn drain_after_file_complete(&mut self, log: &Logger) {
+    pub async fn drain_after_file_complete(&mut self, log: &Logger, watch_ids: &[String]) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
             let now = tokio::time::Instant::now();
@@ -431,6 +498,9 @@ impl AtcSession {
                                 log.log(format!(
                                     "同步：FileComplete 后守护进程报 SyncFailed（按参考流程仅记录，不改变交付结论）：{dict:?}"
                                 ));
+                            }
+                            "InstalledAssets" => {
+                                log_installed_assets(&dict, watch_ids, log, "同步");
                             }
                             _ => {}
                         }
