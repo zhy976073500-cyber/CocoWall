@@ -1,29 +1,29 @@
-import CocoWallCore
+import AirliftFFI
 import Foundation
 
-/// Swift face of the cocowall-core link canary + log sink.
+/// Swift face of the vendored AirliftFFI core's global log sink.
 ///
-/// If the app links and launches, the Rust core is in the binary:
-/// `version` is answered by the core itself, and core log lines
-/// (pairing / tunnel progress) are forwarded to the unified log.
+/// The core is AirCard-iOS's Rust library, vendored verbatim (see
+/// rust-core/VENDORED.md); it has no version entry point, so `version`
+/// is a plain label naming what is linked. Core log lines (pairing /
+/// tunnel progress from the tracing subscriber) are forwarded to the
+/// unified log.
 enum CoreBridge {
-    /// e.g. "cocowall-core 0.1.0 · idevice 0.1.68". The C string is
-    /// static storage owned by the core — never freed from Swift.
+    /// Provenance label shown in Settings as proof of what is linked.
     static var version: String {
-        guard let p = cw_core_version() else { return "（核心版本读取失败）" }
-        return String(cString: p)
+        "airlift-ffi 0.1.0 · AirCard-iOS v1.3.2 · 40640c4"
     }
 
     /// Installs the core's log callback once; core `tracing` events are
     /// forwarded here for the rest of the app's lifetime.
     static func installLogging() {
-        _ = cw_log_init(cwCoreLogCallback, nil)
+        _ = al_log_init(alCoreLogCallback, nil)
     }
 }
 
 /// C callback target for core log lines. Must stay a non-capturing
 /// closure: it is handed to C as a plain function pointer.
-private let cwCoreLogCallback: CWLogCallback = { _, msg in
+private let alCoreLogCallback: ALLogCallback = { _, msg in
     guard let msg else { return }
-    NSLog("[cocowall-core] %@", String(cString: msg))
+    NSLog("[airlift] %@", String(cString: msg))
 }

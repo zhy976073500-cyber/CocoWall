@@ -1,18 +1,17 @@
 [package]
-name = "cocowall-core"
+name = "airlift_ffi"
 version = "0.1.0"
 edition = "2021"
-description = "CocoWall device core: RPPairing host + AirTraffic write channel over the loopback tunnel (own implementation; protocol facts from public sources, see research/)."
+description = "C FFI shim for the iOS airlift exploit — RPPairing host + AirTraffic tunnel exploit"
 
 [lib]
-name = "cocowall_core"
-crate-type = ["staticlib", "rlib"]
+name = "airlift_ffi"
+crate-type = ["staticlib"]
 
 [dependencies]
-# Transport stack (RSD, lockdown, AFC, RemotePairing, installation proxy,
-# diagnostics relay). Pinned to the jkcoxson/idevice v0.1.68 tag so the
-# library and its FFI companion crate resolve to one unified instance.
-idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "d32c8189c51c2789496b0768039419c3705498c3", default-features = false, features = [
+# idevice: RPPairing host, loopback RSD tunnel, streaming_zip_conduit, AFC.
+# Pinned to the same revision as SideInstaller for a known-good implementation.
+idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "7bd551c16c6dd2e058740d85a2d9399a51a776e9", default-features = false, features = [
   "aws-lc",
   "remote_pairing",
   "tunnel_tcp_stack",
@@ -23,21 +22,34 @@ idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "d32c8189c51c
   "afc",
   "pair",
   "usbmuxd",
+  "syslog_relay",
   "installation_proxy",
-  "diagnostics_relay",
 ] }
 
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "fs", "time", "sync"] }
-plist = "1"
-# StreamingZip staging archives (same crate/features the reference
-# implementation builds against; entries are Stored, not deflated).
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# idevice-ffi for tunnel_create_rppairing + AFC C FFI (re-exports its #[no_mangle] symbols).
+# Use full feature set (matching SideInstaller's proven config) so idevice-ffi's
+# internal cross-module imports resolve. We re-export its #[no_mangle] symbols.
+idevice-ffi = { path = "vendor/idevice-ffi", features = [
+  "full",
+  "aws-lc",
+] }
+
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "fs", "time"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+plist = "1.8"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 hex = "0.4"
 tracing = "0.1"
+tracing-subscriber = "0.3"
 libc = "0.2"
 
+# Apply the same OPACK back-reference patch as SideInstaller:
+# devices emit tag 0xAB when name==model, which causes "unsupported OPACK tag".
+[patch."https://github.com/jkcoxson/idevice.git"]
+idevice = { path = "vendor/idevice" }
+
 [profile.release]
-panic = "abort"
-opt-level = 2
+opt-level = 3
+lto = "thin"

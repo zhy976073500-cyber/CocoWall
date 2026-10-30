@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build cocowall-core (Rust) for the iOS device target. The resulting
+# Build the vendored AirliftFFI core (Rust, from AirCard-iOS — see
+# rust-core/VENDORED.md) for the iOS device target. The resulting
 # static library is linked into the app via OTHER_LDFLAGS and its C
 # module is exposed to Swift via SWIFT_INCLUDE_PATHS (see project.yml),
 # so nothing in the generated project references a file that only comes
@@ -34,5 +35,5 @@ cargo build --release --locked \
   --manifest-path rust-core/Cargo.toml \
   --target aarch64-apple-ios
 
-ls -la rust-core/target/aarch64-apple-ios/release/libcocowall_core.a
-echo "cocowall-core static library ready."
+ls -la rust-core/target/aarch64-apple-ios/release/libairlift_ffi.a
+echo "AirliftFFI static library ready."

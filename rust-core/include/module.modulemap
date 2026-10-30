@@ -1,4 +1,4 @@
-module CocoWallCore {
-    header "cocowall_core.h"
+module AirliftFFI {
+    umbrella header "airlift.h"
     export *
 }

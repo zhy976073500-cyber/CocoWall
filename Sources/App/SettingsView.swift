@@ -138,7 +138,7 @@ struct SettingsView: View {
         SettingsCard(title: "壁纸写入") {
             Text("Rust 核心已链接：\(FFIDeviceService.coreVersion)")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("注入环（AFC 暂存 + AirTraffic 同步）尚未落地：检测与写入会由核心返回明确的「注入环未落地」错误，不会假装成功。")
+            Text("写入核心为 AirCard-iOS 的 AirliftFFI 整库移植（MIT，上游 v1.3.2）：隧道建连、AFC 暂存、AirTraffic 同步、注入与刷新均由原装核心执行，调用顺序与入参与上游 TendiesEngine 一致。")
                 .font(.caption).foregroundStyle(.secondary)
             Button("检测 PosterBoard 容器") { Task { await probeContainer() } }
             if let deviceMessage {

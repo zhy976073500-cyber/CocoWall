@@ -1,20 +1,36 @@
 NOTICE
 
-Grappa token data
------------------
-The candidate Grappa tokens stored in Sources/App/grappa-tokens.txt.b64
-(base64 text; decoded at build time into GrappaToken.txt in the app
-bundle, one candidate per line) come from the AirCard-iOS project:
+AirliftFFI core — wholesale transplant from AirCard-iOS
+--------------------------------------------------------
+The entire device write path of this app (loopback tunnel connection,
+RemotePairing session, AFC staging, AirTraffic sync, PosterBoard
+injection, refresh writes, respring) is the AirliftFFI Rust core of
+the AirCard-iOS project, vendored verbatim into `rust-core/`:
 
   Project:  AirCard-iOS
   Author:   Johnny Franks (Mak5er)
   Source:   https://github.com/Mak5er/AirCard-iOS
-  File:     ios-app/GrappaHelper.m (kAuthenticGrappaTokens table)
+  Version:  v1.3.2, upstream commit
+            40640c4d827aeab8d798285b57d24fcf6be070d0
+  Path:     rust-core/ (crate `airlift_ffi`: src/, include/, vendor/)
   License:  MIT License, Copyright (c) 2026 Johnny Franks
 
-The tokens are used as a last-resort fallback only, after every
-on-device runtime generation route has failed; each candidate is
-verified on the device before use (see Sources/App/GrappaHelper.m).
+See rust-core/VENDORED.md for the vendoring record. The vendored
+sources are unmodified; only the build wiring differs (the app links
+the produced static library directly instead of packaging an
+xcframework).
+
+The app-side Grappa helper `Sources/App/GrappaHelper.h` /
+`GrappaHelper.m` is likewise the upstream file, copied verbatim from
+the same commit: the core resolves its `ALGetGrappaToken` symbol at
+runtime (dlsym) and the helper tries a framework host session first,
+then verifies each candidate from its built-in authentic token table
+(kAuthenticGrappaTokens, also from AirCard-iOS) against a device
+session before adopting one.
+
+The Swift call layer (DeviceService.swift, TendiesFlash.swift)
+mirrors the upstream app's TendiesEngine.swift call sites, arguments
+and plist handling rule for rule.
 
 MIT License summary: permission is granted, free of charge, to any
 person obtaining a copy of the software and associated documentation

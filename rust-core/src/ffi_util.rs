@@ -1,11 +1,9 @@
-//! Small helpers shared by the FFI entry points: C string conversion and
-//! running blocking work on a fat-stack worker thread (FFI callers on iOS
-//! often sit on threads with small stacks, and the device stack's async
-//! machinery is not stack-frugal).
+//! Shared FFI utilities.
 
 use std::ffi::{c_char, CStr, CString};
 
-/// Read an optional C string, falling back to `default` for null/invalid.
+/// Convert an optional C string to an owned Rust string, returning `default`
+/// for null or invalid input.
 pub fn opt_str(p: *const c_char, default: &str) -> String {
     if p.is_null() {
         return default.to_owned();
@@ -16,50 +14,38 @@ pub fn opt_str(p: *const c_char, default: &str) -> String {
         .to_owned()
 }
 
-/// Heap-allocate a C string the caller releases with `cw_string_free`.
+/// Heap-allocate a C string from any `Display`-able value. The caller is
+/// responsible for freeing it with `string_free`.
 pub fn cstr(s: impl std::fmt::Display) -> *mut c_char {
     let s = format!("{s}");
     CString::new(s)
-        .unwrap_or_else(|_| CString::new("(invalid utf-8)").unwrap())
+        .unwrap_or_else(|_| CString::new("(null bytes in string)").unwrap())
         .into_raw()
 }
 
-/// Run `f` on a dedicated thread with a large stack and block on its
-/// result, converting panics into error strings instead of unwinding
-/// across the FFI boundary.
-pub fn run_blocking<F, R>(name: &str, f: F) -> Result<R, String>
+/// Free any `*mut c_char` returned by this library.
+///
+/// # Safety
+/// `p` must be null or a pointer previously returned by `cstr`.
+pub unsafe fn string_free(p: *mut c_char) {
+    if !p.is_null() {
+        drop(CString::from_raw(p));
+    }
+}
+
+/// Runs the closure on a dedicated thread with a 4MB stack to prevent stack overflow
+/// on platforms/threads with tiny stack limits (like Swift Concurrency cooperative threads
+/// and iOS GCD worker threads, which only have 512KB).
+pub fn run_with_large_stack<F, R>(name: &str, f: F) -> Result<R, String>
 where
     F: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
     std::thread::Builder::new()
         .name(name.to_string())
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(4 * 1024 * 1024)
         .spawn(f)
-        .map_err(|e| format!("failed to spawn worker '{name}': {e}"))?
+        .map_err(|e| format!("Failed to spawn worker thread '{name}': {e}"))?
         .join()
-        .map_err(|e| format!("worker '{name}' panicked: {e:?}"))
-}
-
-/// Build a fresh multi-thread Tokio runtime and block on `fut`.
-pub fn block_on<F, R>(fut: F) -> Result<R, String>
-where
-    F: std::future::Future<Output = R>,
-{
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("failed to build tokio runtime: {e}"))?;
-    Ok(rt.block_on(fut))
-}
-
-/// Combined helper: fat-stack thread + Tokio runtime, for FFI entries.
-pub fn run_async<F, R>(name: &str, fut: F) -> Result<R, String>
-where
-    F: std::future::Future<Output = R> + Send + 'static,
-    R: Send + 'static,
-{
-    run_blocking(name, move || {
-        block_on(fut).expect("runtime construction cannot fail twice")
-    })
+        .map_err(|panic_err| format!("Worker thread '{name}' panicked: {panic_err:?}"))
 }

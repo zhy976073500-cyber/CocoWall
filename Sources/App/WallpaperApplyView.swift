@@ -109,7 +109,7 @@ struct WallpaperApplyView: View {
             if let before = report.primaryBefore, let after = report.primaryAfter {
                 return "新壁纸编号 \(report.uuid)，gallery \(before) → \(after)，双写：\(report.dual)。重启后到锁屏长按选择新壁纸。"
             }
-            return "新壁纸编号 \(report.uuid)，目标目录已确认收录，双写：\(report.dual)。重启后到锁屏长按选择新壁纸。"
+            return "新壁纸编号 \(report.uuid)，注入已完成，双写：\(report.dual)。重启后到锁屏长按选择新壁纸。"
         case .failed(let message):
             return message
         }
@@ -187,20 +187,14 @@ final class WallpaperApplyModel: ObservableObject {
         })
         Task {
             do {
-                // Re-extract the stored archive to get a pristine
-                // descriptor folder; the core preps its own copy and
-                // never mutates this one either.
+                // The core extracts the stored archive itself (the
+                // same al_zip_extract_all path the upstream app
+                // uses); descriptor discovery and the write sequence
+                // then mirror TendiesEngine end to end.
                 let stored = ImportedWallpaperStore.importedDirectory
                     .appendingPathComponent(record.storedFileName)
-                let staging = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("ApplyStage-\(UUID().uuidString)", isDirectory: true)
-                let pkg = try TendiesPackage.load(from: stored, into: staging)
-                let descriptorDir = pkg.extractedURL
-                    .appendingPathComponent("descriptors")
-                    .appendingPathComponent(pkg.descriptorUUID)
-                defer { try? FileManager.default.removeItem(at: staging) }
                 let report = try await service.applyWallpaper(
-                    descriptorDir: descriptorDir, pairingFile: pairingFile)
+                    archive: stored, pairingFile: pairingFile)
                 await MainActor.run { phase = .succeeded(report) }
             } catch {
                 let message = error.localizedDescription

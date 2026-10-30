@@ -1,4 +1,4 @@
-import CocoWallCore
+import AirliftFFI
 import Combine
 import Foundation
 
@@ -15,8 +15,8 @@ import Foundation
 ///   .plist / .mobilepair) produced by SideStore, iLoader, AltStore,
 ///   Jitterbug or a computer.
 ///
-/// All protocol work runs in the Rust core (cocowall-core) behind the
-/// C FFI; this type is the Swift-side state machine only.
+/// All protocol work runs in the vendored AirliftFFI Rust core (from
+/// AirCard-iOS, see rust-core/VENDORED.md) behind the C FFI; this type is the Swift-side state machine only.
 @MainActor
 final class PairingService: ObservableObject {
     enum State {
@@ -189,13 +189,13 @@ final class PairingService: ObservableObject {
         let ctx = Unmanaged.passRetained(self).toOpaque()
 
         DispatchQueue.global(qos: .userInitiated).async {
-            var result = CWPairResult()
+            var result = ALPairResult()
             let rc = "0.0.0.0".withCString { bind in
                 "CocoWall".withCString { name in
                     "Mac17,7".withCString { model in
                         outPath.withCString { out in
                             altIRK.withCString { irk in
-                                cw_pairing_run_host(
+                                al_pairing_run_host(
                                     bind, 0, name, model, out, irk,
                                     pairingReadyCallback, pairingPinCallback,
                                     ctx, &result)
@@ -210,7 +210,7 @@ final class PairingService: ObservableObject {
                 deviceName: Self.takeString(result.device_name),
                 filePath: Self.takeString(result.pairing_file_path),
                 altIRKHex: Self.takeString(result.host_alt_irk_hex))
-            cw_pairing_result_free(&result)
+            al_pairing_result_free(&result)
 
             Task { @MainActor in
                 let service = Unmanaged<PairingService>.fromOpaque(ctx).takeUnretainedValue()
@@ -275,7 +275,7 @@ final class PairingService: ObservableObject {
     }
 }
 
-/// Value snapshot of a finished CWPairResult, taken on the background
+/// Value snapshot of a finished ALPairResult, taken on the background
 /// queue before the C strings are freed.
 private struct PairingOutcome {
     let rc: Int32
@@ -287,7 +287,7 @@ private struct PairingOutcome {
 
 // MARK: - C callbacks (non-capturing; handed to the core as fn pointers)
 
-private let pairingReadyCallback: CWPairReadyCallback = { ctx, serviceID, port, keys, vals, count in
+private let pairingReadyCallback: ALPairReadyCb = { ctx, serviceID, port, keys, vals, count in
     guard let ctx, let serviceID else { return }
     let service = Unmanaged<PairingService>.fromOpaque(ctx).takeUnretainedValue()
     let id = String(cString: serviceID)
@@ -305,7 +305,7 @@ private let pairingReadyCallback: CWPairReadyCallback = { ctx, serviceID, port, 
     }
 }
 
-private let pairingPinCallback: CWPairPinCallback = { pin, ctx in
+private let pairingPinCallback: ALPairPinCb = { pin, ctx in
     guard let ctx, let pin else { return }
     let service = Unmanaged<PairingService>.fromOpaque(ctx).takeUnretainedValue()
     let pinString = String(cString: pin)

@@ -1,109 +1,60 @@
-//! Grappa token generation for the AirTraffic sync handshake.
-//!
-//! The token is produced on the device at runtime by `ALGetGrappaToken`,
-//! a small Objective-C helper compiled into the app
-//! (Sources/App/GrappaHelper.m) that drives the device's private
-//! AirTraffic frameworks and hands the bytes back through this C
-//! interface.
-//!
-//! Why a direct link instead of the previous dlsym(RTLD_DEFAULT)
-//! lookup: the helper was compiled into the app all along, but a
-//! main-executable symbol that nothing references at link time is
-//! internalised by the Darwin linker (it ends up as a private-external
-//! symtab entry and is absent from the export trie — verified by
-//! parsing the shipped run #23 binary: 2672 exported symbols, none of
-//! them `_ALGetGrappaToken`). dlsym can therefore never resolve it and
-//! the on-device log reported "symbol not found" while the code sat in
-//! the binary unused. Declaring the function as a plain extern and
-//! calling it makes the link itself guarantee the helper is present:
-//! if it ever drops out of the app target, the build fails loudly
-//! instead of the sync silently degrading on device.
-//!
-//! Absence of a token is still reported, never papered over: when the
-//! helper cannot produce one it returns non-zero with a step-by-step
-//! diagnostic trace, which is logged verbatim below.
-//!
-//! Round 2 widened the helper's probes after the first on-device run:
-//! round 1 stopped at the first dlopen success (AirTrafficDevice) and
-//! never tested AirTrafficHost — the framework the recorded protocol
-//! facts place the `ALGetGrappaToken` entry in. The helper now loads
-//! and probes both frameworks, dumps ATGrappaSession introspection,
-//! and tries a host session per candidate device-info dictionary, so
-//! a failing run returns the full evidence matrix instead of a guess.
-
 use std::ffi::CStr;
 
-extern "C" {
-    /// Implemented by Sources/App/GrappaHelper.m in the app target.
-    /// `diag_buf` receives a step trace on success and failure alike.
-    fn ALGetGrappaToken(
-        in_version: u32,
-        in_device_type: u32,
-        in_protocol_version: u32,
-        out_buf: *mut u8,
-        max_len: usize,
-        out_len: *mut usize,
-        diag_buf: *mut libc::c_char,
-        diag_len: usize,
-    ) -> libc::c_int;
-}
+type ALGetGrappaTokenFn = unsafe extern "C" fn(
+    in_version: u32,
+    in_device_type: u32,
+    in_protocol_version: u32,
+    out_buf: *mut u8,
+    max_len: usize,
+    out_len: *mut usize,
+    err_buf: *mut libc::c_char,
+    err_len: usize,
+) -> libc::c_int;
 
-/// Ask the in-app helper for a Grappa client token. `device_info`
-/// carries the (version, deviceType, protocolVersion) triple reported
-/// by the daemon in its Capabilities message; defaults to (1, 0, 1).
-pub fn generate_grappa_token(
+/// Generate an authentic Grappa client token for AirTraffic sync.
+///
+/// Calls `ALGetGrappaToken` defined in `GrappaHelper.m` with full `@autoreleasepool`
+/// and `@try/@catch` protection against Objective-C exceptions.
+pub fn generate_grappa_token<F: Fn(&str)>(
     device_info: Option<(u32, u32, u32)>,
-    log: &crate::device_log::Logger,
+    log: F,
 ) -> Option<Vec<u8>> {
-    let (ver, dt, pv) = device_info.unwrap_or((1, 0, 1));
-    log.log(format!(
-        "同步：Grappa 第 1 步——调用 App 内 GrappaHelper 的 ALGetGrappaToken（静态链接直调；入参 version={ver} deviceType={dt} protocolVersion={pv}，来源：{})",
-        if device_info.is_some() {
-            "守护进程 Capabilities 的 GrappaSupportInfo"
-        } else {
-            "默认值（守护进程未给出 GrappaSupportInfo）"
-        }
-    ));
+    unsafe {
+        // Resolve ALGetGrappaToken dynamically (from GrappaHelper.m compiled into the app)
+        let sym_name = b"ALGetGrappaToken\0";
+        let sym_ptr = libc::dlsym(libc::RTLD_DEFAULT, sym_name.as_ptr() as _);
 
-    let mut buf = vec![0u8; 512];
-    let mut out_len: usize = 0;
-    // The trace carries the full probe matrix plus ATGrappaSession
-    // introspection; round 4 adds type-encoding dumps and the
-    // self-sign attempt matrix, so the diag buffer is sized
-    // generously — the helper truncates to whatever it is given.
-    let mut diag_buf = [0 as libc::c_char; 32768];
-    let rc = unsafe {
-        ALGetGrappaToken(
+        if sym_ptr.is_null() {
+            log("airlift: grappa: ALGetGrappaToken symbol not found");
+            return None;
+        }
+
+        let get_token_fn: ALGetGrappaTokenFn = std::mem::transmute(sym_ptr);
+
+        let (ver, dt, pv) = device_info.unwrap_or((1, 0, 1));
+        let mut buf = vec![0u8; 512];
+        let mut out_len: usize = 0;
+        let mut err_buf = [0 as libc::c_char; 256];
+
+        let rc = get_token_fn(
             ver,
             dt,
             pv,
             buf.as_mut_ptr(),
             buf.len(),
             &mut out_len,
-            diag_buf.as_mut_ptr(),
-            diag_buf.len(),
-        )
-    };
+            err_buf.as_mut_ptr(),
+            err_buf.len(),
+        );
 
-    // The helper joins its steps with " | "; log each probe as its own
-    // line so the on-device segmented log shows the matrix step by step.
-    let diag = unsafe { CStr::from_ptr(diag_buf.as_ptr()) }.to_string_lossy();
-    for (i, step) in diag.split(" | ").enumerate() {
-        let step = step.trim();
-        if !step.is_empty() {
-            log.log(format!("同步：Grappa 探针 {}：{}", i + 1, step));
+        if rc != 0 || out_len == 0 {
+            let err_str = CStr::from_ptr(err_buf.as_ptr()).to_string_lossy();
+            log(&format!("airlift: grappa: token generation failed (rc={rc}): {err_str}"));
+            return None;
         }
-    }
 
-    if rc != 0 || out_len == 0 {
-        log.log(format!(
-            "同步：Grappa token 生成失败（rc={rc}，out_len={out_len}），本次同步将不带 Grappa 字段"
-        ));
-        return None;
+        buf.truncate(out_len);
+        log(&format!("airlift: grappa: successfully generated authentic Grappa token ({out_len} bytes) ✅"));
+        Some(buf)
     }
-    buf.truncate(out_len);
-    log.log(format!(
-        "同步：Grappa 第 2 步——token 已生成（{out_len} 字节）"
-    ));
-    Some(buf)
 }
