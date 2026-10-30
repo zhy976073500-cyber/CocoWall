@@ -403,19 +403,20 @@ impl AtcSession {
         Ok(())
     }
 
-    /// Watch the stream briefly after the last FileComplete (the
-    /// reference flow simply settles ~2s and drops the connection).
-    /// Returns the SyncFailed dump when the daemon refuses the sync
-    /// inside this window — the caller then treats the sync as not
-    /// delivered. Pings are answered with Pong; any other message is
-    /// logged and ignored. A closed stream or a quiet window just
-    /// ends the watch.
-    pub async fn drain_after_file_complete(&mut self, log: &Logger) -> Option<String> {
+    /// Settle briefly after the last FileComplete, mirroring the
+    /// reference flow: it waits ~2s and drops the connection without
+    /// awaiting any daemon confirmation. Messages in the window are
+    /// only observed — Pings are answered with Pong, and a SyncFailed
+    /// here is logged as a notice, not a verdict: the reference treats
+    /// SyncFailed as non-fatal throughout the session (it commonly
+    /// reports a stale prior-session cancellation), and delivery is
+    /// already decided by the completed FileComplete sequence.
+    pub async fn drain_after_file_complete(&mut self, log: &Logger) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
             let now = tokio::time::Instant::now();
             if now >= deadline {
-                return None;
+                return;
             }
             match tokio::time::timeout(deadline - now, read_msg(&mut self.stream)).await {
                 Ok(Ok(dict)) => {
@@ -426,13 +427,17 @@ impl AtcSession {
                                 let pong = make_msg("Pong", 1, None);
                                 let _ = send_msg(&mut self.stream, &pong).await;
                             }
-                            "SyncFailed" => return Some(format!("{dict:?}")),
+                            "SyncFailed" => {
+                                log.log(format!(
+                                    "同步：FileComplete 后守护进程报 SyncFailed（按参考流程仅记录，不改变交付结论）：{dict:?}"
+                                ));
+                            }
                             _ => {}
                         }
                     }
                 }
-                Ok(Err(_)) => return None,
-                Err(_) => return None,
+                Ok(Err(_)) => return,
+                Err(_) => return,
             }
         }
     }

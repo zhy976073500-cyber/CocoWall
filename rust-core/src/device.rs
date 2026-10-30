@@ -172,12 +172,12 @@ fn judge_confirmation(
 
 /// Drive one staged sync to delivery: ATC handshake, then a
 /// FileComplete for EVERY staged asset (link first, payloads right
-/// after), then a short drain window. The sync counts as delivered
-/// when all FileCompletes went out and the daemon did not answer
-/// with SyncFailed — the completion rule the reference flow uses
-/// (AirCard's inject functions send the FileCompletes, settle, and
-/// return success; they never read the target back, and their UI
-/// resprings right after).
+/// after), then a short settle window. The sync counts as delivered
+/// once all FileCompletes went out — the completion rule the
+/// reference flow uses (AirCard's inject functions send the
+/// FileCompletes, settle ~2s, and return success; they never read
+/// the target back, and SyncFailed is logged as non-fatal noise
+/// everywhere in their session handling).
 ///
 /// The gallery count readback through the symlink is kept only as a
 /// best-effort confirmation on top of delivery: the AFC service
@@ -224,12 +224,11 @@ async fn run_staged_sync(
             tokio::time::sleep(std::time::Duration::from_millis(900)).await;
         }
     }
-    if let Some(dump) = atc.drain_after_file_complete(log).await {
-        return Err(format!(
-            "同步未完成：FileComplete 已全部发送，但守护进程随后报 SyncFailed: {dump}"
-        ));
-    }
-    log.log("同步：全部 FileComplete 已发送，守护进程未报 SyncFailed——同步已交付".to_string());
+    // Reference closing semantics: once every FileComplete is sent
+    // the sync counts as delivered; the short settle window only
+    // observes late daemon messages, it cannot revoke delivery.
+    atc.drain_after_file_complete(log).await;
+    log.log("同步：全部 FileComplete 已发送——同步已交付".to_string());
 
     // Best-effort confirmation readback; its result never fails the
     // sync, it only decides confirmed vs. unconfirmed.
