@@ -58,7 +58,7 @@ struct CryptoDonationRow: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: isCopied ? "checkmark" : "doc.on.doc.fill")
-                        Text(isCopied ? "Copied!" : "Copy")
+                        Text(isCopied ? "已复制！" : "复制")
                     }
                     .font(.caption.bold())
                     .foregroundStyle(isCopied ? .green : .blue)
@@ -103,7 +103,7 @@ struct DonateView: View {
                             Text("🇺🇦")
                                 .font(.subheadline)
                         }
-                        Text("@mak5er • Lead & Core Developer")
+                        Text("@mak5er • 主开发者与核心作者")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -145,7 +145,7 @@ struct DonateView: View {
 
             // Payment Methods
             VStack(alignment: .leading, spacing: 10) {
-                Text("Donate & Support")
+                Text("捐赠与支持")
                     .font(.caption.bold().uppercaseSmallCaps())
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 4)
@@ -156,9 +156,9 @@ struct DonateView: View {
                         Image(systemName: "creditcard.fill")
                             .font(.title3)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Donate with PayPal")
+                            Text("用 PayPal 捐赠")
                                 .font(.subheadline.bold())
-                            Text("Recipient: Maksym Reva")
+                            Text("收款人：Maksym Reva")
                                 .font(.caption2)
                                 .opacity(0.85)
                         }
@@ -203,7 +203,7 @@ struct DonateView: View {
                 )
             }
 
-            Text("Thank you so much for supporting AirCard-iOS development! ❤️")
+            Text("非常感谢你对 AirCard-iOS 开发的支持！❤️")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -229,10 +229,10 @@ struct SupportPopupSheet: View {
                             .font(.system(size: 56))
                             .foregroundStyle(.pink)
 
-                        Text("Welcome to AirCard-iOS!")
+                        Text("欢迎使用 AirCard-iOS！")
                             .font(.title2.bold())
 
-                        Text("Free & Open Source • Developed by @mak5er")
+                        Text("免费与开源 • 由 @mak5er 开发")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -244,7 +244,7 @@ struct SupportPopupSheet: View {
                         Button {
                             dismiss()
                         } label: {
-                            Text("Continue to AirCard")
+                            Text("继续使用")
                                 .font(.headline)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 14)
@@ -254,13 +254,13 @@ struct SupportPopupSheet: View {
                         }
 
                         Toggle(isOn: $dontShowOnLaunch) {
-                            Text("Don't show this popup on startup")
+                            Text("启动时不再显示此弹窗")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
                         .padding(.horizontal, 4)
 
-                        Text("You can reopen donation options anytime in Credits › Donate ❤️")
+                        Text("随时可以在「鸣谢 › 捐赠 ❤️」里重新打开捐赠选项")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                             .multilineTextAlignment(.center)
@@ -270,11 +270,11 @@ struct SupportPopupSheet: View {
                 }
                 .padding(.vertical)
             }
-            .navigationTitle("Support Creator")
+            .navigationTitle("支持作者")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Close") {
+                    Button("关闭") {
                         dismiss()
                     }
                     .bold()
@@ -297,9 +297,9 @@ struct CreditsSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("Section", selection: $selectedTab) {
-                    Text("Credits").tag(0)
-                    Text("Donate ❤️").tag(1)
+                Picker("分区", selection: $selectedTab) {
+                    Text("鸣谢").tag(0)
+                    Text("捐赠 ❤️").tag(1)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
@@ -320,11 +320,11 @@ struct CreditsSheet: View {
                     }
                 }
             }
-            .navigationTitle(selectedTab == 0 ? "Credits" : "Donate & Support")
+            .navigationTitle(selectedTab == 0 ? "鸣谢" : "捐赠与支持")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
+                    Button("完成") {
                         dismiss()
                     }
                     .bold()
@@ -346,7 +346,7 @@ struct CreditsSheet: View {
                 Text("AirCard-iOS")
                     .font(.title2.bold())
 
-                Text("Apple Wallet Skins & Passcode Themes (iOS 18.0 – 27.2 b2)")
+                Text("密码盘主题与 .tendies 壁纸（iOS 18.0 – 27.2 b2）")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -364,10 +364,10 @@ struct CreditsSheet: View {
                         .foregroundStyle(.pink)
                         .font(.title3)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Support @mak5er Development")
+                        Text("支持 @mak5er 的开发")
                             .font(.subheadline.bold())
                             .foregroundStyle(.primary)
-                        Text("PayPal & Crypto donation options available")
+                        Text("可用 PayPal 与加密货币捐赠")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -388,11 +388,11 @@ struct CreditsSheet: View {
                 // mak5er (Lead & Core Developer)
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Label("Lead & Core Developer", systemImage: "crown.fill")
+                        Label("主开发者与核心作者", systemImage: "crown.fill")
                             .font(.caption.bold().uppercaseSmallCaps())
                             .foregroundStyle(.orange)
                         Spacer()
-                        Text("Chief")
+                        Text("主创")
                             .font(.system(size: 10, weight: .bold, design: .rounded))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -435,11 +435,11 @@ struct CreditsSheet: View {
                 // merybist (Base IPA Developer)
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Label("Base IPA Developer", systemImage: "hammer.fill")
+                        Label("基础 IPA 开发者", systemImage: "hammer.fill")
                             .font(.caption.bold().uppercaseSmallCaps())
                             .foregroundStyle(.blue)
                         Spacer()
-                        Text("Base")
+                        Text("基础")
                             .font(.system(size: 10, weight: .bold, design: .rounded))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -486,9 +486,9 @@ struct CreditsSheet: View {
                             .font(.title3)
                             .foregroundStyle(.orange)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Core Exploit")
+                            Text("核心利用")
                                 .font(.subheadline.bold())
-                            Text("airlift (AirTraffic sync sandbox escape)")
+                            Text("airlift（AirTraffic 同步沙盒逃逸）")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -501,9 +501,9 @@ struct CreditsSheet: View {
                             .font(.title3)
                             .foregroundStyle(.purple)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Passcode Themes")
+                            Text("密码盘主题")
                                 .font(.subheadline.bold())
-                            Text(".passthm standard (Cowabunga / Nugget)")
+                            Text(".passthm 标准（Cowabunga / Nugget）")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -516,9 +516,9 @@ struct CreditsSheet: View {
                             .font(.title3)
                             .foregroundStyle(.yellow)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("NeoSpring & PosterBoard")
+                            Text("NeoSpring 与 PosterBoard")
                                 .font(.subheadline.bold())
-                            Text("SpringBoard reload & .tendies wallpapers (@neonmodder123, @skadz108, @rooootdev)")
+                            Text("SpringBoard 重载与 .tendies 壁纸（@neonmodder123、@skadz108、@rooootdev）")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -548,9 +548,9 @@ struct PairingGuideSheet: View {
                 VStack(alignment: .leading, spacing: 18) {
                     // Header
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Where to find your pairing file")
+                        Text("在哪里找到配对文件")
                             .font(.title2.bold())
-                        Text("AirCard-iOS can import pairing files exported by SideStore, LiveContainer, iLoader, or your computer.")
+                        Text("可以导入由 SideStore、LiveContainer、iLoader 或电脑导出的配对文件。")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -564,7 +564,7 @@ struct PairingGuideSheet: View {
                             Text("SideStore")
                                 .font(.headline.bold())
                             Spacer()
-                            Text("Recommended")
+                            Text("推荐")
                                 .font(.caption2.bold())
                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                 .background(Color.blue.opacity(0.12))
@@ -572,15 +572,15 @@ struct PairingGuideSheet: View {
                                 .clipShape(Capsule())
                         }
 
-                        Text("SideStore automatically creates a pairing file during setup. You can pick it directly in the Files app:")
+                        Text("SideStore 会在设置过程中自动生成配对文件，可以直接在「文件」App 里选取：")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
 
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Path in Files app:")
+                            Text("在「文件」App 中的路径：")
                                 .font(.caption2.bold())
                                 .foregroundStyle(.secondary)
-                            Text("On My iPhone › SideStore › ALTPairingFile.mobiledevicepairing")
+                            Text("我的 iPhone › SideStore › ALTPairingFile.mobiledevicepairing")
                                 .font(.caption.monospaced())
                                 .padding(8)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -598,19 +598,19 @@ struct PairingGuideSheet: View {
                             Image(systemName: "shippingbox.fill")
                                 .font(.title3)
                                 .foregroundStyle(.purple)
-                            Text("LiveContainer (SideStore inside)")
+                            Text("LiveContainer（内嵌 SideStore）")
                                 .font(.headline.bold())
                         }
 
-                        Text("If you run SideStore inside LiveContainer, the pairing file is stored inside LiveContainer's app storage:")
+                        Text("如果在 LiveContainer 里运行 SideStore，配对文件存放在 LiveContainer 的应用存储里：")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
 
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Path in Files app:")
+                            Text("在「文件」App 中的路径：")
                                 .font(.caption2.bold())
                                 .foregroundStyle(.secondary)
-                            Text("On My iPhone › LiveContainer › SideStore › Documents › ALTPairingFile.mobiledevicepairing")
+                            Text("我的 iPhone › LiveContainer › SideStore › Documents › ALTPairingFile.mobiledevicepairing")
                                 .font(.caption.monospaced())
                                 .padding(8)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -632,7 +632,7 @@ struct PairingGuideSheet: View {
                                 .font(.headline.bold())
                         }
 
-                        Text("• In iLoader: Settings › Export Pairing File › save to Files.\n• In Jitterbug: Export your <UDID>.mobiledevicepairing.\n• On PC/Mac: Run jitterbugpair or export from SideServer / AltServer, then AirDrop to your iPhone.")
+                        Text("• iLoader：设置 › 导出配对文件 › 存到「文件」。\n• Jitterbug：导出你的 <UDID>.mobiledevicepairing。\n• 电脑（PC/Mac）：运行 jitterbugpair，或从 SideServer / AltServer 导出，再隔空投送到 iPhone。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -646,22 +646,22 @@ struct PairingGuideSheet: View {
                             Image(systemName: "folder.fill")
                                 .font(.title3)
                                 .foregroundStyle(.green)
-                            Text("Manual Drop in Files App")
+                            Text("手动放进「文件」App")
                                 .font(.headline.bold())
                         }
 
-                        Text("You can also copy any .mobiledevicepairing or .plist file directly into:")
+                        Text("也可以把任意 .mobiledevicepairing 或 .plist 文件直接拷到：")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
 
-                        Text("Files app › On My iPhone › AirCard-iOS")
+                        Text("「文件」App › 我的 iPhone › CocoWall")
                             .font(.caption.monospaced())
                             .padding(8)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(Color(uiColor: .systemBackground))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                        Text("It will immediately appear under 'Discovered in Documents' in AirCard-iOS.")
+                        Text("它会立即出现在应用内「在文稿中发现」列表里。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -677,7 +677,7 @@ struct PairingGuideSheet: View {
                         HStack {
                             Spacer()
                             Image(systemName: "square.and.arrow.down.fill")
-                            Text("Import Pairing File Now")
+                            Text("立即导入配对文件")
                             Spacer()
                         }
                         .font(.headline)
@@ -688,11 +688,11 @@ struct PairingGuideSheet: View {
                 }
                 .padding()
             }
-            .navigationTitle("Pairing Guide")
+            .navigationTitle("配对指南")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }.bold()
+                    Button("完成") { dismiss() }.bold()
                 }
             }
         }
@@ -742,7 +742,7 @@ struct CompactLogView: View {
                     HStack(spacing: 4) {
                         Image(systemName: copied ? "checkmark" : "doc.on.doc")
                             .font(.system(size: 11, weight: .bold))
-                        Text(copied ? "Copied" : "Copy")
+                        Text(copied ? "已复制" : "复制")
                             .font(.system(size: 11, weight: .bold))
                     }
                     .foregroundStyle(copied ? .green : .blue)
@@ -839,28 +839,40 @@ struct ContentView: View {
 
     var body: some View {
         TabView(selection: $vm.selectedTab) {
+            TendiesView()
+                .tabItem { Label("壁纸", systemImage: "photo.stack.fill") }
+                .tag(AppTab.wallpapers)
+
+            LibraryView()
+                .tabItem { Label("壁纸库", systemImage: "square.grid.2x2.fill") }
+                .tag(AppTab.library)
+
+            MakerView()
+                .tabItem { Label("制作", systemImage: "wand.and.stars") }
+                .tag(AppTab.maker)
+
             PairingTab()
-                .tabItem { Label("Pairing", systemImage: "antenna.radiowaves.left.and.right") }
+                .tabItem { Label("配对", systemImage: "antenna.radiowaves.left.and.right") }
                 .tag(AppTab.pairing)
 
             PasscodeThemeTab()
-                .tabItem { Label("Passcode", systemImage: "lock.circle.fill") }
+                .tabItem { Label("密码盘", systemImage: "lock.circle.fill") }
                 .tag(AppTab.passcodeThemes)
 
-            TendiesView()
-                .tabItem { Label("Wallpapers", systemImage: "photo.stack.fill") }
-                .tag(AppTab.wallpapers)
+            SettingsView()
+                .tabItem { Label("设置", systemImage: "gearshape.fill") }
+                .tag(AppTab.settings)
         }
-        .alert("Notice", isPresented: Binding(
+        .alert("提示", isPresented: Binding(
             get: { vm.errorMessage != nil },
             set: { if !$0 { vm.errorMessage = nil } }
         )) {
-            Button("OK") { vm.errorMessage = nil }
+            Button("好") { vm.errorMessage = nil }
         } message: {
             Text(vm.errorMessage ?? "")
         }
-        .alert("Success! 🎉", isPresented: $vm.showSuccessAlert) {
-            Button("OK") {}
+        .alert("成功！🎉", isPresented: $vm.showSuccessAlert) {
+            Button("好") {}
         } message: {
             Text(vm.successAlertMessage)
         }
@@ -924,7 +936,7 @@ struct PairingTab: View {
                                 .foregroundStyle(.blue)
                                 .clipShape(Capsule())
                         }
-                        Text("Apply custom wallet card skins and passcode themes on-device. Supports iOS 18.0 – 27.2 beta 2 (iOS 27.2 beta 3+ patched).")
+                        Text("在设备上应用密码盘主题与 PosterBoard 壁纸。支持 iOS 18.0 – 27.2 beta 2（iOS 27.2 beta 3+ 已被修复）。")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
 
@@ -932,7 +944,7 @@ struct PairingTab: View {
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundStyle(.orange)
-                                Text("iOS 27.2 beta 3 or newer detected: Apple patched the AirTraffic exploit on this version. Operations will likely fail.")
+                                Text("检测到 iOS 27.2 beta 3 或更新版本：苹果已在该版本修复 AirTraffic 利用链，操作很可能会失败。")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -943,17 +955,17 @@ struct PairingTab: View {
                 }
 
                 // Network / VPN Status
-                Section("Network") {
+                Section("网络") {
                     VPNStatusRow(vm: vm)
                 }
 
                 // Pairing Status
-                Section("Active Pairing") {
+                Section("当前配对") {
                     HStack(spacing: 10) {
                         if vm.hasPairingFile {
                             Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Ready to exploit ✅")
+                                Text("已就绪 ✅")
                                     .font(.subheadline.bold())
                                 Text("\(vm.pairingFileName) (\(vm.pairingFileSizeString))")
                                     .font(.caption.monospaced())
@@ -962,11 +974,11 @@ struct PairingTab: View {
                         } else {
                             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Not Paired")
+                                Text("未配对")
                                     .font(.subheadline.bold())
                                 Text(isIOS27OrNewer
-                                     ? "Pair on this iPhone below or import a pairing file."
-                                     : "Import a pairing file from SideStore, iLoader, or PC below.")
+                                     ? "在下方直接在本机配对，或导入配对文件。"
+                                     : "在下方导入来自 SideStore、iLoader 或电脑的配对文件。")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -990,7 +1002,7 @@ struct PairingTab: View {
                             HStack {
                                 Spacer()
                                 Image(systemName: "trash.fill")
-                                Text("Delete Pairing File")
+                                Text("删除配对文件")
                                 Spacer()
                             }
                             .font(.subheadline.bold())
@@ -999,18 +1011,18 @@ struct PairingTab: View {
                     }
                 }
                 .confirmationDialog(
-                    "Delete pairing session?",
+                    "删除配对会话？",
                     isPresented: $showDeleteConfirm,
                     titleVisibility: .visible
                 ) {
-                    Button("Delete Pairing", role: .destructive) { vm.deletePairingFile() }
-                    Button("Cancel", role: .cancel) {}
+                    Button("删除配对", role: .destructive) { vm.deletePairingFile() }
+                    Button("取消", role: .cancel) {}
                 } message: {
-                    Text("The active pairing credentials will be removed so you can re-pair or import another file.")
+                    Text("当前配对凭据将被移除，之后可以重新配对或导入其他文件。")
                 }
 
                 // Pairing File Import (SideStore / iLoader / PC)
-                Section("Pairing File") {
+                Section("配对文件") {
                     VStack(alignment: .leading, spacing: 8) {
                         Button {
                             showFilePicker = true
@@ -1018,7 +1030,7 @@ struct PairingTab: View {
                             HStack(spacing: 8) {
                                 Image(systemName: "square.and.arrow.down.fill")
                                     .foregroundStyle(.blue)
-                                Text("Import Pairing File…")
+                                Text("导入配对文件…")
                                     .font(.headline)
                                 Spacer()
                                 Image(systemName: "chevron.right")
@@ -1033,21 +1045,21 @@ struct PairingTab: View {
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "questionmark.circle")
-                                Text("Where to find SideStore / LiveContainer pairing file?")
+                                Text("SideStore / LiveContainer 的配对文件在哪？")
                             }
                             .font(.footnote)
                             .foregroundStyle(.blue)
                         }
                         .buttonStyle(.plain)
 
-                        Text("Supports .mobiledevicepairing, .plist, or .mobilepair exported from SideStore, iLoader, AltStore, Jitterbug, or Mac/PC.")
+                        Text("支持从 SideStore、iLoader、AltStore、Jitterbug 或 Mac/PC 导出的 .mobiledevicepairing、.plist、.mobilepair 文件。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
 
                     if !vm.documentsPlistFiles.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Discovered in Documents:")
+                            Text("在文稿中发现：")
                                 .font(.caption.bold())
                                 .foregroundStyle(.secondary)
 
@@ -1060,7 +1072,7 @@ struct PairingTab: View {
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                     Spacer()
-                                    Button("Use") {
+                                    Button("使用") {
                                         vm.selectPairingFile(filename: filename)
                                     }
                                     .buttonStyle(.bordered)
@@ -1074,19 +1086,19 @@ struct PairingTab: View {
 
                 // On-Device Pairing Section (shown ONLY on iOS 27+)
                 if isIOS27OrNewer {
-                    Section("Pair on This iPhone") {
+                    Section("在本机配对") {
                         if vm.pairingPhase == .pairing {
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack(spacing: 8) {
                                     ProgressView().scaleEffect(0.85)
-                                    Text(vm.pairingStatus.isEmpty ? "Starting local pairing host…" : vm.pairingStatus)
+                                    Text(vm.pairingStatus.isEmpty ? "正在启动本机配对服务…" : vm.pairingStatus)
                                         .font(.subheadline)
                                         .foregroundStyle(.secondary)
                                 }
 
                                 if let pin = vm.pairingPIN {
                                     VStack(alignment: .leading, spacing: 12) {
-                                        Text("ENTER THIS PIN ON THIS IPHONE:")
+                                        Text("在本台 iPhone 上输入这个配对码：")
                                             .font(.caption2.bold().uppercaseSmallCaps())
                                             .foregroundStyle(.secondary)
 
@@ -1099,14 +1111,14 @@ struct PairingTab: View {
                                                 UIPasteboard.general.string = pin
                                                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                                             } label: {
-                                                Label("Copy", systemImage: "doc.on.doc")
+                                                Label("复制", systemImage: "doc.on.doc")
                                                     .font(.caption.bold())
                                             }
                                             .buttonStyle(.bordered)
                                             .tint(.orange)
                                         }
 
-                                        Text("Settings › Privacy & Security › Developer Mode › Pair with AirCard-iOS")
+                                        Text("设置 › 隐私与安全性 › 开发者模式 › 与 AirCard-iOS 配对")
                                             .font(.footnote.weight(.semibold))
                                             .foregroundStyle(.primary)
 
@@ -1115,7 +1127,7 @@ struct PairingTab: View {
                                                 UIApplication.shared.open(url)
                                             }
                                         } label: {
-                                            Label("Open Settings App Now", systemImage: "arrow.up.forward.app")
+                                            Label("立即打开设置 App", systemImage: "arrow.up.forward.app")
                                                 .bold()
                                                 .frame(maxWidth: .infinity, alignment: .center)
                                         }
@@ -1133,7 +1145,7 @@ struct PairingTab: View {
                                     HStack(spacing: 8) {
                                         Spacer()
                                         Image(systemName: "xmark")
-                                        Text("Cancel Pairing")
+                                        Text("取消配对")
                                         Spacer()
                                     }
                                     .font(.headline)
@@ -1164,7 +1176,7 @@ struct PairingTab: View {
                                         Spacer()
                                         Image(systemName: "antenna.radiowaves.left.and.right")
                                             .font(.body.weight(.semibold))
-                                        Text(vm.hasPairingFile ? "Re-Pair This iPhone" : "Pair This iPhone")
+                                        Text(vm.hasPairingFile ? "重新配对本机" : "配对本机")
                                             .font(.headline)
                                         Spacer()
                                     }
@@ -1181,7 +1193,7 @@ struct PairingTab: View {
                 if !vm.log.isEmpty {
                     Section {
                         CompactLogView(
-                            title: "Activity Log (\(vm.log.count) lines)",
+                            title: "活动日志（\(vm.log.count) 行）",
                             lines: vm.log,
                             onClear: { vm.log.removeAll() }
                         )
@@ -1201,7 +1213,7 @@ struct PairingTab: View {
                         HStack(spacing: 4) {
                             Image(systemName: "heart.fill")
                                 .font(.caption)
-                            Text("Credits & Donate")
+                            Text("鸣谢与捐赠")
                                 .font(.caption.bold())
                         }
                         .foregroundStyle(.pink)
@@ -1260,11 +1272,11 @@ struct VPNStatusRow: View {
                     .font(.title3)
                     .foregroundStyle(vm.vpnUp ? .green : .orange)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(vm.vpnUp ? "Loopback VPN Active" : "Loopback VPN Not Detected")
+                    Text(vm.vpnUp ? "回环 VPN 已启用" : "未检测到回环 VPN")
                         .font(.subheadline.bold())
                     Text(vm.vpnUp
-                         ? "RSD tunnel ready — exploit will connect."
-                         : "Connect LocalDevVPN before running flashes.")
+                         ? "RSD 隧道已就绪——刷入时将自动连接。"
+                         : "运行刷入前请先连接 LocalDevVPN。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1272,17 +1284,17 @@ struct VPNStatusRow: View {
 
             if !vm.vpnUp {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Setup LocalDevVPN:")
+                    Text("设置 LocalDevVPN：")
                         .font(.caption.bold())
                     ForEach([
-                        "1. Open LocalDevVPN app and tap Connect.",
-                        "2. Return to AirCard-iOS — status indicator turns green."
+                        "1. 打开 LocalDevVPN App 并点连接。",
+                        "2. 回到本应用——状态指示变绿即成功。"
                     ], id: \.self) { step in
                         Text(step)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Link("Launch LocalDevVPN",
+                    Link("启动 LocalDevVPN",
                          destination: URL(string: "localdevvpn://")!)
                         .font(.caption.bold())
                 }
@@ -1292,7 +1304,7 @@ struct VPNStatusRow: View {
             }
 
             HStack(spacing: 8) {
-                Text("Device IP:")
+                Text("设备 IP：")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextField("10.7.0.1", text: $vm.deviceIP)
@@ -1337,7 +1349,7 @@ struct PasscodeThemeTab: View {
             Form {
                 // Mode picker
                 Section {
-                    Picker("Mode", selection: $vm.passcodeMode) {
+                    Picker("模式", selection: $vm.passcodeMode) {
                         ForEach(CreatorMode.allCases) { mode in
                             Text(mode.rawValue).tag(mode)
                         }
@@ -1355,7 +1367,7 @@ struct PasscodeThemeTab: View {
                 if !vm.passthmFlashLog.isEmpty {
                     Section {
                         CompactLogView(
-                            title: "Flash Log (\(vm.passthmFlashLog.count) lines)",
+                            title: "刷入日志（\(vm.passthmFlashLog.count) 行）",
                             lines: vm.passthmFlashLog,
                             onClear: { vm.passthmFlashLog.removeAll() }
                         )
@@ -1365,7 +1377,7 @@ struct PasscodeThemeTab: View {
             .safeAreaInset(edge: .bottom) {
                 Color.clear.frame(height: 60)
             }
-            .navigationTitle("Passcode Theme")
+            .navigationTitle("密码盘主题")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
@@ -1393,7 +1405,7 @@ struct ApplyThemeSection: View {
     var body: some View {
         // Themes dropped directly into Documents folder
         if !vm.documentsThemes.isEmpty {
-            Section("Themes in App Folder (On My iPhone › AirCard-iOS)") {
+            Section("App 文件夹中的主题（我的 iPhone › CocoWall）") {
                 ForEach(vm.documentsThemes, id: \.self) { file in
                     HStack {
                         Image(systemName: "paintpalette.fill")
@@ -1401,7 +1413,7 @@ struct ApplyThemeSection: View {
                         Text(file)
                             .font(.system(size: 13, design: .monospaced))
                         Spacer()
-                        Button("Load") {
+                        Button("载入") {
                             vm.loadPassthmFromDocuments(filename: file)
                         }
                         .font(.caption.bold())
@@ -1412,12 +1424,12 @@ struct ApplyThemeSection: View {
             }
         }
 
-        Section("Browse Files") {
+        Section("浏览文件") {
             HStack {
                 Button {
                     showDocumentPicker = true
                 } label: {
-                    Label(vm.loadedTheme == nil ? "Choose .passthm from Files…" : "Change .passthm…",
+                    Label(vm.loadedTheme == nil ? "从文件选择 .passthm…" : "更换 .passthm…",
                           systemImage: "doc.badge.plus")
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
@@ -1426,7 +1438,7 @@ struct ApplyThemeSection: View {
                     Button {
                         vm.clearLoadedTheme()
                     } label: {
-                        Text("Clear")
+                        Text("清除")
                             .font(.caption.bold())
                             .foregroundStyle(.red)
                     }
@@ -1445,20 +1457,20 @@ struct ApplyThemeSection: View {
         }
 
         if let theme = vm.loadedTheme {
-            Section("Interactive Lock Screen Preview") {
+            Section("锁屏交互预览") {
                 KeypadPreviewView(keys: theme.keysPreview)
                     .listRowInsets(EdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6))
                     .listRowBackground(Color.clear)
             }
 
-            Section("Theme Information") {
-                LabeledContent("Files in theme", value: "\(theme.fileCount)")
-                LabeledContent("Digits styled", value: "\(theme.keysPreview.count) keys")
+            Section("主题信息") {
+                LabeledContent("主题内文件", value: "\(theme.fileCount)")
+                LabeledContent("已设置样式的数字", value: "\(theme.keysPreview.count) 个按键")
 
                 Button {
                     vm.adoptThemeIntoCreator()
                 } label: {
-                    Label("Edit in Theme Creator", systemImage: "pencil")
+                    Label("在主题制作中编辑", systemImage: "pencil")
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
                 .buttonStyle(.bordered)
@@ -1476,7 +1488,7 @@ struct ApplyThemeSection: View {
                         HStack(spacing: 8) {
                             Spacer()
                             Image(systemName: "trash")
-                            Text("Remove / Unload Theme")
+                            Text("移除 / 卸载主题")
                             Spacer()
                         }
                         .font(.headline)
@@ -1497,7 +1509,7 @@ struct ApplyThemeSection: View {
             HStack(spacing: 10) {
                 ProgressView()
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Flashing Theme…").font(.subheadline.bold())
+                    Text("正在刷入主题…").font(.subheadline.bold())
                     ProgressView(value: vm.passthmFlashProgress)
                 }
             }
@@ -1509,7 +1521,7 @@ struct ApplyThemeSection: View {
                 HStack(spacing: 8) {
                     Spacer()
                     Image(systemName: "arrow.clockwise")
-                    Text("Retry Flash Theme")
+                    Text("重试刷入主题")
                     Spacer()
                 }
                 .font(.headline)
@@ -1526,7 +1538,7 @@ struct ApplyThemeSection: View {
                 HStack(spacing: 8) {
                     Spacer()
                     Image(systemName: "bolt.fill")
-                    Text("Flash Theme to iPhone")
+                    Text("刷入主题到 iPhone")
                     Spacer()
                 }
                 .font(.headline)
@@ -1551,20 +1563,20 @@ struct PasscodeTargetSection: View {
                     Image(systemName: "bolt.badge.clock")
                         .foregroundColor(.blue)
                         .font(.headline)
-                    Text("Flash & Language Target")
+                    Text("刷入与语言目标")
                         .font(.headline)
                 }
 
                 // 1. Target System
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("System Caches")
+                    Text("系统缓存")
                         .font(.caption.bold())
                         .foregroundColor(.secondary)
-                    Picker("System Caches", selection: $vm.targetTelephonyVersion) {
-                        Text("TelephonyUI-10 (iOS 18+)").tag("TelephonyUI-10")
-                        Text("TelephonyUI-9 (iOS 16–17)").tag("TelephonyUI-9")
-                        Text("TelephonyUI-8 (iOS 14–15)").tag("TelephonyUI-8")
-                        Text("Universal (All)").tag("all")
+                    Picker("系统缓存", selection: $vm.targetTelephonyVersion) {
+                        Text("TelephonyUI-10（iOS 18+）").tag("TelephonyUI-10")
+                        Text("TelephonyUI-9（iOS 16–17）").tag("TelephonyUI-9")
+                        Text("TelephonyUI-8（iOS 14–15）").tag("TelephonyUI-8")
+                        Text("通用（全部）").tag("all")
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
@@ -1574,10 +1586,10 @@ struct PasscodeTargetSection: View {
 
                 // 2. System Language
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("System Language")
+                    Text("系统语言")
                         .font(.caption.bold())
                         .foregroundColor(.secondary)
-                    Picker("System Language", selection: $vm.passcodeLanguageTarget) {
+                    Picker("系统语言", selection: $vm.passcodeLanguageTarget) {
                         ForEach(PasscodeLanguageTarget.allCases) { item in
                             Text(item.rawValue).tag(item)
                         }
@@ -1590,10 +1602,10 @@ struct PasscodeTargetSection: View {
 
                 // 3. Font Weight / Style
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Font Weight / Style")
+                    Text("字重 / 样式")
                         .font(.caption.bold())
                         .foregroundColor(.secondary)
-                    Picker("Font Weight / Style", selection: $vm.passcodeBoldTarget) {
+                    Picker("字重 / 样式", selection: $vm.passcodeBoldTarget) {
                         ForEach(PasscodeBoldTarget.allCases) { item in
                             Text(item.rawValue).tag(item)
                         }
@@ -1610,12 +1622,12 @@ struct PasscodeTargetSection: View {
                         .padding(.top, 1)
 
                     if vm.passcodeLanguageTarget == .all && vm.passcodeBoldTarget == .both {
-                        Text("Universal mode flashes ~600 files for all languages & Bold text. Selecting a specific language (e.g. Ukrainian) speeds up flashing dramatically.")
+                        Text("通用模式会为全部语言与粗体文本刷入约 600 个文件。选择具体语言（如乌克兰语）可大幅加快刷入。")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
-                        Text("Fast mode selected: only targets \(vm.passcodeLanguageTarget.rawValue) with \(vm.passcodeBoldTarget.rawValue).")
+                        Text("已选快速模式：只刷入 \(vm.passcodeLanguageTarget.rawValue)，\(vm.passcodeBoldTarget.rawValue)。")
                             .font(.caption2)
                             .foregroundColor(.primary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1643,7 +1655,7 @@ struct ThemeCreatorSection: View {
     @State private var selectedPoster: [PhotosPickerItem] = []
 
     var body: some View {
-        Section("Slice Mode") {
+        Section("切片模式") {
             Picker("", selection: $vm.sliceMode) {
                 ForEach(SliceMode.allCases) { m in
                     Text(m.rawValue).tag(m)
@@ -1659,7 +1671,7 @@ struct ThemeCreatorSection: View {
         }
 
         // Preview
-        Section("Interactive Lock Screen Preview") {
+        Section("锁屏交互预览") {
             KeypadPreviewView(keys: vm.effectiveKeys)
                 .listRowInsets(EdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6))
                 .listRowBackground(Color.clear)
@@ -1679,7 +1691,7 @@ struct ThemeCreatorSection: View {
                         HStack(spacing: 8) {
                             Spacer()
                             Image(systemName: "square.and.arrow.up")
-                            Text("Export .passthm...")
+                            Text("导出 .passthm…")
                             Spacer()
                         }
                         .font(.headline)
@@ -1694,7 +1706,7 @@ struct ThemeCreatorSection: View {
                         HStack(spacing: 8) {
                             Spacer()
                             Image(systemName: "trash")
-                            Text("Clear All")
+                            Text("清空全部")
                             Spacer()
                         }
                         .font(.headline)
@@ -1711,27 +1723,27 @@ struct ThemeCreatorSection: View {
 
     private var posterSliceSection: some View {
         Group {
-            Section("Poster Image") {
+            Section("整图") {
                 Button {
                     showPosterSourceDialog = true
                 } label: {
-                    Label(vm.posterImage == nil ? "Select Photo for Keypad…" : "Change Photo…",
+                    Label(vm.posterImage == nil ? "为键盘选择照片…" : "更换照片…",
                           systemImage: "photo")
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
             }
-            .confirmationDialog("Choose Poster Image Source", isPresented: $showPosterSourceDialog, titleVisibility: .visible) {
+            .confirmationDialog("选择整图来源", isPresented: $showPosterSourceDialog, titleVisibility: .visible) {
                 Button {
                     isPosterPhotosPickerPresented = true
                 } label: {
-                    Label("Photo Library", systemImage: "photo.on.rectangle")
+                    Label("照片图库", systemImage: "photo.on.rectangle")
                 }
                 Button {
                     isPosterDocumentPickerPresented = true
                 } label: {
-                    Label("Choose from Files…", systemImage: "folder")
+                    Label("从文件选择…", systemImage: "folder")
                 }
-                Button("Cancel", role: .cancel) {}
+                Button("取消", role: .cancel) {}
             }
             .photosPicker(
                 isPresented: $isPosterPhotosPickerPresented,
@@ -1762,18 +1774,18 @@ struct ThemeCreatorSection: View {
             }
 
             if vm.posterImage != nil {
-                Section("Slicing Style") {
+                Section("切片样式") {
                     VStack(alignment: .leading, spacing: 6) {
                         Picker("", selection: $vm.maskToCircles) {
-                            Text("Seamless Poster").tag(false)
-                            Text("Circle Buttons").tag(true)
+                            Text("无缝整图").tag(false)
+                            Text("圆形按钮").tag(true)
                         }
                         .pickerStyle(.segmented)
                         .onChange(of: vm.maskToCircles) { _, _ in
                             vm.updatePosterSlicing()
                         }
 
-                        Text(vm.maskToCircles ? "Artwork is clipped into individual circular button icons." : "Seamless artwork spans across dialer keys without circular cuts (Adobe Dog style).")
+                        Text(vm.maskToCircles ? "图稿会被裁成单个圆形按钮图标。" : "无缝图稿横贯整个拨号键盘，不做圆形裁切（Adobe Dog 风格）。")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1784,11 +1796,11 @@ struct ThemeCreatorSection: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("Zoom & Framing")
+                            Text("缩放与构图")
                                 .font(.caption.bold())
                                 .foregroundColor(.secondary)
                             Spacer()
-                            Button("Reset Position") {
+                            Button("重置位置") {
                                 withAnimation(.spring()) {
                                     vm.resetPosterPosition()
                                 }
@@ -1820,7 +1832,7 @@ struct ThemeCreatorSection: View {
                             Image(systemName: "hand.draw")
                                 .foregroundColor(.secondary)
                                 .font(.caption2)
-                            Text("Drag anywhere on the dialer preview to reposition")
+                            Text("在拨号预览上任意拖动即可调整位置")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
@@ -1832,8 +1844,8 @@ struct ThemeCreatorSection: View {
     }
 
     private var individualKeysSection: some View {
-        Section("Individual Keys") {
-            Text("Tap a button row to assign a custom image.")
+        Section("单个按键") {
+            Text("点按任意一行，为该按键设置自定义图片。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -1856,7 +1868,7 @@ struct ThemeCreatorSection: View {
                     }
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Key \(btn.digit)")
+                        Text("按键 \(btn.digit)")
                             .font(.subheadline.weight(.medium))
                         if !btn.letters.isEmpty {
                             Text(btn.letters)
@@ -1889,18 +1901,18 @@ struct ThemeCreatorSection: View {
                 }
             }
         }
-        .confirmationDialog("Choose Key \(selectedDigitForPicker ?? "") Image Source", isPresented: $showKeySourceDialog, titleVisibility: .visible) {
+        .confirmationDialog("选择按键 \(selectedDigitForPicker ?? "") 的图片来源", isPresented: $showKeySourceDialog, titleVisibility: .visible) {
             Button {
                 isKeyPhotosPickerPresented = true
             } label: {
-                Label("Photo Library", systemImage: "photo.on.rectangle")
+                Label("照片图库", systemImage: "photo.on.rectangle")
             }
             Button {
                 isKeyDocumentPickerPresented = true
             } label: {
-                Label("Choose from Files…", systemImage: "folder")
+                Label("从文件选择…", systemImage: "folder")
             }
-            Button("Cancel", role: .cancel) {
+            Button("取消", role: .cancel) {
                 selectedDigitForPicker = nil
             }
         }
@@ -1949,7 +1961,7 @@ struct ThemeCreatorSection: View {
             HStack(spacing: 10) {
                 ProgressView()
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Flashing Theme…").font(.subheadline.bold())
+                    Text("正在刷入主题…").font(.subheadline.bold())
                     ProgressView(value: vm.passthmFlashProgress)
                 }
             }
@@ -1961,7 +1973,7 @@ struct ThemeCreatorSection: View {
                 HStack(spacing: 8) {
                     Spacer()
                     Image(systemName: "arrow.clockwise")
-                    Text("Retry Flash Theme")
+                    Text("重试刷入主题")
                     Spacer()
                 }
                 .font(.headline)
@@ -1978,7 +1990,7 @@ struct ThemeCreatorSection: View {
                 HStack(spacing: 8) {
                     Spacer()
                     Image(systemName: "bolt.fill")
-                    Text("Flash Theme to iPhone")
+                    Text("刷入主题到 iPhone")
                     Spacer()
                 }
                 .font(.headline)
@@ -2092,7 +2104,7 @@ struct KeypadPreviewView: View {
                     HStack(spacing: 5) {
                         Image(systemName: "hand.draw.fill")
                             .font(.system(size: 10))
-                        Text("Drag preview to reposition")
+                        Text("拖动预览调整位置")
                             .font(.system(size: 11, weight: .medium))
                     }
                     .foregroundStyle(.white.opacity(0.65))

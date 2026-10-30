@@ -8,9 +8,12 @@ import CoreTransferable
 
 
 enum AppTab: String, CaseIterable, Identifiable {
+    case wallpapers = "Wallpapers"
+    case library = "Library"
+    case maker = "Maker"
     case pairing = "Pairing"
     case passcodeThemes = "Passcode"
-    case wallpapers = "Wallpapers"
+    case settings = "Settings"
     var id: String { rawValue }
 }
 
@@ -24,35 +27,35 @@ struct PasscodeThemeInfo: Identifiable {
 }
 
 enum CreatorMode: String, CaseIterable, Identifiable {
-    case applyTheme = "Apply .passthm"
-    case themeCreator = "Create Theme"
+    case applyTheme = "应用 .passthm"
+    case themeCreator = "制作主题"
     var id: String { rawValue }
 }
 
 enum SliceMode: String, CaseIterable, Identifiable {
-    case posterSlice = "Poster Slice"
-    case individualKeys = "Individual Keys"
+    case posterSlice = "整图切片"
+    case individualKeys = "单个按键"
     var id: String { rawValue }
 }
 
 enum PasscodeLanguageTarget: String, CaseIterable, Identifiable {
-    case all = "All Languages (Universal)"
-    case uk = "Ukrainian (uk)"
-    case ru = "Russian (ru)"
-    case en = "English (en)"
-    case other = "Other / Fallback"
-    case es = "Spanish (es)"
-    case de = "German (de)"
-    case fr = "French (fr)"
-    case pl = "Polish (pl)"
-    case it = "Italian (it)"
-    case pt = "Portuguese (pt)"
-    case tr = "Turkish (tr)"
-    case ja = "Japanese (ja)"
-    case ko = "Korean (ko)"
-    case zh = "Chinese (zh)"
-    case ar = "Arabic (ar)"
-    case he = "Hebrew (he)"
+    case all = "全部语言（通用）"
+    case uk = "乌克兰语 (uk)"
+    case ru = "俄语 (ru)"
+    case en = "英语 (en)"
+    case other = "其他 / 兜底"
+    case es = "西班牙语 (es)"
+    case de = "德语 (de)"
+    case fr = "法语 (fr)"
+    case pl = "波兰语 (pl)"
+    case it = "意大利语 (it)"
+    case pt = "葡萄牙语 (pt)"
+    case tr = "土耳其语 (tr)"
+    case ja = "日语 (ja)"
+    case ko = "韩语 (ko)"
+    case zh = "中文 (zh)"
+    case ar = "阿拉伯语 (ar)"
+    case he = "希伯来语 (he)"
 
     var id: String { rawValue }
 
@@ -80,9 +83,9 @@ enum PasscodeLanguageTarget: String, CaseIterable, Identifiable {
 }
 
 enum PasscodeBoldTarget: String, CaseIterable, Identifiable {
-    case both = "Universal (Regular + Bold)"
-    case boldOnly = "Bold Text Only (Fast)"
-    case regularOnly = "Regular Font Only (Fast)"
+    case both = "通用（常规 + 粗体）"
+    case boldOnly = "仅粗体（快）"
+    case regularOnly = "仅常规字重（快）"
 
     var id: String { rawValue }
 

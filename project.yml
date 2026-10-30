@@ -43,3 +43,21 @@ targets:
           if [ ! -f "$ICON_DIR/icon-1024.png" ]; then
             base64 -D -i "$SRCROOT/Sources/App/icon-1024.b64" -o "$ICON_DIR/icon-1024.png" || openssl base64 -d -in "$SRCROOT/Sources/App/icon-1024.b64" -out "$ICON_DIR/icon-1024.png"
           fi
+      - name: Generate library cover images from base64
+        script: |
+          # Same trick as the app icon: the wallpaper-library cover
+          # jpgs live in the repo as .b64 text (the push channel only
+          # carries text), decode them into their imagesets here.
+          ASSETS_DIR="$SRCROOT/Sources/App/Assets.xcassets"
+          STITCH_JPG="$ASSETS_DIR/LibraryStitch.imageset/stitch.jpg"
+          if [ ! -f "$STITCH_JPG" ]; then
+            base64 -D -i "$SRCROOT/Sources/App/library-stitch.jpg.b64" -o "$STITCH_JPG" || openssl base64 -d -in "$SRCROOT/Sources/App/library-stitch.jpg.b64" -out "$STITCH_JPG"
+          fi
+          STAR_JPG="$ASSETS_DIR/LibraryStar.imageset/star.jpg"
+          if [ ! -f "$STAR_JPG" ]; then
+            base64 -D -i "$SRCROOT/Sources/App/library-star.jpg.b64" -o "$STAR_JPG" || openssl base64 -d -in "$SRCROOT/Sources/App/library-star.jpg.b64" -out "$STAR_JPG"
+          fi
+          HERO_JPG="$ASSETS_DIR/LibraryHero.imageset/hero.jpg"
+          if [ ! -f "$HERO_JPG" ]; then
+            base64 -D -i "$SRCROOT/Sources/App/library-hero.jpg.b64" -o "$HERO_JPG" || openssl base64 -d -in "$SRCROOT/Sources/App/library-hero.jpg.b64" -out "$HERO_JPG"
+          fi

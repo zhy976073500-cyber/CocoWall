@@ -35,9 +35,9 @@
 		<string>_aircardprobe._tcp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>AirCard-iOS advertises an on-device pairing service so this iPhone can pair with itself, and connects to the local lockdown daemon to run the exploit.</string>
+	<string>CocoWall 在本机广播配对服务，让这台 iPhone 与自己配对，并连接本机 lockdown 守护进程执行写入操作。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>AirCard-iOS needs photo access to apply custom card skins and passcode themes.</string>
+	<string>CocoWall 需要访问相册，以制作和应用密码盘主题的按键图片。</string>
 	<!-- Background: audio keeps the app alive while the user approves the PIN -->
 	<key>UIBackgroundModes</key>
 	<array>
@@ -59,7 +59,7 @@
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>Passcode Theme</string>
+			<string>密码盘主题</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>LSHandlerRank</key>
@@ -71,7 +71,7 @@
 		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>Pairing File</string>
+			<string>配对文件</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>LSHandlerRank</key>
@@ -83,7 +83,7 @@
 		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>PosterBoard Wallpaper</string>
+			<string>PosterBoard 壁纸</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>LSHandlerRank</key>
@@ -100,7 +100,7 @@
 			<key>UTTypeIdentifier</key>
 			<string>com.aircard.passthm</string>
 			<key>UTTypeDescription</key>
-			<string>Passcode Theme Archive</string>
+			<string>密码盘主题包</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>
@@ -118,7 +118,7 @@
 			<key>UTTypeIdentifier</key>
 			<string>com.aircard.tendies</string>
 			<key>UTTypeDescription</key>
-			<string>PosterBoard Wallpaper Archive</string>
+			<string>PosterBoard 壁纸包</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>
@@ -140,7 +140,7 @@
 			<key>UTTypeIdentifier</key>
 			<string>com.aircard.tendies</string>
 			<key>UTTypeDescription</key>
-			<string>PosterBoard Wallpaper Archive</string>
+			<string>PosterBoard 壁纸包</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>
@@ -159,7 +159,7 @@
 			<key>UTTypeIdentifier</key>
 			<string>com.aircard.passthm</string>
 			<key>UTTypeDescription</key>
-			<string>Passcode Theme Archive</string>
+			<string>密码盘主题包</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>
