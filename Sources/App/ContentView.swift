@@ -883,11 +883,6 @@ struct ContentView: View {
         .onAppear {
             vm.showSuccessAlert = false
             vm.successAlertMessage = ""
-            if !dontShowSupportOnLaunch {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    showSupportPopup = true
-                }
-            }
         }
     }
 }

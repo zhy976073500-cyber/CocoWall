@@ -18,7 +18,7 @@ struct SettingsView: View {
                 }
                 .padding(20)
             }
-            .background(Color.white)
+            .background(Color(UIColor.systemBackground))
             .navigationTitle("设置")
             .sheet(isPresented: $showPairingPage) {
                 PairingTab()
@@ -28,7 +28,7 @@ struct SettingsView: View {
 
     // MARK: - 入口行（作者 / 配对）
 
-    /// 与 SettingsCard 同款的白底圆角行：内容 + 右侧箭头。
+    /// 与 SettingsCard 同款的圆角行：内容 + 右侧箭头。卡面用语义色，跟随系统深浅。
     private func entryRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         HStack(spacing: 12) {
             content()
@@ -39,7 +39,7 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(Color(UIColor.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .shadow(color: .black.opacity(0.06), radius: 10, x: 0, y: 3)
     }
 
@@ -119,7 +119,7 @@ struct SettingsView: View {
     }
 }
 
-/// 设置页的一张卡：白底、圆角、轻微阴影，标题在卡内顶部。
+/// 设置页的一张卡：语义色卡面、圆角、轻微阴影，标题在卡内顶部。
 private struct SettingsCard<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
@@ -131,7 +131,7 @@ private struct SettingsCard<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(Color(UIColor.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .shadow(color: .black.opacity(0.06), radius: 10, x: 0, y: 3)
     }
 }
