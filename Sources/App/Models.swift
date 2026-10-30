@@ -6,85 +6,9 @@ import CoreTransferable
 
 // MARK: - Models
 
-struct CardItem: Identifiable, Equatable {
-    let id: String
-    var isSelected: Bool = true
-    var displayName: String? = nil
-    var paymentNetwork: String? = nil
-    var isVerified: Bool = true
-    var customImageData: Data? = nil  // Primary PNG data (1536x969)
-    var customImage: UIImage? = nil   // Fast cached UIImage for display
-
-    init(
-        id: String,
-        displayName: String? = nil,
-        paymentNetwork: String? = nil,
-        isSelected: Bool = true,
-        isVerified: Bool = true,
-        customImageData: Data? = nil,
-        customImage: UIImage? = nil
-    ) {
-        self.id = id
-        self.displayName = displayName
-        self.paymentNetwork = paymentNetwork
-        self.isSelected = isSelected
-        self.isVerified = isVerified
-        self.customImageData = customImageData
-        self.customImage = customImage
-    }
-
-    var uiImage: UIImage? {
-        customImage ?? (customImageData.flatMap { UIImage(data: $0) })
-    }
-
-    var title: String {
-        if let name = displayName, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return name
-        }
-        if let net = paymentNetwork, !net.isEmpty {
-            return net.hasSuffix("Card") ? net : "\(net) Card"
-        }
-        return "Payment Card"
-    }
-
-    /// Normalizes and cleans a card identifier, stripping paths, extensions (.pkpass, .cache),
-    /// quotes, and whitespace. Validates length and format.
-    static func cleanCardId(_ raw: String) -> String? {
-        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        s = s.trimmingCharacters(in: CharacterSet(charactersIn: "'\",()<>;[]{}"))
-        if s.contains("/") {
-            s = (s as NSString).lastPathComponent
-        }
-        for ext in [".pkpass", ".cache", ".pkcache"] {
-            if s.hasSuffix(ext) {
-                s = String(s.dropLast(ext.count))
-            }
-        }
-        s = s.trimmingCharacters(in: CharacterSet(charactersIn: "'\",()<>;[]{}. "))
-        if s.count >= 20 && s.count <= 64 && !s.contains("/") {
-            if s.count == 36 && s.filter({ $0 == "-" }).count == 4 {
-                return nil // UUID format, not a card hash
-            }
-            return s
-        }
-        return nil
-    }
-
-    static func == (lhs: CardItem, rhs: CardItem) -> Bool {
-        lhs.id == rhs.id &&
-        lhs.isSelected == rhs.isSelected &&
-        lhs.displayName == rhs.displayName &&
-        lhs.paymentNetwork == rhs.paymentNetwork &&
-        lhs.isVerified == rhs.isVerified &&
-        lhs.customImage === rhs.customImage &&
-        (lhs.customImageData?.count == rhs.customImageData?.count)
-    }
-}
-
 
 enum AppTab: String, CaseIterable, Identifiable {
     case pairing = "Pairing"
-    case walletCards = "Wallet Cards"
     case passcodeThemes = "Passcode"
     case wallpapers = "Wallpapers"
     var id: String { rawValue }
@@ -296,50 +220,6 @@ enum ImageEngine {
         }
         return out.pngData()
     }
-
-    /// Resize image to exactly 1536×969 PNG — for Wallet card skin preview and primary storage.
-    static func prepareCardImage(from image: UIImage) -> Data? {
-        let normalized = normalizeAndDownsample(image, maxDimension: 2560)
-        return resizeImage(normalized, targetSize: CGSize(width: 1536, height: 969))
-    }
-
-    /// Prepares all exact resolution files for Apple Wallet pass skins.
-    /// Perfectly fits standard, Plus, Pro, and Pro Max screens.
-    /// Emits cardBackgroundCombined, diffuse, background, and strip so all Apple Pay passes are covered.
-    static func prepareAllCardSkins(from image: UIImage) -> [String: Data] {
-        let normalized = normalizeAndDownsample(image, maxDimension: 2560)
-        var skins: [String: Data] = [:]
-
-        let bg3x = resizeImage(normalized, targetSize: CGSize(width: 1536, height: 969))
-        let bg2x = resizeImage(normalized, targetSize: CGSize(width: 1024, height: 646))
-
-        if let data3x = bg3x {
-            skins["cardBackgroundCombined@3x.png"] = data3x
-            skins["diffuse@3x.png"] = data3x
-            skins["background@3x.png"] = data3x
-            skins["strip@3x.png"] = data3x
-        }
-        if let data2x = bg2x {
-            skins["cardBackgroundCombined@2x.png"] = data2x
-            skins["diffuse@2x.png"] = data2x
-            skins["background@2x.png"] = data2x
-            skins["strip@2x.png"] = data2x
-        }
-
-        // Vector PDF variants for Suica, Pasmo, ICOCA, and transit/transport passes
-        let pdfRect = CGRect(origin: .zero, size: CGSize(width: 1536, height: 969))
-        let pdfRenderer = UIGraphicsPDFRenderer(bounds: pdfRect)
-        let pdfData = pdfRenderer.pdfData { ctx in
-            ctx.beginPage()
-            normalized.draw(in: pdfRect)
-        }
-        skins["cardBackgroundCombined.pdf"] = pdfData
-        skins["background.pdf"] = pdfData
-        skins["strip.pdf"] = pdfData
-
-        return skins
-    }
-
 
     /// Slice a poster image into per-button tiles safely using UIGraphicsImageRenderer.
     /// Never crashes on color spaces, orientations, or memory limits.
