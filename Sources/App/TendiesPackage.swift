@@ -125,7 +125,7 @@ struct TendiesPackage: Identifiable {
         func ranked(_ candidates: [(url: URL, score: Int, size: Int64)]) -> [URL] {
             candidates.sorted { a, b in
                 a.score != b.score ? a.score > b.score : a.size > b.size
-            }.map(\.url)
+            }.map { $0.url }
         }
         let floatings = ranked(scored.filter { $0.url.path.lowercased().contains("floating") })
         let backgrounds = ranked(scored.filter { !$0.url.path.lowercased().contains("floating") })
