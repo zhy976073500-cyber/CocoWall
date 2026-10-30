@@ -120,16 +120,74 @@ pub async fn respring(pairing_path: &str, log: &Logger) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 pub struct SyncOutcome {
-    pub before_count: usize,
-    pub after_count: usize,
+    /// Target entry count read through the symlink before the sync,
+    /// when that readback was possible at all.
+    pub before_count: Option<usize>,
+    /// Same, after the sync.
+    pub after_count: Option<usize>,
+    /// None when the readback confirmed the expectation; otherwise
+    /// why confirmation failed. Delivery and confirmation are
+    /// separate outcomes: a delivered sync with an unreadable target
+    /// is reported as delivered-but-unconfirmed, never as confirmed
+    /// and never as a failed sync.
+    pub unconfirmed_reason: Option<String>,
 }
 
-/// Drive one staged sync: ATC handshake, FileComplete for the link,
-/// read the target listing through the landed symlink, FileComplete
-/// for the payload(s), settle, then verify every expected name is
-/// present in the target and the count actually moved for new names.
-/// A target that cannot be read back through the symlink is reported
-/// as failure — an unverified inject is never called a success.
+impl SyncOutcome {
+    pub fn confirmed(&self) -> bool {
+        self.unconfirmed_reason.is_none()
+    }
+}
+
+/// Judge the post-sync readback: None for "confirmed", otherwise the
+/// reason confirmation failed (unreadable target, expected name
+/// missing, or the count did not move for a new entry).
+fn judge_confirmation(
+    before: &Option<Vec<String>>,
+    after: &Result<Vec<String>, String>,
+    expected_names: &[String],
+) -> Option<String> {
+    let after = match after {
+        Ok(names) => names,
+        Err(e) => {
+            return Some(format!("同步后经 symlink 回读目标目录失败（{e}）"));
+        }
+    };
+    for name in expected_names {
+        if !after.iter().any(|n| n == name) {
+            return Some(format!("同步后目标目录中没有出现 '{name}'"));
+        }
+        if let Some(before_names) = before {
+            if !before_names.iter().any(|n| n == name) && after.len() <= before_names.len() {
+                return Some(format!(
+                    "'{name}' 为新条目但目录计数未增加（{} → {}）",
+                    before_names.len(),
+                    after.len()
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Drive one staged sync to delivery: ATC handshake, then a
+/// FileComplete for EVERY staged asset (link first, payloads right
+/// after), then a short drain window. The sync counts as delivered
+/// when all FileCompletes went out and the daemon did not answer
+/// with SyncFailed — the completion rule the reference flow uses
+/// (AirCard's inject functions send the FileCompletes, settle, and
+/// return success; they never read the target back, and their UI
+/// resprings right after).
+///
+/// The gallery count readback through the symlink is kept only as a
+/// best-effort confirmation on top of delivery: the AFC service
+/// refuses to traverse the staging symlink into the PosterBoard
+/// container (status 10, PermDenied — observed on device in run
+/// #40), so an unreadable target downgrades the outcome to
+/// "delivered, unconfirmed" with the reason attached. It can no
+/// longer block the payload FileCompletes or the steps after the
+/// sync — run #40 stalled exactly there, with only the link asset
+/// ever completed.
 async fn run_staged_sync(
     tunnel: &mut DeviceTunnel,
     afc: &mut AfcClient,
@@ -137,66 +195,59 @@ async fn run_staged_sync(
     expected_names: &[String],
     log: &Logger,
 ) -> Result<SyncOutcome, String> {
+    // Baseline for the count comparison, taken while the staged
+    // symlink is already sitting in Media. Best effort only.
+    let before = match stage::list_dir_names(afc, &staged.link_destination).await {
+        Ok(names) => {
+            log.log(format!("校验：同步前目标目录共 {} 项", names.len()));
+            Some(names)
+        }
+        Err(e) => {
+            log.log(format!(
+                "校验：同步前经 symlink 回读目标目录失败（不阻塞同步）: {e}"
+            ));
+            None
+        }
+    };
+
     let mut atc = AtcSession::connect(tunnel, log).await?;
     let grappa_info = atc.wait_sync_allowed(log).await?;
     atc.handshake(grappa_info, log).await?;
 
-    // 1) The symlink asset first: it lands at the Media root.
-    atc.file_complete(&staged.identifiers[0], &staged.destinations[0], log)
-        .await?;
-    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-
-    // Read the target directory through the symlink.
-    let before = match stage::list_dir_names(afc, &staged.link_destination).await {
-        Ok(names) => names,
-        Err(_) => {
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-            stage::list_dir_names(afc, &staged.link_destination).await.map_err(|e| {
-                format!(
-                    "计数校验失败：无法经 symlink 回读目标目录（{e}）——注入结果未确认，按失败处理"
-                )
-            })?
-        }
-    };
-    log.log(format!(
-        "校验：同步前目标目录共 {} 项",
-        before.len()
-    ));
-
-    // 2) The payload asset(s), through the symlink.
-    for i in 1..staged.identifiers.len() {
+    // Every FileComplete, link first. The payload must never wait
+    // behind a readback again.
+    let total = staged.identifiers.len();
+    for i in 0..total {
         atc.file_complete(&staged.identifiers[i], &staged.destinations[i], log)
             .await?;
-        if i + 1 < staged.identifiers.len() {
+        if i + 1 < total {
             tokio::time::sleep(std::time::Duration::from_millis(900)).await;
         }
     }
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    if let Some(dump) = atc.drain_after_file_complete(log).await {
+        return Err(format!(
+            "同步未完成：FileComplete 已全部发送，但守护进程随后报 SyncFailed: {dump}"
+        ));
+    }
+    log.log("同步：全部 FileComplete 已发送，守护进程未报 SyncFailed——同步已交付".to_string());
 
-    let after = stage::list_dir_names(afc, &staged.link_destination).await?;
-    log.log(format!(
-        "校验：同步后目标目录共 {} 项",
-        after.len()
-    ));
-    for name in expected_names {
-        if !after.iter().any(|n| n == name) {
-            return Err(format!(
-                "计数校验失败：目标目录中没有出现 '{name}'（同步前 {} 项、同步后 {} 项）",
-                before.len(),
-                after.len()
-            ));
-        }
-        if !before.iter().any(|n| n == name) && after.len() <= before.len() {
-            return Err(format!(
-                "计数校验失败：'{name}' 为新条目但目录计数未增加（{} → {}）",
-                before.len(),
-                after.len()
-            ));
-        }
+    // Best-effort confirmation readback; its result never fails the
+    // sync, it only decides confirmed vs. unconfirmed.
+    let after = stage::list_dir_names(afc, &staged.link_destination).await;
+    if let Ok(names) = &after {
+        log.log(format!("校验：同步后目标目录共 {} 项", names.len()));
+    }
+    let unconfirmed_reason = judge_confirmation(&before, &after, expected_names);
+    match &unconfirmed_reason {
+        None => log.log("校验：计数已确认（目标目录含本次条目）".to_string()),
+        Some(reason) => log.log(format!(
+            "校验：计数未确认：{reason}——同步已交付，最终确认请在重启后看锁屏图库"
+        )),
     }
     Ok(SyncOutcome {
-        before_count: before.len(),
-        after_count: after.len(),
+        before_count: before.as_ref().map(|n| n.len()),
+        after_count: after.as_ref().ok().map(|n| n.len()),
+        unconfirmed_reason,
     })
 }
 
@@ -477,11 +528,29 @@ fn refresh_plist_bytes() -> Result<Vec<u8>, String> {
 pub struct ApplyReport {
     pub uuid: String,
     pub identifier_rewritten: bool,
-    pub primary_before: usize,
-    pub primary_after: usize,
+    pub primary_before: Option<usize>,
+    pub primary_after: Option<usize>,
+    /// None = the post-sync readback confirmed the new descriptor;
+    /// Some(reason) = the sync was delivered but the count could not
+    /// be confirmed (the usual case on device: AFC refuses the
+    /// readback through the symlink).
+    pub primary_unconfirmed: Option<String>,
     /// "ok" | "skipped" | "failed: <error>"
     pub dual: String,
     pub product_version: Option<String>,
+}
+
+/// One log line describing a finished sync: delivered, and whether
+/// the gallery count was confirmed.
+fn describe_outcome(label: &str, outcome: &SyncOutcome) -> String {
+    match (&outcome.unconfirmed_reason, outcome.before_count, outcome.after_count) {
+        (None, Some(b), Some(a)) => format!("{label}完成，计数已确认（gallery {b} → {a}）"),
+        (None, _, Some(a)) => {
+            format!("{label}完成，计数已确认（目标目录共 {a} 项，含本次条目）")
+        }
+        (None, _, None) => format!("{label}完成，计数已确认"),
+        (Some(reason), _, _) => format!("{label}同步已交付，计数未确认（{reason}）"),
+    }
 }
 
 /// Full wallpaper apply for one descriptor folder: locate the
@@ -541,8 +610,8 @@ pub async fn apply_wallpaper(
         }
     };
     log.log(format!(
-        "壁纸应用：主注入完成（gallery {} → {}）",
-        primary.before_count, primary.after_count
+        "壁纸应用：{}",
+        describe_outcome("主注入", &primary)
     ));
 
     // iOS 18+ dual write into the modern extension store (best effort,
@@ -552,8 +621,8 @@ pub async fn apply_wallpaper(
         match inject_folder_via(&mut tunnel, &prep_dir, &modern_parent, &uuid, log).await {
             Ok(o) => {
                 log.log(format!(
-                    "壁纸应用：双写完成（gallery {} → {}）",
-                    o.before_count, o.after_count
+                    "壁纸应用：{}",
+                    describe_outcome("双写", &o)
                 ));
                 "ok".to_string()
             }
@@ -594,6 +663,7 @@ pub async fn apply_wallpaper(
         identifier_rewritten,
         primary_before: primary.before_count,
         primary_after: primary.after_count,
+        primary_unconfirmed: primary.unconfirmed_reason,
         dual,
         product_version,
     })

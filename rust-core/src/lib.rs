@@ -9,9 +9,10 @@
 //! are landed: `stage.rs` stages payloads + a symlink into the Media
 //! area over AFC, `atc.rs` runs the com.apple.atc Book-class sync that
 //! makes the daemon write through the symlink, and `device.rs`
-//! orchestrates container lookup, respring, count-verified injection,
-//! and the full wallpaper apply sequence. Failures are reported with
-//! the failing step's own words; nothing fakes success.
+//! orchestrates container lookup, respring, injection (delivered vs.
+//! count-confirmed reported as separate outcomes), and the full
+//! wallpaper apply sequence. Failures are reported with the failing
+//! step's own words; nothing fakes success.
 //!
 //! Conventions: 0 == OK. Heap strings returned through out-params are
 //! released by the caller with `cw_string_free`.
@@ -355,7 +356,9 @@ pub extern "C" fn cw_device_respring(
 /// Full wallpaper apply for one descriptor folder: container lookup,
 /// staging-copy prep (new UUID + identifier rewrite), primary inject,
 /// iOS 18+ dual inject, refresh plist. On success `out_report` is a
-/// JSON object; respring stays a separate explicit step.
+/// JSON object; its `primaryUnconfirmed` is null when the gallery
+/// count was confirmed, or the reason it could not be (the sync is
+/// still delivered then). Respring stays a separate explicit step.
 #[no_mangle]
 pub extern "C" fn cw_wallpaper_apply(
     pairing_path: *const c_char,
@@ -382,6 +385,7 @@ pub extern "C" fn cw_wallpaper_apply(
                 "identifierRewritten": report.identifier_rewritten,
                 "primaryBefore": report.primary_before,
                 "primaryAfter": report.primary_after,
+                "primaryUnconfirmed": report.primary_unconfirmed,
                 "dual": report.dual,
                 "productVersion": report.product_version,
             })

@@ -402,4 +402,38 @@ impl AtcSession {
         log.log(format!("同步：FileComplete 已发送 → {destination}"));
         Ok(())
     }
+
+    /// Watch the stream briefly after the last FileComplete (the
+    /// reference flow simply settles ~2s and drops the connection).
+    /// Returns the SyncFailed dump when the daemon refuses the sync
+    /// inside this window — the caller then treats the sync as not
+    /// delivered. Pings are answered with Pong; any other message is
+    /// logged and ignored. A closed stream or a quiet window just
+    /// ends the watch.
+    pub async fn drain_after_file_complete(&mut self, log: &Logger) -> Option<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            match tokio::time::timeout(deadline - now, read_msg(&mut self.stream)).await {
+                Ok(Ok(dict)) => {
+                    if let Some(name) = msg_name(&dict) {
+                        log.log(format!("同步：FileComplete 后守护进程状态 '{name}'"));
+                        match name.as_str() {
+                            "Ping" => {
+                                let pong = make_msg("Pong", 1, None);
+                                let _ = send_msg(&mut self.stream, &pong).await;
+                            }
+                            "SyncFailed" => return Some(format!("{dict:?}")),
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(Err(_)) => return None,
+                Err(_) => return None,
+            }
+        }
+    }
 }

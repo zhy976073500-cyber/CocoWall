@@ -561,7 +561,10 @@ pub async fn stage_files(
 
 /// List a directory's entry names over AFC (`.`/`..` filtered out).
 /// Listing the link destination reads *through* the synced symlink into
-/// the target directory — that is how the gallery count is verified.
+/// the target directory — used as a best-effort gallery count
+/// confirmation after a sync. The AFC service may refuse to traverse
+/// the symlink (PermDenied), which callers treat as "unconfirmed",
+/// never as a failed sync.
 pub async fn list_dir_names(afc: &mut AfcClient, path: &str) -> Result<Vec<String>, String> {
     let names = afc
         .list_dir(path)

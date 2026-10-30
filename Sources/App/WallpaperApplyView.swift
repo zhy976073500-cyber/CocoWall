@@ -1,11 +1,14 @@
 import SwiftUI
 
 /// The wallpaper apply sheet: runs the core's full sequence
-/// (隧道 → 配对文件 → AFC 暂存 → AirTraffic 同步 → gallery 计数校验 →
-/// 刷新 plist) and renders its log lines as they stream in, so the
-/// segment a failure stops at is visible with the core's own error
-/// wording. On success it offers the respring step explicitly —
-/// nothing is restarted without the user tapping it.
+/// (隧道 → 配对文件 → AFC 暂存 → AirTraffic 同步 → 刷新 plist) and
+/// renders its log lines as they stream in, so the segment a failure
+/// stops at is visible with the core's own error wording. A finished
+/// run lands in one of two success states — count confirmed, or sync
+/// delivered but count unconfirmed (the readback through the staging
+/// symlink is refused on device, so final confirmation is the
+/// post-respring gallery) — and both offer the respring step
+/// explicitly; nothing is restarted without the user tapping it.
 struct WallpaperApplyView: View {
     let record: ImportedWallpaper
     let pairingFile: URL
@@ -56,10 +59,16 @@ struct WallpaperApplyView: View {
                 .foregroundStyle(.secondary)
         case .running, .respringing:
             ProgressView()
-        case .succeeded:
-            Image(systemName: "checkmark.circle.fill")
-                .font(.title2)
-                .foregroundStyle(.green)
+        case .succeeded(let report):
+            if report.primaryUnconfirmed == nil {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.green)
+            } else {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+            }
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.title2)
@@ -77,7 +86,10 @@ struct WallpaperApplyView: View {
         case .idle: return record.displayName
         case .running: return "正在写入设备…"
         case .respringing: return "正在重启设备…"
-        case .succeeded: return "已写入，重启后生效"
+        case .succeeded(let report):
+            return report.primaryUnconfirmed == nil
+                ? "已写入并确认，重启后生效"
+                : "已同步，重启后确认"
         case .failed: return "写入失败"
         }
     }
@@ -91,7 +103,13 @@ struct WallpaperApplyView: View {
         case .respringing:
             return "设备会黑屏重启一次，属正常现象。"
         case .succeeded(let report):
-            return "新壁纸编号 \(report.uuid)，gallery \(report.primaryBefore) → \(report.primaryAfter)，双写：\(report.dual)。重启后到锁屏长按选择新壁纸。"
+            if let reason = report.primaryUnconfirmed {
+                return "同步已完整交付，但计数回读未确认：\(reason)。新壁纸编号 \(report.uuid)，双写：\(report.dual)。重启后到锁屏长按，确认新壁纸出现在图库中。"
+            }
+            if let before = report.primaryBefore, let after = report.primaryAfter {
+                return "新壁纸编号 \(report.uuid)，gallery \(before) → \(after)，双写：\(report.dual)。重启后到锁屏长按选择新壁纸。"
+            }
+            return "新壁纸编号 \(report.uuid)，目标目录已确认收录，双写：\(report.dual)。重启后到锁屏长按选择新壁纸。"
         case .failed(let message):
             return message
         }

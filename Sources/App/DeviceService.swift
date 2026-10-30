@@ -37,8 +37,15 @@ protocol DeviceService {
 struct WallpaperApplyReport: Decodable {
     let uuid: String
     let identifierRewritten: Bool
-    let primaryBefore: Int
-    let primaryAfter: Int
+    /// Gallery counts from the readback through the staging symlink;
+    /// nil when that readback was refused (the usual on-device case).
+    let primaryBefore: Int?
+    let primaryAfter: Int?
+    /// nil = the count readback confirmed the new descriptor;
+    /// otherwise why it could not be confirmed. The sync itself is
+    /// delivered either way — delivery and confirmation are separate
+    /// outcomes and the UI keeps them separate.
+    let primaryUnconfirmed: String?
     /// "ok" | "skipped" | "failed: <error>"
     let dual: String
     let productVersion: String?
@@ -208,11 +215,12 @@ struct FFIDeviceService: DeviceService {
     }
 
     func galleryDescriptorCount(containerPath: String) async throws -> Int {
-        // The core exposes no standalone count entry point: the count is
-        // read back inside the injection flow itself (device.rs) and
-        // reported with its result. Say so instead of inventing a number.
+        // The core exposes no standalone count entry point: the count
+        // readback is attempted inside the injection flow itself
+        // (device.rs) and its outcome travels with the apply report.
+        // Say so instead of inventing a number.
         throw DeviceServiceError.coreFailed(
-            "核心未提供独立的计数入口：gallery 计数在注入流程内回读校验。")
+            "核心未提供独立的计数入口：计数确认在注入流程内尽力进行，结果随应用报告返回。")
     }
 
     func respring(pairingFile: URL) async throws {
