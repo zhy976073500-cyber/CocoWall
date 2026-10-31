@@ -160,3 +160,58 @@ closed"），误报 verifyTimeout。Walllive 二进制里早有
 
 未动：建连/服务发现/握手/锁 pid/验明/kill 的既有实现与阶段日志名、
 Swift 侧（含 #95 不自动注销行为）、受保护文件、.github/workflows。
+
+## 改动登记 · 壁纸库页签摘除 + 获取更多壁纸入口 + 设备壁纸检测/清理（2026-11-01，Sage 03:13 拍板）
+
+三项产品改动：
+
+1. **删除「壁纸库」页签**：底栏 5 页签变 4（壁纸｜制作｜密码盘｜设置）。
+   ContentView 摘除 LibraryView 挂载，Models 的 AppTab 删 library
+   case。壁纸库专属代码无其他引用，一并移除：LibraryView.swift、
+   LibraryCatalog.swift、三张封面图 b64（library-hero/star/stitch）
+   与对应 imageset、project.yml 里解码这三张图的 preBuildScript。
+   **壁纸页（TendiesView）自带的「已导入壁纸」列表未动**（那是本地
+   导入库，不是被删的页签）。
+
+2. **壁纸页顶部「获取更多壁纸」**：TendiesView 在刷入区上方新增
+   Section 0 入口行（图标 + 标题 + 说明 + chevron，与页面既有
+   Form 语言一致），点击用 `UIApplication.shared.open` 系统浏览器
+   打开飞书 wiki（Oi6pwrRp9i8wd2kBl0Lc4bn9nTb），不用 App 内 WebView。
+
+3. **「检测本机已导入的壁纸」+ 可选清理**：壁纸页已导入列表区下方
+   新增入口按钮，点击弹 DevicePosterCleanupView：列出**设备**
+   PosterBoard 数据仓里实际存在的 descriptor（不是 App 本地库），
+   每项显示可读名 + 扩展目录 + UUID 短码，可勾选；「清理所选」先弹
+   确认，确认后删设备数据仓中的所选 descriptor，刷新列表并反馈
+   成功/失败数，之后自动走一次 poster_refresh 免注销刷新使删除
+   生效（未确认只提示，不自动注销，与 #95 规则一致）。
+
+检测/清理通道（侦察结论）：刷入用的 ATC 同步通道只能写、不能列举
+或删除数据仓存量；数据仓本体是 PosterBoard 容器内的普通目录树
+（PRBPosterExtensionDataStore/<版本 61>/Extensions/<扩展>/descriptors/
+<UUID>）。AFC（com.apple.afc）被关在 /var/mobile/Media 内，但会跟随
+狱内符号链接——刷入暂存正是这么进数据仓的。据此新增 Rust 模块
+`rust-core/src/poster_store.rs`（增量新增，按 poster_refresh 先例
+登记于 VENDORED.md）：RSD 隧道 → AFC 服务 → 用 AFC MakeLink 在
+Media 根临时植入指向数据仓 Extensions 目录的符号链接
+`cocowall-store-<token>`，经链接 list_dir 枚举 Extensions 下全部
+扩展目录（任务所指两个目标扩展含在其中）与其 descriptor，读
+identifier 文本文件与
+versions/<v>/contents/<名>.wallpaper 解析可读名（优先级：包名 >
+identifier > UUID 短码）；删除为逐个 remove_all descriptor 目录，
+删后回读计数；临时链接用完即删。新 FFI：`al_poster_store_list` /
+`al_poster_store_delete`（lib.rs + airlift.h 纯新增），Swift 侧新增
+PosterStoreHelper.swift，AppViewModel 只增新状态与两方法
+（detectDevicePosters / cleanupSelectedDevicePosters +
+posterStoreContext 前置）。
+
+诚实边界：AFC MakeLink 植入链接 + 经链接遍历/删除数据仓，未经真机
+验证（桌面仅 cargo check 主机目标通过）；若真机上 afcd 拒绝建链或
+遍历，检测会如实报 stageFailed/listFailed 并显示原因，不会拿本地
+库条目冒充。providerInfo.plist（NSKeyedArchiver）未解析，可读名
+来源为包名/identifier/UUID 短码。连接走 RSD 路线（与
+poster_refresh 同），Lockdown 路线设备暂不支持本功能。
+
+未动：TendiesEngine / PairingController / RespringHelper /
+GrappaHelper / Live Activity 既有函数体、#93 制作页、
+#94–96 poster_refresh 与不自动注销行为、.github/workflows。

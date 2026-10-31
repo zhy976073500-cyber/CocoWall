@@ -843,10 +843,6 @@ struct ContentView: View {
                 .tabItem { Label("壁纸", systemImage: "photo.stack.fill") }
                 .tag(AppTab.wallpapers)
 
-            LibraryView()
-                .tabItem { Label("壁纸库", systemImage: "square.grid.2x2.fill") }
-                .tag(AppTab.library)
-
             MakerView()
                 .tabItem { Label("制作", systemImage: "wand.and.stars") }
                 .tag(AppTab.maker)

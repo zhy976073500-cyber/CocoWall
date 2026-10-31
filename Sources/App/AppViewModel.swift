@@ -77,6 +77,16 @@ final class AppViewModel: ObservableObject {
     @Published var isNeoSpringing: Bool = false
     private var previewRegenInFlight: Set<UUID> = []
 
+    // MARK: - Device PosterBoard store (detect / cleanup)
+    /// Descriptors actually present in the device's PosterBoard data store
+    /// (from PosterStoreHelper — NOT the local imported-.tendies library).
+    @Published var devicePosters: [DevicePosterItem] = []
+    @Published var devicePosterSelection: Set<String> = []
+    @Published var isScanningDevicePosters: Bool = false
+    @Published var isCleaningDevicePosters: Bool = false
+    @Published var devicePosterStatus: String = ""
+    @Published var showDevicePosterSheet: Bool = false
+
     // MARK: - AirCard UI States & Properties
     static var detectedDeviceLanguage: PasscodeLanguageTarget {
         let code = Locale.preferredLanguages.first?.components(separatedBy: "-").first?.lowercased() ?? "en"
@@ -990,6 +1000,136 @@ final class AppViewModel: ObservableObject {
         tendiesFlashLog.append("⚡ 正在触发 NeoSpring 注销…")
         isNeoSpringing = true
         RespringHelper.triggerNeoSpring()
+    }
+
+    // MARK: - Device PosterBoard store detection / cleanup
+
+    /// PRBPosterExtensionDataStore layout version: 61 on iOS 17+, 59 below
+    /// (same split the flash path uses).
+    private var posterStoreStructVersion: Int {
+        let major = Int(UIDevice.current.systemVersion.split(separator: ".").first ?? "0") ?? 0
+        return major >= 17 ? 61 : 59
+    }
+
+    /// Shared preamble for the device-store operations: pairing file must
+    /// exist, and the PosterBoard container must be known (auto-detect and
+    /// persist it exactly like the flash flow does). Returns nil after
+    /// recording the reason in devicePosterStatus.
+    private func posterStoreContext() async -> (pairingPath: String, container: String)? {
+        let pairingPath = PairingController.pairingFilePath()
+        guard FileManager.default.fileExists(atPath: pairingPath) else {
+            devicePosterStatus = "没有生效的配对文件。请先配对设备。"
+            return nil
+        }
+        var container = posterBoardContainer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if container.isEmpty {
+            do {
+                container = try await TendiesEngine.shared.detectPosterBoardContainer(pairingPath: pairingPath)
+                self.posterBoardContainer = container
+                UserDefaults.standard.set(container, forKey: "aircard.posterboard_container")
+            } catch {
+                devicePosterStatus = "无法自动找到 PosterBoard 容器：\(error.localizedDescription)"
+                return nil
+            }
+        }
+        return (pairingPath, container)
+    }
+
+    /// 检测本机已导入的壁纸： enumerates the descriptors actually present in
+    /// the device's PosterBoard data store (device-side truth; never the
+    /// local library list).
+    func detectDevicePosters(clearStatus: Bool = true) async {
+        guard !isScanningDevicePosters else { return }
+        if clearStatus { devicePosterStatus = "" }
+        guard let ctx = await posterStoreContext() else { return }
+
+        isScanningDevicePosters = true
+        devicePosters = []
+        devicePosterSelection = []
+        let version = posterStoreStructVersion
+        let result: Result<[DevicePosterItem], PosterStoreError> = await withCheckedContinuation { cont in
+            PosterStoreHelper.listImported(
+                pairingPath: ctx.pairingPath,
+                containerPath: ctx.container,
+                structVersion: version,
+                log: { [weak self] line in
+                    DispatchQueue.main.async {
+                        self?.tendiesFlashLog.append(line)
+                    }
+                }
+            ) { result in
+                cont.resume(returning: result)
+            }
+        }
+        isScanningDevicePosters = false
+        switch result {
+        case .success(let items):
+            devicePosters = items
+            if items.isEmpty && devicePosterStatus.isEmpty {
+                devicePosterStatus = "设备数据仓里没有检测到已导入的壁纸。"
+            }
+        case .failure(let err):
+            devicePosterStatus = "检测失败：\(err.localizedDescription)"
+        }
+    }
+
+    /// 清理所选： deletes the selected descriptors from the device data
+    /// store, refreshes the list, then tries the no-respring PosterBoard
+    /// refresh so the removal takes effect.
+    func cleanupSelectedDevicePosters() async {
+        guard !isCleaningDevicePosters else { return }
+        let targets = devicePosters.filter { devicePosterSelection.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        guard let ctx = await posterStoreContext() else { return }
+
+        isCleaningDevicePosters = true
+        let version = posterStoreStructVersion
+        let result: Result<(deleted: Int, failed: Int), PosterStoreError> = await withCheckedContinuation { cont in
+            PosterStoreHelper.deleteImported(
+                pairingPath: ctx.pairingPath,
+                containerPath: ctx.container,
+                structVersion: version,
+                targets: targets,
+                log: { [weak self] line in
+                    DispatchQueue.main.async {
+                        self?.tendiesFlashLog.append(line)
+                    }
+                }
+            ) { result in
+                cont.resume(returning: result)
+            }
+        }
+
+        switch result {
+        case .success(let r):
+            var message = "清理完成：成功 \(r.deleted) 条"
+            if r.failed > 0 { message += "，失败 \(r.failed) 条" }
+            message += "。"
+            await detectDevicePosters(clearStatus: false)
+            devicePosterStatus = message
+            isCleaningDevicePosters = false
+            // Removal only takes effect once PosterBoard re-reads its
+            // store — try the免注销 refresh; on failure just report it
+            // (this版不自动注销, same rule as the flash flow).
+            PosterRefreshHelper.attemptRefresh(
+                pairingPath: ctx.pairingPath,
+                log: { [weak self] line in
+                    DispatchQueue.main.async {
+                        self?.tendiesFlashLog.append(line)
+                    }
+                }
+            ) { [weak self] confirmed, _ in
+                guard let self else { return }
+                if confirmed {
+                    self.devicePosterStatus += "已刷新 PosterBoard，删除已生效。"
+                } else {
+                    self.devicePosterStatus += "自动刷新未确认，如列表未更新可手动点注销生效。"
+                }
+            }
+        case .failure(let err):
+            isCleaningDevicePosters = false
+            devicePosterStatus = "清理失败：\(err.localizedDescription)"
+        }
     }
 
     func reset() {

@@ -9,7 +9,6 @@ import CoreTransferable
 
 enum AppTab: String, CaseIterable, Identifiable {
     case wallpapers = "Wallpapers"
-    case library = "Library"
     case maker = "Maker"
     case passcodeThemes = "Passcode"
     case settings = "Settings"

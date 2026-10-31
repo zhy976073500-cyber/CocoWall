@@ -161,6 +161,37 @@ int32_t al_poster_refresh(const char *pairing_path,
                           char **out_status,
                           char **out_error);
 
+// PosterBoard data-store enumeration + cleanup (local addition,
+// src/poster_store.rs): list/delete the descriptors actually present in
+// the device's PRBPosterExtensionDataStore, via AFC over the RSD tunnel
+// through a temporary symlink planted in the AFC media jail. Both block
+// until done; run off the main thread. On success out_json carries the
+// JSON result (list: {"items":[{extension,uuid,identifier,packageName,
+// name}]}; delete: {"deleted":N,"failed":M,"results":[{extension,uuid,
+// ok}]}), out_status is "ok" (delete may report "partial") and the
+// return value is 0. On failure out_status is machine-readable
+// ("connectFailed" / "serviceUnavailable" / "stageFailed" / "listFailed"
+// / "afcFailed"), out_error is human-readable and the return value is 1.
+// Heap strings must be released with al_string_free().
+int32_t al_poster_store_list(const char *pairing_path,
+                             const char *container_path,
+                             int64_t struct_version,
+                             ALLogCallback log_cb,
+                             void *ctx,
+                             char **out_json,
+                             char **out_status,
+                             char **out_error);
+
+int32_t al_poster_store_delete(const char *pairing_path,
+                               const char *container_path,
+                               int64_t struct_version,
+                               const char *targets_csv,
+                               ALLogCallback log_cb,
+                               void *ctx,
+                               char **out_json,
+                               char **out_status,
+                               char **out_error);
+
 // ---------------------------------------------------------------------------
 // Target Host Configuration
 // ---------------------------------------------------------------------------

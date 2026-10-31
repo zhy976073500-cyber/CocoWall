@@ -32,6 +32,23 @@ registered in SPEC.md):
 - `include/airlift.h` — pure addition only: the `al_poster_refresh`
   declaration next to `al_device_respring`. No existing line changed.
 
+Second local source change, 2026-11-01 (Sage-approved device poster
+store detect/cleanup feature, registered in SPEC.md):
+
+- ADDED `src/poster_store.rs` — new module implementing enumeration
+  and deletion of the descriptors actually present in the device's
+  PRBPosterExtensionDataStore, via AFC (com.apple.afc) over the RSD
+  tunnel: a temporary symlink is planted in the AFC media jail with
+  the AFC MakeLink operation pointing at the store's Extensions
+  directory, descriptors are listed/read/removed through it, and the
+  link is removed afterwards. Uses only the already-vendored
+  `idevice` crate's AFC client; no upstream file was altered.
+- `src/lib.rs` — pure additions only: `pub mod poster_store;` and the
+  new FFI exports `al_poster_store_list` / `al_poster_store_delete`
+  (with catch_unwind wrappers). No existing line changed.
+- `include/airlift.h` — pure additions only: the two declarations
+  next to `al_poster_refresh`. No existing line changed.
+
 Everything else in this tree remains a verbatim copy of upstream.
 The other adaptations live outside this directory:
 

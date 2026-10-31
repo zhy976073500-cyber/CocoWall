@@ -46,6 +46,35 @@ struct TendiesView: View {
                     }
                 }
 
+                // Section 0: 获取更多壁纸（页面最上方；点击用系统浏览器打开飞书合集）
+                Section {
+                    Button {
+                        if let url = URL(string: "https://my.feishu.cn/wiki/Oi6pwrRp9i8wd2kBl0Lc4bn9nTb") {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "photo.on.rectangle.angled")
+                                .font(.title3)
+                                .foregroundStyle(Color.accentColor)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("获取更多壁纸")
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+                                Text("在浏览器打开飞书合集，持续更新")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 // Section 1: Flash Action & Respring（原底部动作卡上移到此处；
                 // 导入入口只保留工具栏右上角 + 号）
                 Section {
@@ -177,6 +206,24 @@ struct TendiesView: View {
                     }
                 }
 
+                // Section 3.5: 检测本机已导入的壁纸（设备 PosterBoard 数据仓
+                // 的真实存量，与上方 App 本地导入列表是两回事，可勾选清理）
+                Section {
+                    Button {
+                        vm.showDevicePosterSheet = true
+                        Task { await vm.detectDevicePosters() }
+                    } label: {
+                        Label("检测本机已导入的壁纸", systemImage: "checklist")
+                    }
+                    if !vm.devicePosterStatus.isEmpty {
+                        Text(vm.devicePosterStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } footer: {
+                    Text("检测设备 PosterBoard 数据仓中实际存在的壁纸（包括其他工具导入的），可勾选后清理。")
+                }
+
                 // Section 4: Flash Log (CompactLogView)
                 if !vm.tendiesFlashLog.isEmpty {
                     Section {
@@ -212,6 +259,9 @@ struct TendiesView: View {
             }
             .sheet(item: $selectedDetailItem) { item in
                 TendieDetailSheet(item: item)
+            }
+            .sheet(isPresented: $vm.showDevicePosterSheet) {
+                DevicePosterCleanupView()
             }
             .onAppear {
                 vm.isNeoSpringing = false
@@ -423,6 +473,163 @@ struct TendiesDocumentPickerView: UIViewControllerRepresentable {
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
             parent.dismiss()
+        }
+    }
+}
+
+// MARK: - Device Poster Cleanup Sheet
+
+/// Lists the descriptors actually present in the device's PosterBoard
+/// data store (via PosterStoreHelper), lets the user tick items, and —
+/// after an explicit confirmation — deletes the selected ones from the
+/// device, then shows the refreshed list and the cleanup result.
+struct DevicePosterCleanupView: View {
+    @EnvironmentObject var vm: AppViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var showCleanupConfirm = false
+
+    private var selectedItems: [DevicePosterItem] {
+        vm.devicePosters.filter { vm.devicePosterSelection.contains($0.id) }
+    }
+
+    private var allSelected: Bool {
+        !vm.devicePosters.isEmpty && vm.devicePosterSelection.count == vm.devicePosters.count
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if vm.isScanningDevicePosters {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("正在检测设备数据仓…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if vm.devicePosters.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "photo.stack")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.secondary)
+                        Text(vm.devicePosterStatus.isEmpty ? "设备数据仓里没有检测到已导入的壁纸。" : vm.devicePosterStatus)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        Section {
+                            ForEach(vm.devicePosters) { item in
+                                Button {
+                                    if vm.devicePosterSelection.contains(item.id) {
+                                        vm.devicePosterSelection.remove(item.id)
+                                    } else {
+                                        vm.devicePosterSelection.insert(item.id)
+                                    }
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Image(systemName: vm.devicePosterSelection.contains(item.id) ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(vm.devicePosterSelection.contains(item.id) ? Color.accentColor : Color.secondary)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(item.name)
+                                                .font(.subheadline.bold())
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(1)
+                                            Text("\(item.extensionId) · \(String(item.uuid.prefix(8)))")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer()
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        } header: {
+                            HStack {
+                                Text("设备数据仓中共 \(vm.devicePosters.count) 张")
+                                Spacer()
+                                Button(allSelected ? "取消全选" : "全选") {
+                                    if allSelected {
+                                        vm.devicePosterSelection = []
+                                    } else {
+                                        vm.devicePosterSelection = Set(vm.devicePosters.map { $0.id })
+                                    }
+                                }
+                                .font(.caption)
+                                .textCase(nil)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("本机已导入的壁纸")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("关闭") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        Task { await vm.detectDevicePosters() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .disabled(vm.isScanningDevicePosters || vm.isCleaningDevicePosters)
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if !vm.devicePosters.isEmpty {
+                    VStack(spacing: 8) {
+                        if !vm.devicePosterStatus.isEmpty {
+                            Text(vm.devicePosterStatus)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        Button(role: .destructive) {
+                            showCleanupConfirm = true
+                        } label: {
+                            HStack(spacing: 8) {
+                                Spacer()
+                                if vm.isCleaningDevicePosters {
+                                    ProgressView()
+                                    Text("正在清理…")
+                                } else {
+                                    Image(systemName: "trash")
+                                    Text("清理所选（\(selectedItems.count)）")
+                                }
+                                Spacer()
+                            }
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                        .disabled(selectedItems.isEmpty || vm.isCleaningDevicePosters || vm.isScanningDevicePosters)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.bar)
+                }
+            }
+            .confirmationDialog(
+                "清理所选壁纸？",
+                isPresented: $showCleanupConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("清理 \(selectedItems.count) 张", role: .destructive) {
+                    Task { await vm.cleanupSelectedDevicePosters() }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("将从设备 PosterBoard 数据仓中删除所选 \(selectedItems.count) 张壁纸，此操作不可恢复。")
+            }
         }
     }
 }
