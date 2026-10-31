@@ -1,18 +1,20 @@
 import SwiftUI
 
-/// 壁纸库页：照网页版版式——「主播推荐」横排 + 编号网格。
+/// 壁纸库页：打开直接是「全部壁纸」编号网格（两列，固定几何）。
 /// 数据全部来自 LibraryCatalog（占位），真实素材到位后只换数据。
 struct LibraryView: View {
     @State private var selectedItem: LibraryItem?
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 26) {
-                    recommendedSection
-                    gridSection
+            GeometryReader { proxy in
+                // 格宽 = (可用宽度 − 左右页边距 20×2 − 列间距 14) / 2，
+                // 与下方网格的 padding/columns 口径一致。
+                let cellWidth = (proxy.size.width - 54) / 2
+                ScrollView {
+                    gridSection(cellWidth: cellWidth)
+                        .padding(.vertical, 16)
                 }
-                .padding(.vertical, 16)
             }
             .background(Color(UIColor.systemBackground))
             .navigationTitle("壁纸库")
@@ -22,57 +24,12 @@ struct LibraryView: View {
         }
     }
 
-    // MARK: - 主播推荐
+    // MARK: - 全部壁纸网格（固定几何）
 
-    private var recommendedSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("主播推荐")
-                    .font(.title3.weight(.bold))
-                Spacer()
-                NavigationLink {
-                    LibraryRecommendedView()
-                } label: {
-                    HStack(spacing: 2) {
-                        Text("更多")
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.horizontal, 20)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 14) {
-                    ForEach(LibraryCatalog.recommended) { item in
-                        Button {
-                            selectedItem = item
-                        } label: {
-                            VStack(alignment: .leading, spacing: 8) {
-                                LibraryCover(item: item, asset: item.coverAsset)
-                                    .frame(width: 150, height: 200)
-                                Text(item.name)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                Text(item.numberText)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 20)
-            }
-        }
-    }
-
-    // MARK: - 全部壁纸网格
-
-    private var gridSection: some View {
+    /// 每格完全定尺寸：图片区高恒为格宽 × 4/3（竖版 3:4），图片 fill 裁切塞入；
+    /// 其下是定高文字行（左标题、右编号，基线对齐）。任何图片的原始宽高比
+    /// 都不参与单元格高度计算，行内两格高度恒等、顶边对齐。
+    private func gridSection(cellWidth: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("全部壁纸")
                 .font(.title3.weight(.bold))
@@ -89,70 +46,27 @@ struct LibraryView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 8) {
                             LibraryCover(item: item, asset: item.coverAsset)
-                                .aspectRatio(3.0 / 4.0, contentMode: .fill)
-                            HStack(spacing: 6) {
+                                .frame(width: cellWidth, height: cellWidth * 4 / 3)
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
                                 Text(item.name)
                                     .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
-                                Spacer()
+                                    .layoutPriority(1)
+                                Spacer(minLength: 4)
                                 Text(item.numberText)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                    .lineLimit(1)
                             }
+                            .frame(height: 20)
                         }
+                        .frame(width: cellWidth, alignment: .topLeading)
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 20)
-        }
-    }
-}
-
-/// 主播推荐全屏页：从壁纸库「主播推荐」标题行的「更多 ›」进入。
-/// 版式与壁纸库网格一致（两列、封面统一 3:4 fill），数据是推荐集合的全部壁纸；
-/// 点单张与主页点卡行为一致，打开 LibraryDetailView。返回走系统导航返回。
-struct LibraryRecommendedView: View {
-    @State private var selectedItem: LibraryItem?
-
-    var body: some View {
-        ScrollView {
-            LazyVGrid(
-                columns: [GridItem(.flexible(), spacing: 14),
-                          GridItem(.flexible(), spacing: 14)],
-                spacing: 18
-            ) {
-                ForEach(LibraryCatalog.recommended) { item in
-                    Button {
-                        selectedItem = item
-                    } label: {
-                        VStack(alignment: .leading, spacing: 8) {
-                            LibraryCover(item: item, asset: item.coverAsset)
-                                .aspectRatio(3.0 / 4.0, contentMode: .fill)
-                            HStack(spacing: 6) {
-                                Text(item.name)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                Spacer()
-                                Text(item.numberText)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
-        }
-        .background(Color(UIColor.systemBackground))
-        .navigationTitle("主播推荐")
-        .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $selectedItem) { item in
-            LibraryDetailView(item: item)
         }
     }
 }

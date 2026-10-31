@@ -1327,7 +1327,6 @@ struct VPNStatusRow: View {
 
 struct PasscodeThemeTab: View {
     @EnvironmentObject var vm: AppViewModel
-    @State private var showCredits = false
 
     var body: some View {
         NavigationStack {
@@ -1363,19 +1362,6 @@ struct PasscodeThemeTab: View {
                 Color.clear.frame(height: 60)
             }
             .navigationTitle("密码盘主题")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        showCredits = true
-                    } label: {
-                        Image(systemName: "heart.fill")
-                            .foregroundStyle(.pink)
-                    }
-                }
-            }
-            .sheet(isPresented: $showCredits) {
-                CreditsSheet()
-            }
             .onAppear { vm.scanDocumentsDirectory() }
         }
     }
