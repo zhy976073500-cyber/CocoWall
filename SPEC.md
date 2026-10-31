@@ -58,3 +58,46 @@ descriptors/<UUID>/
 - M2 壁纸写入：导入 .tendies → 隧道路径写入 → 锁屏编辑里能选中 → 回读校验。
 - M3 管理面：已注入列表、移除、坏条目清理、日志与诊断摘要。
 - M4（可选）iOS 26 直写路径。
+
+## 改动登记 · poster_refresh 免注销刷新（2026-11-01，Sage 拍板）
+
+行为：刷入同步成功后，先经现有 RSD 隧道用 DVT 进程控制只杀 PosterBoard
+进程并验活（约 1–2 秒），确认即免注销生效；任一步未确认则原样回退
+NeoSpring 注销整机，功能不回退于此前。手动「注销（NeoSpring）」按钮
+同路：先试免注销刷新，未确认才真的注销。证据基线为 Walllive 应用日志
+（airlift.poster_refresh：advertised → handshake → identity.verified →
+signal=9 → old_process.gone → refresh_confirmed，约 1.4s）与其二进制
+协议对位（DTServiceHub / processcontrol 通道）。
+
+改动清单（增量最小化；受保护文件既有函数体一律未改）：
+
+- rust-core 新增 `src/poster_refresh.rs`：自建 RSD 连接（镜像
+  al_device_respring 的建连形状：上次成功路线优先 + 已知回环网关默认
+  候选，RemoteXPC → 原始 RPPairing 回退）→ 查 handshake 广告
+  com.apple.instruments.dtservicehub → RemoteServerClient 握手 →
+  deviceinfo.runningProcesses 按进程名 PosterBoard 锁定 pid 并以
+  execname_for_pid 验明 → ProcessControlClient::kill_app（通道方法
+  killPid:）→ is_running_pid 轮询（250ms / 6s）确认旧 pid 消失。
+  返回状态：confirmed / connectFailed / serviceUnavailable /
+  pidNotFound / killFailed / verifyTimeout；全程以
+  airlift.poster_refresh.* 阶段名打日志（经现有日志回调）。
+- rust-core `src/lib.rs`：纯增行——`pub mod poster_refresh;` 与新 FFI
+  导出 `al_poster_refresh`（catch_unwind 包装，形状同 al_device_respring）。
+- rust-core `include/airlift.h`：纯增行——`al_poster_refresh` 声明。
+- rust-core `VENDORED.md`：登记上述三处为 vendored 树首次源内改动
+  （此前为「NONE in source」）；其余文件仍逐字上游。
+- rust-core 树哈希（find rust-core -type f 排除 target/，排序后逐文件
+  sha256 再聚合）：改前 d606d8c28cbc75d313c7639961d91767136c157198bc9ca87f6088e31fa64bd6
+  → 改后 1f88be4ca9288965518b5c2428d0bb04d15ff4ceed4d8233a9f137ebda402cb7。
+- Swift 新增 `Sources/App/PosterRefreshHelper.swift`：后台线程调
+  al_poster_refresh、桥接日志回调、主队列回 (confirmed, status)。
+- Swift `Sources/App/AppViewModel.swift`：仅 flashSelectedTendies 成功
+  分支一处——「🎉 壁纸应用成功！」后改走「正在刷新系统壁纸…」→
+  PosterRefreshHelper；confirmed 记「✅ 系统壁纸已刷新，免注销生效。」，
+  未确认才记回退文案并触发原 NeoSpring 路径（isNeoSpringing 语义不变）。
+- Swift `Sources/App/TendiesView.swift`：注销按钮动作改为先刷新后回退；
+  页脚说明文案一行同步更新。
+
+未动：TendiesEngine.swift、PairingController.swift、RespringHelper.swift、
+GrappaHelper、Live Activity、.github/workflows、配对/导入/壁纸库/制作页/
+设置页。

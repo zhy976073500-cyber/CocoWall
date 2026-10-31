@@ -16,8 +16,24 @@ in every audited respect yet failed to inject on device where the
 upstream app succeeds on the same phone and package. From this point
 the write path is the upstream implementation itself, not a rewrite.
 
-Local modifications to the vendored tree: NONE in source. The only
-adaptations live outside this directory:
+Local modifications to the vendored tree: NONE until 2026-11-01. First
+local source change, 2026-11-01 (Sage-approved poster_refresh feature,
+registered in SPEC.md):
+
+- ADDED `src/poster_refresh.rs` — new module implementing a
+  PosterBoard-only refresh over the RSD tunnel (DVT
+  com.apple.instruments.dtservicehub -> processcontrol channel ->
+  killPid: on the PosterBoard daemon, then liveness verification via
+  deviceinfo). Uses only the already-vendored `idevice` crate's DVT
+  clients; no upstream file was altered to build it.
+- `src/lib.rs` — pure additions only: `pub mod poster_refresh;` and the
+  new FFI export `al_poster_refresh` (with its catch_unwind wrapper).
+  No existing line changed.
+- `include/airlift.h` — pure addition only: the `al_poster_refresh`
+  declaration next to `al_device_respring`. No existing line changed.
+
+Everything else in this tree remains a verbatim copy of upstream.
+The other adaptations live outside this directory:
 
 - `ci/build-rust-core.sh` builds this crate for `aarch64-apple-ios`
   and the app links `libairlift_ffi.a` directly (upstream packages an

@@ -14,6 +14,7 @@ pub mod ffi_util;
 pub mod grappa;
 pub mod logging;
 pub mod pairing;
+pub mod poster_refresh;
 
 // Re-export idevice-ffi's symbols into our staticlib (tunnel_create_rppairing,
 // afc_*, rsd_*, adapter_*, etc.) so Swift can call them directly.
@@ -380,6 +381,38 @@ pub unsafe extern "C" fn al_device_respring(
         Err(e) => {
             if !out_error.is_null() {
                 *out_error = ffi_util::cstr(format!("Rust panic in al_device_respring: {e:?}"));
+            }
+            1
+        }
+    }
+}
+
+/// PosterBoard-only refresh via DVT ProcessControl over the RSD tunnel
+/// (Walllive-style poster_refresh; local addition, see src/poster_refresh.rs).
+/// Restarts only the PosterBoard daemon so it re-reads its data store —
+/// no full-device respring. Returns 0 when the refresh is confirmed
+/// (out_status == "confirmed"), 1 otherwise with a machine-readable
+/// out_status ("connectFailed" / "serviceUnavailable" / "pidNotFound" /
+/// "killFailed" / "verifyTimeout") and a human-readable out_error.
+#[no_mangle]
+pub unsafe extern "C" fn al_poster_refresh(
+    pairing_path: *const c_char,
+    log_cb: exploit::ALLogCallback,
+    ctx: *mut c_void,
+    out_status: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> i32 {
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        poster_refresh::poster_refresh(pairing_path, log_cb, ctx, out_status, out_error)
+    }));
+    match res {
+        Ok(rc) => rc,
+        Err(e) => {
+            if !out_status.is_null() {
+                *out_status = ffi_util::cstr("connectFailed");
+            }
+            if !out_error.is_null() {
+                *out_error = ffi_util::cstr(format!("Rust panic in al_poster_refresh: {e:?}"));
             }
             1
         }

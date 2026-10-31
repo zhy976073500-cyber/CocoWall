@@ -961,11 +961,25 @@ final class AppViewModel: ObservableObject {
             tendiesFlashPhase = .done(ok: true)
             tendiesFlashProgress = 1.0
             tendiesFlashLog.append("🎉 壁纸应用成功！")
-            tendiesFlashLog.append("⚡ 正在触发 NeoSpring 注销…")
+            tendiesFlashLog.append("正在刷新系统壁纸…")
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                self?.isNeoSpringing = true
-                RespringHelper.triggerNeoSpring()
+            // 先试免注销刷新（只重启 PosterBoard 守护进程）；未确认才回退 NeoSpring 注销整机。
+            PosterRefreshHelper.attemptRefresh(
+                pairingPath: pairingPath,
+                log: { [weak self] line in
+                    DispatchQueue.main.async {
+                        self?.tendiesFlashLog.append(line)
+                    }
+                }
+            ) { [weak self] confirmed, _ in
+                guard let self else { return }
+                if confirmed {
+                    self.tendiesFlashLog.append("✅ 系统壁纸已刷新，免注销生效。")
+                } else {
+                    self.tendiesFlashLog.append("⚡ 免注销刷新未确认，正在触发 NeoSpring 注销…")
+                    self.isNeoSpringing = true
+                    RespringHelper.triggerNeoSpring()
+                }
             }
         } catch {
             tendiesFlashLog.append("❌ 错误：\(error.localizedDescription)")

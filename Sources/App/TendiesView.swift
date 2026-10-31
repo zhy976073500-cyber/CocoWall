@@ -81,9 +81,17 @@ struct TendiesView: View {
                         }
 
                         Button(role: .destructive) {
-                            vm.isNeoSpringing = true
-                            isNeoSpringing = true
-                            RespringHelper.triggerNeoSpring()
+                            // 先试免注销刷新（只重启 PosterBoard 守护进程）；未确认才回退 NeoSpring 注销整机。
+                            PosterRefreshHelper.attemptRefresh(
+                                pairingPath: PairingController.pairingFilePath(),
+                                log: { _ in }
+                            ) { confirmed, _ in
+                                if !confirmed {
+                                    vm.isNeoSpringing = true
+                                    isNeoSpringing = true
+                                    RespringHelper.triggerNeoSpring()
+                                }
+                            }
                         } label: {
                             HStack(spacing: 8) {
                                 Spacer()
@@ -106,7 +114,7 @@ struct TendiesView: View {
                         } else {
                             Text("目标：已检测到 PosterBoard 容器 ✅")
                         }
-                        Text("刷入后将自动触发 NeoSpring 注销设备，应用新壁纸。")
+                        Text("刷入后将先尝试免注销刷新系统壁纸；未确认时自动回退 NeoSpring 注销。")
                     }
                 }
 

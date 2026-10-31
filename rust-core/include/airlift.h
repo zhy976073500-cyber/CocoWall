@@ -147,6 +147,20 @@ int32_t al_device_respring(const char *pairing_path,
                           void *ctx,
                           char **out_error);
 
+// PosterBoard-only refresh via DVT ProcessControl over the RSD tunnel
+// (local addition, src/poster_refresh.rs): kills only the PosterBoard
+// daemon so it re-reads its data store — no full respring. Blocks until
+// confirmed or failed; run off the main thread. Returns 0 when confirmed
+// (out_status == "confirmed"), 1 otherwise with a machine-readable
+// out_status ("connectFailed" / "serviceUnavailable" / "pidNotFound" /
+// "killFailed" / "verifyTimeout") and a human-readable out_error.
+// Heap strings must be released with al_string_free().
+int32_t al_poster_refresh(const char *pairing_path,
+                          ALLogCallback log_cb,
+                          void *ctx,
+                          char **out_status,
+                          char **out_error);
+
 // ---------------------------------------------------------------------------
 // Target Host Configuration
 // ---------------------------------------------------------------------------
