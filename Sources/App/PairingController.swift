@@ -9,7 +9,7 @@ final class PairingController: ObservableObject {
 
     static let shared = PairingController()
 
-    private let hostName = "AirCard-iOS"
+    private let hostName = "CocoWall"
     private let hostModel = "Mac17,7"   // device sees a Mac-like pairing host
     private let bindAddress = "0.0.0.0"
 
