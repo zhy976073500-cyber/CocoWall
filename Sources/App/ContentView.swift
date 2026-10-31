@@ -1109,7 +1109,7 @@ struct PairingTab: View {
                                             .tint(.orange)
                                         }
 
-                                        Text("设置 › 隐私与安全性 › 开发者模式 › 与 AirCard-iOS 配对")
+                                        Text("设置 › 隐私与安全性 › 开发者模式 › 与 CocoWall 配对")
                                             .font(.footnote.weight(.semibold))
                                             .foregroundStyle(.primary)
 

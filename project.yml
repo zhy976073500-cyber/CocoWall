@@ -23,6 +23,13 @@ targets:
     platform: iOS
     sources:
       - Sources/App
+    dependencies:
+      # WidgetKit extension hosting the pairing Live Activity
+      # (Dynamic Island + lock-screen banner). Built and embedded
+      # into the .app by the normal app scheme build, so the CI
+      # packaging step picks it up without workflow changes.
+      - target: PairingLiveActivity
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.coco.cocowall
@@ -61,3 +68,15 @@ targets:
           if [ ! -f "$HERO_JPG" ]; then
             base64 -D -i "$SRCROOT/Sources/App/library-hero.jpg.b64" -o "$HERO_JPG" || openssl base64 -d -in "$SRCROOT/Sources/App/library-hero.jpg.b64" -out "$HERO_JPG"
           fi
+  PairingLiveActivity:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Sources/PairingLiveActivity
+      # ActivityAttributes schema shared with the app target (the app
+      # picks this file up via its Sources/App directory source).
+      - path: Sources/App/PairingActivityAttributes.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.coco.cocowall.pairingliveactivity
+        INFOPLIST_FILE: Sources/PairingLiveActivity/Info.plist

@@ -45,7 +45,7 @@ final class PairingController: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .busy: return "Pairing is already in progress."
-            case .localNetworkDenied: return "Local Network permission is off. Enable it in Settings › AirCard-iOS › Local Network."
+            case .localNetworkDenied: return "Local Network permission is off. Enable it in Settings › CocoWall › Local Network."
             case .zeroBytes: return "Pairing produced an empty file. Approve the pairing request, then try again."
             case let .failed(msg): return msg
             }
@@ -264,7 +264,7 @@ final class PairingController: ObservableObject {
 
     fileprivate func presentPin(_ pin: String) {
         pairingPIN = pin
-        pairingStatus = "Enter PIN \(pin) in Settings › Privacy & Security › Developer Mode › Pair with AirCard-iOS"
+        pairingStatus = "Enter PIN \(pin) in Settings › Privacy & Security › Developer Mode › Pair with CocoWall"
     }
 
     private func stopAdvertising() {

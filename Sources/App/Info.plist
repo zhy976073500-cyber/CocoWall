@@ -28,6 +28,9 @@
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- Live Activities: pairing progress on Dynamic Island / lock screen -->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<!-- Local Network: RPPairing host + loopback tunnel -->
 	<key>NSBonjourServices</key>
 	<array>

@@ -103,6 +103,8 @@ final class AppViewModel: ObservableObject {
 
     init() {
         Self.shared = self
+        // End any pairing Live Activity left over from a prior process.
+        PairingLiveActivityController.endStaleActivities()
         refreshPairingFile()
         refreshNetworkStatus()
         scanDocumentsDirectory()
@@ -248,6 +250,7 @@ final class AppViewModel: ObservableObject {
         pairingPIN = nil
         pairingStatus = "正在启动本机配对服务…"
         errorMessage = nil
+        PairingLiveActivityController.shared.begin()
 
         let ctrl = PairingController.shared
 
@@ -259,14 +262,17 @@ final class AppViewModel: ObservableObject {
                     self.refreshPairingFile()
                     self.pairingStatus = "配对成功！✅"
                     self.log.append("配对完成：\(path)")
+                    PairingLiveActivityController.shared.succeeded()
                 }
             } catch is CancellationError {
                 self.pairingPhase = .idle
                 self.pairingStatus = "已取消。"
+                PairingLiveActivityController.shared.failed(message: "配对已取消")
             } catch {
                 self.pairingPhase = .idle
                 self.pairingStatus = ""
                 self.errorMessage = "配对失败：\(error.localizedDescription)"
+                PairingLiveActivityController.shared.failed(message: "配对失败")
             }
         }
 
@@ -278,6 +284,9 @@ final class AppViewModel: ObservableObject {
                     guard self.pairingPhase == .pairing else { return }
                     self.pairingStatus = ctrl.pairingStatus
                     self.pairingPIN   = ctrl.pairingPIN
+                    if let pin = self.pairingPIN {
+                        PairingLiveActivityController.shared.pinReady(pin)
+                    }
                 }
             }
         }
@@ -287,6 +296,7 @@ final class AppViewModel: ObservableObject {
         PairingController.shared.softCancel()
         pairingPhase = .idle
         pairingStatus = ""
+        PairingLiveActivityController.shared.failed(message: "配对已取消")
     }
 
     func deletePairingFile() {
