@@ -21,10 +21,13 @@
 //!      a failed list read is still an error.
 //!   4. Via the processcontrol channel, deliver SIGKILL to that pid
 //!      (ProcessControlClient::send_signal -> channel method
-//!      sendSignal:toPid:). killPid: was used until run #106: the
-//!      service acknowledged it but the daemon survived — it only
-//!      terminates processes the instruments server itself spawned.
-//!      sendSignal:toPid: is Walllive's call and reaches any pid.
+//!      sendSignal:toPid:, reply awaited and logged as signal.reply).
+//!      killPid: was used until run #106: the service acknowledged it
+//!      but the daemon survived — it only terminates processes the
+//!      instruments server itself spawned. sendSignal:toPid: is
+//!      Walllive's call and reaches any pid; its first form here
+//!      (run #107) was fire-and-forget and the daemon survived again,
+//!      so the reply round-trip is now mandatory evidence.
 //!   5. Drop that connection (the kill makes the device close it —
 //!      reusing it for verification dies with BrokenPipe, seen on
 //!      hardware in run #95) and verify on a brand-new read-only
@@ -394,9 +397,18 @@ async fn exploit_poster_refresh(pairing_path: String, logger: &PRLogger) -> Refr
     };
 
     // Stage: signal — deliver SIGKILL to the PosterBoard pid via
-    // ProcessControl sendSignal:toPid: (Walllive's call). killPid: was
-    // falsified on hardware in run #106: acknowledged, daemon alive 6s
-    // later; it only terminates instruments-spawned processes.
+    // ProcessControl sendSignal:toPid: (Walllive's call), with the
+    // service reply awaited and logged verbatim (signal.reply).
+    // killPid: was falsified on hardware in run #106: acknowledged,
+    // daemon alive 6s later; it only terminates instruments-spawned
+    // processes. The first sendSignal form (run #107) was
+    // fire-and-forget (expect_reply=false): its "acknowledged" only
+    // meant the bytes left this process, the daemon survived again —
+    // the failure mode pymobiledevice3 documents for one-way calls
+    // over the userspace tunnel. A reply that never arrives within
+    // 10s is logged and NOT treated as a kill failure by itself: the
+    // fresh-connection verification below is the ground truth for
+    // the pid's fate.
     {
         let mut pc = ProcessControlClient::new(&mut server).await.map_err(|e| {
             (
@@ -407,13 +419,29 @@ async fn exploit_poster_refresh(pairing_path: String, logger: &PRLogger) -> Refr
         logger.log(format!(
             "airlift: airlift.poster_refresh.signal.begin pid={pid} signal=9"
         ));
-        pc.send_signal(pid as u64, 9).await.map_err(|e| {
-            (
-                RefreshStatus::KillFailed,
-                format!("sendSignal 9 to pid {pid} failed: {e:?}"),
-            )
-        })?;
-        logger.log("airlift: airlift.poster_refresh.signal.acknowledged");
+        match tokio::time::timeout(Duration::from_secs(10), pc.send_signal(pid as u64, 9)).await {
+            Ok(Ok(reply)) => {
+                logger.log(format!(
+                    "airlift: airlift.poster_refresh.signal.reply data={}",
+                    match &reply {
+                        Some(v) => format!("{v:?}"),
+                        None => "none".to_string(),
+                    }
+                ));
+                logger.log("airlift: airlift.poster_refresh.signal.acknowledged");
+            }
+            Ok(Err(e)) => {
+                return Err((
+                    RefreshStatus::KillFailed,
+                    format!("sendSignal 9 to pid {pid} failed: {e:?}"),
+                ));
+            }
+            Err(_) => {
+                logger.log(
+                    "airlift: airlift.poster_refresh.signal.reply timeout=true (no reply within 10s; proceeding to verification)",
+                );
+            }
+        }
     }
 
     // Stage: verify — on a brand-new connection. The kill tears down the

@@ -295,37 +295,53 @@ impl<'a, R: ReadWrite> ProcessControlClient<'a, R> {
         Ok(())
     }
 
-    /// Sends an arbitrary POSIX signal to a running process
+    /// Sends an arbitrary POSIX signal to a running process and waits
+    /// for the service's reply.
     ///
     /// LOCAL ADDITION (CocoWall, 2026-11-01) — not part of the vendored
-    /// upstream idevice tree. Registered in rust-core/VENDORED.md and
+    /// upstream idevice tree: upstream master (jkcoxson/idevice @
+    /// 8970209, checked 2026-11-01) has no sendSignal method at all,
+    /// only `killPid:`. Registered in rust-core/VENDORED.md and
     /// SPEC.md. Pure addition: no upstream line changed.
+    ///
+    /// The shape mirrors pymobiledevice3's ProcessControlService,
+    /// the other maintained DTX implementation: it declares
+    /// `sendSignal:toPid:` WITHOUT `expects_reply=False` (its
+    /// `killPid:` is the fire-and-forget one), with arguments in
+    /// (signal, pid) order, and its `kill()` is documented to use
+    /// this call precisely because the round-trip guarantees the
+    /// device has acted on the request before the DTX channel — and,
+    /// on iOS 17+, the tunnel — is torn down; a fire-and-forget call
+    /// can be silently dropped, leaving the target alive. That is
+    /// exactly what CocoWall runs #106 (`killPid:`) and #107 (this
+    /// method's first, expect_reply=false form) observed on hardware:
+    /// the send completed locally, PosterBoard was still running 6s
+    /// later. Hence this form awaits the reply and returns its
+    /// payload so the caller can log what the service actually said.
     ///
     /// # Arguments
     /// * `pid` - Process ID to signal
     /// * `signal` - POSIX signal number (e.g. 9 for SIGKILL)
     ///
     /// # Returns
-    /// * `Ok(())` - If the signal request was sent successfully
+    /// * `Ok(Some(value))` - The service replied with a payload
+    ///   (an archived NSError dictionary if it rejected the call)
+    /// * `Ok(None)` - The service replied with no payload
     /// * `Err(IdeviceError)` - If communication fails
-    ///
-    /// # Note
-    /// Distinct from [`kill_app`](Self::kill_app) (`killPid:`): on real
-    /// hardware (CocoWall run #106), `killPid:` was acknowledged by the
-    /// service yet did not terminate the PosterBoard system daemon —
-    /// it only takes effect on processes the instruments server itself
-    /// spawned. `sendSignal:toPid:` delivers a real signal to any pid
-    /// and is the call Walllive uses to restart PosterBoard.
-    pub async fn send_signal(&mut self, pid: u64, signal: u32) -> Result<(), IdeviceError> {
-        self.channel
-            .call_method(
-                "sendSignal:toPid:".into(),
+    pub async fn send_signal(
+        &mut self,
+        pid: u64,
+        signal: u32,
+    ) -> Result<Option<Value>, IdeviceError> {
+        let res = self
+            .channel
+            .call_method_with_reply(
+                Some(Value::String("sendSignal:toPid:".into())),
                 Some(vec![AuxValue::U32(signal), AuxValue::U32(pid as u32)]),
-                false,
             )
             .await?;
 
-        Ok(())
+        Ok(res.data)
     }
 
     /// Disables memory limits for a process

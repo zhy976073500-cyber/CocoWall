@@ -38,10 +38,17 @@ store detect/cleanup feature, registered in SPEC.md):
 - ADDED `src/poster_store.rs` — new module implementing enumeration
   and deletion of the descriptors actually present in the device's
   PRBPosterExtensionDataStore, over the RSD tunnel. Enumeration and
-  auditing go through AFC (com.apple.afc): a temporary symlink is
-  planted in the AFC media jail with the AFC MakeLink operation
-  pointing at the store's Extensions directory, and descriptors are
-  listed/read through it. Deletion does NOT erase through AFC: each
+  auditing go through AFC (com.apple.afc.shim.remote): a temporary
+  symlink is planted in the AFC media jail pointing at the store's
+  Extensions directory, and descriptors are listed/read through it.
+  Planting mechanism (revised 2026-11-01, run #107 hardware log):
+  the AFC MakeLink operation is refused by the RSD AFC service
+  (OpNotSupported), so the link is planted the flash way — a
+  StreamingZip archive (same builder shape as the delete staging)
+  whose symlink entry streaming_zip_conduit extracts into a scratch
+  Media subdir, then an AFC rename moves the extracted symlink to
+  the Media root, the geometry its ../../../ target is calibrated
+  for. Deletion does NOT erase through AFC: each
   descriptor is moved out of the store by an AirTraffic/Books sync
   whose two books (staging link + the descriptor, identified by its
   Airlock-escaping relative path) make the on-device ATAirlock daemon
@@ -85,6 +92,34 @@ vendored upstream file itself — additively only:
   maps to status killFailed with the original error. Header docs
   corrected. Identity / already_stopped / fresh-connection verify /
   status honesty all unchanged.
+
+Revision of the same addition, later the same day (run #107
+hardware log; registered in SPEC.md in the signal-reply section):
+
+- Upstream check: jkcoxson/idevice master @ 8970209 was cloned and
+  its `idevice/src/services/dvt/process_control.rs` read line by
+  line — upstream has NO sendSignal method at all (only `killPid:`
+  at line 289); apart from this local addition the vendored file
+  is byte-identical to upstream master. There is therefore no
+  upstream form to port; the method stays a local addition.
+- `send_signal` changed from the fire-and-forget form above
+  (`call_method(..., expect_reply=false)`, returning `()`) to a
+  request–reply form: `call_method_with_reply`, returning the
+  reply payload as `Result<Option<Value>, IdeviceError>`. Selector
+  and aux encoding unchanged (selector `sendSignal:toPid:`, aux
+  [U32 signal, U32 pid]). Shape aligned with pymobiledevice3's
+  ProcessControlService, which declares `sendSignal:toPid:`
+  without `expects_reply=False` and documents its `kill()` as
+  relying on the round-trip — a one-way call can be silently
+  dropped over the userspace tunnel, leaving the target alive
+  (observed verbatim in runs #106/#107).
+- `src/poster_refresh.rs` — the signal stage awaits the reply
+  under a 10s timeout, logs it verbatim as
+  `airlift.poster_refresh.signal.reply data=…`, and only then logs
+  signal.acknowledged; a reply timeout is logged and the flow
+  proceeds to fresh-connection verification (the ground truth)
+  instead of failing the kill outright; a transport-level error
+  still maps to killFailed with the original error.
 
 Apart from the additions registered above, everything else in this
 tree remains a verbatim copy of upstream.

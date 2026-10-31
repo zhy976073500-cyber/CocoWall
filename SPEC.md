@@ -331,3 +331,99 @@ RSD 路线上打开 AFC 是直接 `handshake.connect::<AfcClient>()`、
 （handshake.connect::<AfcClient>），未动；状态码与日志形状
 不变，枚举/解析/删除逻辑未动。（未开回环工具时那段
 connectFailed 属环境问题，不处理。）
+
+## 改动登记 · poster_refresh 信号改带回执 + poster_store 植链改走 conduit 暂存（2026-11-01，#107 真机日志双定点修）
+
+背景一（信号）：#107 真机日志刷新段 identity.verified pid=16812
+→ signal.begin → signal.acknowledged →
+verification.connection=new →
+`verifyTimeout error=pid 16812 still running 6s after kill
+signal`。换 sendSignal:toPid: 后 PosterBoard 仍未死。关键疑点
+坐实：#107 的 send_signal 是 expect_reply=false 的单向发送，
+所谓 acknowledged 只是本地发送完成，服务端从未确认过任何事，
+参数编码错了也会静默无声。
+
+上游对照结论：克隆 jkcoxson/idevice master @ 8970209 逐行读
+`idevice/src/services/dvt/process_control.rs`——**上游根本没有
+sendSignal 对应方法**，全文件只有 `killPid:`（第 289 行）；
+vendored 文件除本地 send_signal 增量外与上游 master 逐字
+一致。故无「上游实现」可移植，改走诊断路线，并以另一份维护中
+的 DTX 实现 pymobiledevice3 为旁证定形态：其
+ProcessControlService 把 `sendSignal:toPid:` 声明为**不带
+expects_reply=False**（它的 `killPid:` 才显式声明单向），参数
+顺序 (sig, pid)；其 `kill()` 文档原文写明改用 sendSignal 的
+理由正是「round-trip 保证设备已执行请求，裸 killPid: 在通道
+随即关闭时会被静默丢弃、目标进程存活（在默认 userspace 隧道
+上观察到）」——与 #106/#107 两次真机现象逐字吻合。
+
+改动一：
+
+- `rust-core/vendor/idevice/src/services/dvt/process_control.rs`
+  的本地增量 `send_signal` 改为请求-应答形态：
+  `call_method_with_reply` 发同一 selector、同一 aux 编码
+  （[U32 signal, U32 pid] 不变），返回回执 payload
+  `Result<Option<Value>, IdeviceError>`。VENDORED.md 第三节已
+  同步修订登记（首次登记写的是与上游对齐——上游无此方法，
+  在此更正为「本地增量、形态对齐 pymobiledevice3」）。
+- `rust-core/src/poster_refresh.rs` 信号段：10 秒超时内等
+  回执，原文打日志 `airlift.poster_refresh.signal.reply
+  data=…`（无 payload 打 none），然后才打
+  signal.acknowledged；通道级错误仍报 killFailed 带原始错误；
+  10 秒无回执只打 `signal.reply timeout=true` 一行并继续走新
+  连接验活裁决，不冒判 killFailed（信号可能已落地，验活是
+  地面真相）。下一份真机日志由此能一锤定音：服务端到底回了
+  什么（空回执 / 数值 / NSError 字典）。
+
+背景二（检测植链）：#107 检测日志
+`poster_store.service advertised=true
+service=com.apple.afc.shim.remote` → `afc connected=true` →
+`list.end status=stageFailed error=AFC MakeLink (symlink ->
+…/PRBPosterExtensionDataStore/61/Extensions) failed:
+Afc(OpNotSupported)`。RSD 的 AFC 服务拒绝 MakeLink 操作码。
+
+植链侦察结论：通读 exploit.rs 暂存段（STEP 1）——注入流程
+**从不用 AFC MakeLink**：它把 symlink 做成 StreamingZip
+压缩包里的一个 symlink 条目（`p0/p1/p2/link` →
+`../../../<target_tail>`，mode 0o120777），经
+`com.apple.streaming_zip_conduit` 服务（先发
+`{MediaSubdir: <source>}` 二进制 plist、再发原始 zip 字节）
+解压进 Media，链接作为真实 symlink 独立存在于暂存目录中
+（解压后 AFC get_file_info 逐项验在），ATC 同步只是后续消费
+者、不是植链者——故该机制可独立复用，无需整次同步。又：
+`../../../` 的相对目标是按链接**最终位于 Media 根**校准的
+（同步把链接落到 Media 根的 airlift-link-<token>，刷入的
+payload 正是穿过这个根级链接写进容器的）；链接若留在暂存
+目录深处，该相对目标并不解析。故 poster_store 的植链分三步
+与刷入完全同构：conduit 解压 → AFC rename 把链接挪到 Media
+根 → 穿过它枚举。
+
+改动二（全部在 `rust-core/src/poster_store.rs`）：
+
+- `open_store_session` 删去 `afc.link(...MakeLink...)` 一段，
+  改为：以 Extensions 绝对路径为目标调既有
+  `build_delete_archive` 建同形暂存包（删除暂存已在用、形状
+  与 exploit::build_archive 一致；包内 payload 在检测流程中
+  无人引用，属惰性内容）→ 经本文件既有 `connect_service_rsd`
+  连 conduit、MediaSubdir=`cocowall-src-<token>` 上传并读
+  回执 → AFC get_file_info 验暂存目录与
+  `<source>/p0/p1/p2/link` 均在 → `afc.rename` 把链接挪到
+  Media 根改名 `cocowall-store-<token>` → 原有的
+  list_dir 穿通校验（link.traversable）不变。
+- `StoreSession` 增加 `source_name` 字段，`close()` 在删根级
+  链接之外再 `remove_all` 暂存目录；穿通校验失败路径同样
+  清理两者。import 删去不再使用的 `LinkType`。
+- 列表/删除审计/提交审计三处都经 open_store_session，本改动
+  一并修复；delete_operation 自身的 ATC 搬移链未动。
+
+未动：注入全链、验活新连接 + 重连一次、already_stopped、
+状态码诚实化、不自动注销、删页签、获取更多入口、Swift 侧、
+受保护文件、.github/workflows。
+
+未验证项（诚实标注）：两处均为真机首验——(1) 信号回执的
+实际内容与 PosterBoard 是否随之死去，看 signal.reply 一行与
+验活结果；若回执是参数类 NSError，下一轮变量是 aux 整数
+类型标记（现 U32=0x03）。(2) conduit 解压 + AFC rename 挪
+symlink 在 RSD AFC 上的实际行为（rename 为标准 AFC 操作码、
+预期保留链接本体）；若 rename 被拒，日志会带原始错误，
+次优路线是按链接落点深度重算相对目标的根级条目包。
+cargo check 主机目标通过仅证编译。
