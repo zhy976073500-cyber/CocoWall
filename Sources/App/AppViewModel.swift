@@ -963,7 +963,8 @@ final class AppViewModel: ObservableObject {
             tendiesFlashLog.append("🎉 壁纸应用成功！")
             tendiesFlashLog.append("正在刷新系统壁纸…")
 
-            // 先试免注销刷新（只重启 PosterBoard 守护进程）；未确认才回退 NeoSpring 注销整机。
+            // 先试免注销刷新（只重启 PosterBoard 守护进程）；本版不自动注销兜底：
+            // 未确认时只如实提示，用户可自行点「注销（NeoSpring）」手动注销。
             PosterRefreshHelper.attemptRefresh(
                 pairingPath: pairingPath,
                 log: { [weak self] line in
@@ -976,9 +977,7 @@ final class AppViewModel: ObservableObject {
                 if confirmed {
                     self.tendiesFlashLog.append("✅ 系统壁纸已刷新，免注销生效。")
                 } else {
-                    self.tendiesFlashLog.append("⚡ 免注销刷新未确认，正在触发 NeoSpring 注销…")
-                    self.isNeoSpringing = true
-                    RespringHelper.triggerNeoSpring()
+                    self.tendiesFlashLog.append("⚠️ 壁纸已写入，自动刷新未确认（本版不自动注销；如未生效可手动点注销）。")
                 }
             }
         } catch {

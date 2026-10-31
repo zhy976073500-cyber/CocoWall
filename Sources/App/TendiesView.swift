@@ -114,7 +114,7 @@ struct TendiesView: View {
                         } else {
                             Text("目标：已检测到 PosterBoard 容器 ✅")
                         }
-                        Text("刷入后将先尝试免注销刷新系统壁纸；未确认时自动回退 NeoSpring 注销。")
+                        Text("刷入后将先尝试免注销刷新系统壁纸；本版不会自动注销，如未生效可手动点注销。")
                     }
                 }
 

@@ -101,3 +101,35 @@ signal=9 → old_process.gone → refresh_confirmed，约 1.4s）与其二进制
 未动：TendiesEngine.swift、PairingController.swift、RespringHelper.swift、
 GrappaHelper、Live Activity、.github/workflows、配对/导入/壁纸库/制作页/
 设置页。
+
+## 改动登记 · 摘除刷入后自动注销（2026-11-01，Sage 实测 #94 后拍板）
+
+背景：#94 真机首验，刷入后 poster_refresh 未确认、按当时逻辑自动回退
+NeoSpring 注销整机。Sage 明确要求：刷入完成后不要再自动注销，先出本版。
+
+行为变更（仅此一处）：flashSelectedTendies 成功分支——poster refresh
+照常尝试；confirmed → 原成功文案不变；未确认 → 只在刷入日志里如实记
+「⚠️ 壁纸已写入，自动刷新未确认（本版不自动注销；如未生效可手动点注销）。」
+后流程正常结束，不再置 isNeoSpringing、不再调用
+RespringHelper.triggerNeoSpring。
+
+注销调用点盘点与处置：
+
+- AppViewModel.flashSelectedTendies 成功分支的未确认回退（自动触发）
+  ——本版摘除（即上条）。
+- TendiesView「注销（NeoSpring）」按钮（用户手动入口；含 #94 的
+  「先试 poster refresh、未确认才注销」逻辑）——保留原样，未动。
+- AppViewModel.respringDevice()——全仓无调用方（闲置函数），未动。
+- TendiesView onAppear 的 isNeoSpringing 复位与 overlay 呈现——保留，
+  仍服务于手动注销路径。
+
+改动清单：
+
+- Sources/App/AppViewModel.swift：仅上述成功分支一处（注释 + else 分支）。
+- Sources/App/TendiesView.swift：仅页脚说明一行，改为与新行为一致
+  （刷入后先试免注销刷新；本版不会自动注销，如未生效可手动点注销）。
+
+未动：rust-core/src/poster_refresh.rs、FFI、PosterRefreshHelper.swift、
+RespringHelper.swift、TendiesEngine.swift、PairingController.swift、
+GrappaHelper、Live Activity、.github/workflows、配对/导入/壁纸库/
+制作页/设置页。
