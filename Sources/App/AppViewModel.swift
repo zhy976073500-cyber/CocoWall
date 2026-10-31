@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import SwiftUI
+import ImageIO
 import AirliftFFI
 
 // MARK: - AppViewModel
@@ -723,10 +724,16 @@ final class AppViewModel: ObservableObject {
     /// 条目展示时若已存预览缺失或解码失败，从其 .tendies 包内重新提取并回写。
     /// 导入时的提取只在导入当下跑一次、失败静默置空，结果又随条目持久化，
     /// 展示侧原本只读已存数据、从不重试，所以在这里补一层展示时再生。
+    /// 另对存量条目做一次性 V2 升级：无标记时即使已有可用预览，也用新策略
+    /// （按最大图选）重提一次，提到了就覆盖，提不到保留旧预览；跑完无论
+    /// 成败都置标记（UserDefaults 键 cocowall.previewV2.<条目 id>），避免
+    /// 每次展示重复解压。有标记时回到原行为：仅缺失或解码失败才再生。
     func regenerateTendiePreview(itemID: UUID) {
         guard let idx = tendieItems.firstIndex(where: { $0.id == itemID }) else { return }
         let item = tendieItems[idx]
-        if let data = item.previewImageData, UIImage(data: data) != nil { return }
+        let v2Key = "cocowall.previewV2.\(itemID.uuidString)"
+        let v2Done = UserDefaults.standard.bool(forKey: v2Key)
+        if v2Done, let data = item.previewImageData, UIImage(data: data) != nil { return }
         guard !previewRegenInFlight.contains(itemID) else { return }
         previewRegenInFlight.insert(itemID)
         let packageURL = item.fileURL
@@ -735,6 +742,7 @@ final class AppViewModel: ObservableObject {
                 AppViewModel.extractPreviewData(from: packageURL)
             }.value
             previewRegenInFlight.remove(itemID)
+            if !v2Done { UserDefaults.standard.set(true, forKey: v2Key) }
             guard let data,
                   let current = tendieItems.firstIndex(where: { $0.id == itemID }) else { return }
             tendieItems[current].previewImageData = data
@@ -742,7 +750,9 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// 从 .tendies 包提取预览图：先按导入时同一套打分规则在图片资产里选，
+    /// 从 .tendies 包提取预览图：图片扩展名候选先按像素总数从大到小选
+    /// （像素相同再比导入时同一套关键词分数）——拼图层式包里人物本体
+    /// 往往是最大的那张，关键词打分会把它们全压到最低分、选出碎片图。
     /// 候选全灭时放宽到包内第一张可解码的位图资产（按内容嗅探，不看扩展名）。
     /// 返回下采样后的 JPEG 数据，规格与导入时一致（最长边 600、质量 0.85）。
     nonisolated static func extractPreviewData(from packageURL: URL) -> Data? {
@@ -766,7 +776,7 @@ final class AppViewModel: ObservableObject {
         ) else { return nil }
 
         var allFiles: [URL] = []
-        var candidates: [(url: URL, score: Int)] = []
+        var candidates: [(url: URL, pixels: Int, score: Int)] = []
         while let url = enumerator.nextObject() as? URL {
             let pathLower = url.path.lowercased()
             let nameLower = url.lastPathComponent.lowercased()
@@ -786,11 +796,14 @@ final class AppViewModel: ObservableObject {
                 } else if pathLower.contains("asset.resource") {
                     score += 40
                 }
-                candidates.append((url, score))
+                candidates.append((url, pixelCount(ofFile: url), score))
             }
         }
 
-        candidates.sort { $0.score > $1.score }
+        candidates.sort {
+            if $0.pixels != $1.pixels { return $0.pixels > $1.pixels }
+            return $0.score > $1.score
+        }
         for candidate in candidates {
             if let data = jpegThumbnail(fromFile: candidate.url) { return data }
         }
@@ -802,6 +815,15 @@ final class AppViewModel: ObservableObject {
             if let data = jpegThumbnail(fromFile: url) { return data }
         }
         return nil
+    }
+
+    /// 只读图片的像素总数（CGImageSource 读元数据，不做全量解码）；读不到返回 0。
+    nonisolated static func pixelCount(ofFile url: URL) -> Int {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = props[kCGImagePropertyPixelWidth] as? Int,
+              let height = props[kCGImagePropertyPixelHeight] as? Int else { return 0 }
+        return width * height
     }
 
     /// 读图、下采样、转 JPEG（与导入时的预览生成规格一致）。
