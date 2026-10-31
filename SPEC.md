@@ -133,3 +133,30 @@ RespringHelper.triggerNeoSpring。
 RespringHelper.swift、TendiesEngine.swift、PairingController.swift、
 GrappaHelper、Live Activity、.github/workflows、配对/导入/壁纸库/
 制作页/设置页。
+
+## 改动登记 · poster_refresh 验活修复（2026-11-01，#95 真机日志定点修）
+
+背景：#95 真机刷入日志显示杀链全通（advertised → handshake →
+identity.verified pid=15736 → signal.begin signal=9 →
+signal.acknowledged），唯独验活收尾报错：杀后复用同一条 RemoteServer
+连接开 deviceinfo 验活通道时 BrokenPipe（"remote server connection
+closed"），误报 verifyTimeout。Walllive 二进制里早有
+`poster_refresh.verification.connection=new readonly=true` 路径——它杀后
+本就换新连接只读验活。
+
+改动（仅 rust-core/src/poster_refresh.rs 的验活段与状态码）：
+
+- signal.acknowledged 后主动 drop 掉原 RemoteServer 连接与隧道，
+  打日志 `airlift.poster_refresh.verification.connection=new
+  readonly=true`（与 Walllive 对齐），按既有建连路径（connect_rsd：
+  上次成功路线优先 + 网关默认候选）新建一条连接做验活。
+- 验活轮询在新连接的 deviceinfo 通道上每 250ms 查 is_running_pid
+  （失败回退 running_processes，与原实现一致），总时限约 6s；旧 pid
+  不在即 confirmed。中途连接再断，允许在总时限内重连一次继续查。
+- 状态码拆分：新增 verifyConnectFailed（验活连接建不起来、或重连后
+  仍断且从未成功读到进程状态）；verifyTimeout 收窄为「状态可读但
+  6s 内旧 pid 始终在」（含读到过状态后连接丢失、始终未见旧 pid
+  消失）。out_status / out_error 与 poster_refresh.end 日志行同步。
+
+未动：建连/服务发现/握手/锁 pid/验明/kill 的既有实现与阶段日志名、
+Swift 侧（含 #95 不自动注销行为）、受保护文件、.github/workflows。

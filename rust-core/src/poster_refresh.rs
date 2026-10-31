@@ -18,8 +18,12 @@
 //!      identity with execname_for_pid.
 //!   4. Via the processcontrol channel, kill that pid
 //!      (ProcessControlClient::kill_app -> channel method killPid:).
-//!   5. Poll deviceinfo is_running_pid until the old pid is gone
-//!      (launchd respawns the daemon, which re-reads the store).
+//!   5. Drop that connection (the kill makes the device close it —
+//!      reusing it for verification dies with BrokenPipe, seen on
+//!      hardware in run #95) and verify on a brand-new read-only
+//!      connection: poll deviceinfo is_running_pid until the old pid is
+//!      gone (launchd respawns the daemon, which re-reads the store).
+//!      One reconnect is allowed if the verify connection dies mid-poll.
 //!
 //! Returns a machine-readable status string so the Swift side can fall back
 //! to the legacy NeoSpring respring whenever the refresh is not confirmed.
@@ -72,6 +76,7 @@ enum RefreshStatus {
     ServiceUnavailable,
     PidNotFound,
     KillFailed,
+    VerifyConnectFailed,
     VerifyTimeout,
 }
 
@@ -83,6 +88,7 @@ impl RefreshStatus {
             RefreshStatus::ServiceUnavailable => "serviceUnavailable",
             RefreshStatus::PidNotFound => "pidNotFound",
             RefreshStatus::KillFailed => "killFailed",
+            RefreshStatus::VerifyConnectFailed => "verifyConnectFailed",
             RefreshStatus::VerifyTimeout => "verifyTimeout",
         }
     }
@@ -392,25 +398,119 @@ async fn exploit_poster_refresh(pairing_path: String, logger: &PRLogger) -> Refr
         logger.log("airlift: airlift.poster_refresh.signal.acknowledged");
     }
 
-    // Stage: verify — poll until the old pid is gone (launchd respawns the
-    // daemon under a new pid; the old pid disappearing is the confirmation).
-    {
-        let mut info = DeviceInfoClient::new(&mut server).await.map_err(|e| {
-            (
-                RefreshStatus::VerifyTimeout,
-                format!("deviceinfo channel (verify) failed: {e:?}"),
-            )
-        })?;
-        let deadline = Instant::now() + Duration::from_millis(6000);
-        loop {
-            let gone = match info.is_running_pid(pid).await {
-                Ok(running) => !running,
-                Err(_) => match info.running_processes().await {
-                    Ok(list) => !list.iter().any(|p| p.pid == pid),
-                    Err(_) => false,
-                },
-            };
-            if gone {
+    // Stage: verify — on a brand-new connection. The kill tears down the
+    // RemoteServer connection above (hardware log, run #95: reusing it to
+    // open the verify deviceinfo channel fails with BrokenPipe, "remote
+    // server connection closed"), so drop it explicitly and verify
+    // read-only on a fresh connection — the same shape Walllive's
+    // `poster_refresh.verification.connection=new readonly=true` records.
+    drop(server);
+    drop(adapter);
+    logger.log("airlift: airlift.poster_refresh.verification.connection=new readonly=true");
+    verify_old_pid_gone(&pairing_bytes, pid, started, logger).await
+}
+
+// ---------------------------------------------------------------------------
+// Verification on a fresh connection
+// ---------------------------------------------------------------------------
+
+enum VerifyOutcome {
+    /// Old pid observed gone — refresh confirmed.
+    Gone,
+    /// State stayed readable until the deadline and the pid was still
+    /// running at every probe.
+    StillRunning,
+}
+
+/// One verification epoch on a freshly built connection: connect, open a
+/// deviceinfo channel, and poll the pid's liveness every 250ms until it
+/// disappears or `deadline` passes. Any connection/channel/read failure
+/// ends the epoch with Err(message); the caller decides whether a
+/// reconnect is still allowed. Sets `*observed_state` once any probe has
+/// successfully read process state on a verify connection.
+async fn verify_poll_on_fresh_connection(
+    pairing_bytes: &[u8],
+    pid: u32,
+    deadline: Instant,
+    logger: &PRLogger,
+    observed_state: &mut bool,
+) -> Result<VerifyOutcome, String> {
+    let (mut adapter, mut handshake) = connect_rsd(pairing_bytes, logger)
+        .await
+        .map_err(|(_, msg)| msg)?;
+    if !handshake.services.contains_key(DVT_SERVICE) {
+        return Err(format!(
+            "{DVT_SERVICE} not advertised by RSD handshake (verify connection)"
+        ));
+    }
+    let mut server = handshake
+        .connect::<RemoteServerClient<Box<dyn ReadWrite>>>(&mut adapter)
+        .await
+        .map_err(|e| format!("dtservicehub connect (verify) failed: {e:?}"))?;
+    let mut info = DeviceInfoClient::new(&mut server)
+        .await
+        .map_err(|e| format!("deviceinfo channel (verify) failed: {e:?}"))?;
+
+    loop {
+        // A probe succeeds if either read answers; both failing means the
+        // connection is dead (the shape observed in run #95).
+        let probe = match info.is_running_pid(pid).await {
+            Ok(running) => Some(running),
+            Err(_) => match info.running_processes().await {
+                Ok(list) => Some(list.iter().any(|p| p.pid == pid)),
+                Err(_) => None,
+            },
+        };
+        match probe {
+            Some(running) => {
+                *observed_state = true;
+                if !running {
+                    return Ok(VerifyOutcome::Gone);
+                }
+                if Instant::now() >= deadline {
+                    return Ok(VerifyOutcome::StillRunning);
+                }
+            }
+            None => {
+                return Err(format!(
+                    "deviceinfo reads failed on verify connection (pid {pid})"
+                ));
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Verify stage driver: poll on a fresh connection; if that connection
+/// dies before the pid's fate is known, rebuild it once within the same
+/// ~6s budget. Status split:
+/// - VerifyTimeout: process state was readable but the old pid was never
+///   observed gone inside the budget.
+/// - VerifyConnectFailed: no verify connection ever yielded a successful
+///   state read (initial connect failed, or the one reconnect also died
+///   before any probe succeeded).
+async fn verify_old_pid_gone(
+    pairing_bytes: &[u8],
+    pid: u32,
+    started: Instant,
+    logger: &PRLogger,
+) -> RefreshResult {
+    let deadline = Instant::now() + Duration::from_millis(6000);
+    let mut observed_state = false;
+    let mut reconnects_left = 1u32;
+    let mut last_error: String;
+
+    loop {
+        match verify_poll_on_fresh_connection(
+            pairing_bytes,
+            pid,
+            deadline,
+            logger,
+            &mut observed_state,
+        )
+        .await
+        {
+            Ok(VerifyOutcome::Gone) => {
                 logger.log(format!(
                     "airlift: airlift.poster_refresh.old_process.gone old_pid={pid}"
                 ));
@@ -420,13 +520,36 @@ async fn exploit_poster_refresh(pairing_path: String, logger: &PRLogger) -> Refr
                 ));
                 return Ok(());
             }
-            if Instant::now() >= deadline {
+            Ok(VerifyOutcome::StillRunning) => {
                 return Err((
                     RefreshStatus::VerifyTimeout,
-                    format!("pid {pid} still running 6s after kill signal"),
+                    format!(
+                        "pid {pid} still running 6s after kill signal (state readable on fresh verify connection)"
+                    ),
                 ));
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            Err(message) => {
+                last_error = message;
+                if reconnects_left > 0 {
+                    reconnects_left -= 1;
+                    logger.log("airlift: airlift.poster_refresh.verification.retry attempt=1");
+                    continue;
+                }
+                if observed_state {
+                    return Err((
+                        RefreshStatus::VerifyTimeout,
+                        format!(
+                            "pid {pid} never observed gone; verify connection lost after state was read: {last_error}"
+                        ),
+                    ));
+                }
+                return Err((
+                    RefreshStatus::VerifyConnectFailed,
+                    format!(
+                        "could not obtain process state on a fresh verify connection: {last_error}"
+                    ),
+                ));
+            }
         }
     }
 }
