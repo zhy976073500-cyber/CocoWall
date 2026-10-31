@@ -15,7 +15,7 @@
 //!     PRBPosterExtensionDataStore/<version>/Extensions/
 //!       <extension-id>/descriptors/<UUID>/…
 //!
-//! AFC (com.apple.afc over the RSD tunnel) is jailed to /var/mobile/Media,
+//! AFC (com.apple.afc.shim.remote over the RSD tunnel) is jailed to /var/mobile/Media,
 //! but it follows symlinks planted inside the jail — that is exactly how
 //! the flash staging works (a symlink in Media pointing at the store's
 //! descriptors directory, created by the staged zip). This module plants
@@ -118,7 +118,15 @@ impl StoreStatus {
 type StoreResult<T> = Result<T, (StoreStatus, String)>;
 
 const RSD_PORT: u16 = 49152;
-const AFC_SERVICE: &str = "com.apple.afc";
+/// AFC's advertised name in the RSD handshake is the shim name.
+/// "com.apple.afc" is the *lockdown* service name (the one exploit
+/// passes to start_service on its Lockdown route); checking the RSD
+/// handshake for it always misses and falsely reports
+/// serviceUnavailable — hardware log 2026-11-01 (poster_store.list,
+/// run #106 build). The vendored AfcClient's RSD impl uses this same
+/// shim name (idevice afc/mod.rs), and exploit's RSD route connects
+/// via handshake.connect::<AfcClient>() with no other name involved.
+const AFC_SERVICE: &str = "com.apple.afc.shim.remote";
 
 // ---------------------------------------------------------------------------
 // Small helpers

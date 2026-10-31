@@ -19,8 +19,12 @@
 //!      no PosterBoard entry, the daemon is already stopped and the
 //!      refresh counts as confirmed (Walllive's already_stopped branch);
 //!      a failed list read is still an error.
-//!   4. Via the processcontrol channel, kill that pid
-//!      (ProcessControlClient::kill_app -> channel method killPid:).
+//!   4. Via the processcontrol channel, deliver SIGKILL to that pid
+//!      (ProcessControlClient::send_signal -> channel method
+//!      sendSignal:toPid:). killPid: was used until run #106: the
+//!      service acknowledged it but the daemon survived — it only
+//!      terminates processes the instruments server itself spawned.
+//!      sendSignal:toPid: is Walllive's call and reaches any pid.
 //!   5. Drop that connection (the kill makes the device close it —
 //!      reusing it for verification dies with BrokenPipe, seen on
 //!      hardware in run #95) and verify on a brand-new read-only
@@ -389,7 +393,10 @@ async fn exploit_poster_refresh(pairing_path: String, logger: &PRLogger) -> Refr
         pid
     };
 
-    // Stage: signal — kill the PosterBoard pid via ProcessControl (killPid:).
+    // Stage: signal — deliver SIGKILL to the PosterBoard pid via
+    // ProcessControl sendSignal:toPid: (Walllive's call). killPid: was
+    // falsified on hardware in run #106: acknowledged, daemon alive 6s
+    // later; it only terminates instruments-spawned processes.
     {
         let mut pc = ProcessControlClient::new(&mut server).await.map_err(|e| {
             (
@@ -400,10 +407,10 @@ async fn exploit_poster_refresh(pairing_path: String, logger: &PRLogger) -> Refr
         logger.log(format!(
             "airlift: airlift.poster_refresh.signal.begin pid={pid} signal=9"
         ));
-        pc.kill_app(pid as u64).await.map_err(|e| {
+        pc.send_signal(pid as u64, 9).await.map_err(|e| {
             (
                 RefreshStatus::KillFailed,
-                format!("killPid for pid {pid} failed: {e:?}"),
+                format!("sendSignal 9 to pid {pid} failed: {e:?}"),
             )
         })?;
         logger.log("airlift: airlift.poster_refresh.signal.acknowledged");

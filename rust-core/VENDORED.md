@@ -62,7 +62,32 @@ store detect/cleanup feature, registered in SPEC.md):
 - `include/airlift.h` — pure additions only: the two declarations
   next to `al_poster_refresh`. No existing line changed.
 
-Everything else in this tree remains a verbatim copy of upstream.
+Third local source change, 2026-11-01 (poster_refresh signal fix,
+registered in SPEC.md). This is the first change that touches a
+vendored upstream file itself — additively only:
+
+- `vendor/idevice/src/services/dvt/process_control.rs` — ADDED one
+  method, `ProcessControlClient::send_signal(pid, signal)`, sending
+  the DTX ProcessControl selector `sendSignal:toPid:` (aux args:
+  signal first, then pid, mirroring the selector; wire shape mirrors
+  the adjacent upstream `kill_app`). No existing line changed;
+  `kill_app` (`killPid:`) is untouched. Reason: on hardware (run
+  #106) `killPid:` was acknowledged by the service but did not
+  terminate the PosterBoard daemon — it only takes effect on
+  processes the instruments server itself spawned. Walllive's
+  binary carries the `sendSignal:toPid:` selector string in its
+  processcontrol cluster; it is the call that actually delivers
+  the signal. (The DVT Channel inside ProcessControlClient is
+  crate-private, so the vendored client is the only clean place
+  to add the call.)
+- `src/poster_refresh.rs` — the signal stage now calls
+  `send_signal(pid, 9)` instead of `kill_app(pid)`; a send failure
+  maps to status killFailed with the original error. Header docs
+  corrected. Identity / already_stopped / fresh-connection verify /
+  status honesty all unchanged.
+
+Apart from the additions registered above, everything else in this
+tree remains a verbatim copy of upstream.
 The other adaptations live outside this directory:
 
 - `ci/build-rust-core.sh` builds this crate for `aarch64-apple-ios`

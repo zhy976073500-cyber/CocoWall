@@ -270,3 +270,64 @@ exploit::run 线协议（cargo check 主机目标通过），未真机验证；
 manifest 中 Download 标记的字段路径若与真机结构不符，代码只在
 明确读到 download=false 时拒绝 FileComplete，其余情况以
 quarantine 落点 + commit 审计 absent 为最终判据，不会假报成功。
+
+## 改动登记 · poster_refresh 杀进程改走 sendSignal:toPid:（2026-11-01，#106 真机日志定点修）
+
+背景：#106 真机刷入日志的刷新段全程绿到 signal.acknowledged，
+且 #96 的新连接验活正常工作、状态诚实——结论是
+`refresh_confirmed=false status=verifyTimeout error=pid 16414
+still running 6s after kill signal (state readable on fresh verify
+connection)`：信号发出后 6 秒进程仍然活着。我们 vendored 的
+`kill_app` 走 ProcessControl 的 `killPid:`，服务端回了确认但
+PosterBoard 没死。#94 侦察时记录过差异（Walllive 用
+`sendSignal:toPid:` 带参数 9），当时假设「服务端效果等价」——
+现已被真机证伪：`killPid:` 疑仅对 instruments 自行拉起的进程
+有效，对系统守护进程不生效。本轮复核 Walllive 1.1.1 二进制
+字符串：`sendSignal:toPid:` 恰与
+`com.apple.instruments.server.services.processcontrol`、
+`execnameForPid:`、`processIdentifierForBundleIdentifier:` 同串
+簇出现，`killPid:` 在另一处孤立出现——Walllive 的 poster_refresh
+走 sendSignal 一路无误。
+
+改动：
+
+- `rust-core/vendor/idevice/src/services/dvt/process_control.rs`
+  （vendored 上游文件，首次动它，增量登记见 VENDORED.md 第三节）：
+  在 `kill_app` 后新增 `ProcessControlClient::send_signal(pid,
+  signal)`，经既有 Channel 发 selector `sendSignal:toPid:`，
+  aux 参数顺序为信号在前、pid 在后（与 selector 名对齐），编码
+  形态与相邻的 `kill_app` 一致（AuxValue::U32、expect_reply=false）。
+  既有 `kill_app` 一字未改。选落点于此的原因：ProcessControlClient
+  的 Channel 是 idevice crate 私有，poster_refresh.rs 在 crate 外
+  拿不到任意 selector 的发送口，vendored client 是唯一干净落点。
+- `rust-core/src/poster_refresh.rs`：signal 阶段改调
+  `pc.send_signal(pid, 9)`；调用本身失败 → 状态 killFailed 并带
+  原始错误，不吞。头部文档同步更正（原写 killPid: 的两处）。
+
+未动：identity 验明、already_stopped 分支、#96 新连接验活 +
+重连一次、状态码诚实化、#95 不自动注销、signal.begin /
+signal.acknowledged 日志阶段名、Swift 侧、受保护文件、
+.github/workflows。
+
+未验证项（诚实标注）：sendSignal:toPid: 在 Sage 真机上的实际
+效果待首验——预期日志 signal.acknowledged 后新连接验活读到
+old_process.gone、refresh_confirmed=true、不注销、锁屏 1–2 秒
+内换壁纸；cargo check 主机目标通过仅证编译。
+
+同版附带修复（Sage 03:56 补发检测日志后并入本版）：
+poster_store.list 真机失败——`airlift.poster_store.service
+advertised=false service=com.apple.afc` →
+`serviceUnavailable: com.apple.afc not advertised by RSD
+handshake`。病根：open_store_session 建 AFC 前的 advertised
+检查用了 lockdown 服务名 `com.apple.afc`，而 RSD 握手里 AFC 的
+广告名是 `com.apple.afc.shim.remote`（刷入日志每个会话的
+'found RSD shim service com.apple.afc.shim.remote' 为证；
+vendored AfcClient 的 RSD 实现用的亦是 shim 名）。exploit.rs 在
+RSD 路线上打开 AFC 是直接 `handshake.connect::<AfcClient>()`、
+从不查 lockdown 名，所以刷入一直通、只有检测被自己的预检误杀。
+改法：`rust-core/src/poster_store.rs` 的 AFC_SERVICE 常量改
+`com.apple.afc.shim.remote`（含注释说明），log 的 service= 字段
+如实打 shim 名；客户端构造本就与 exploit 同款
+（handshake.connect::<AfcClient>），未动；状态码与日志形状
+不变，枚举/解析/删除逻辑未动。（未开回环工具时那段
+connectFailed 属环境问题，不处理。）
