@@ -891,8 +891,8 @@ struct ContentView: View {
 
 struct PairingTab: View {
     @EnvironmentObject var vm: AppViewModel
+    @Environment(\.dismiss) private var dismiss
     @State private var showDeleteConfirm = false
-    @State private var showCredits = false
     @State private var showFilePicker = false
     @State private var showPairingGuide = false
 
@@ -1199,24 +1199,18 @@ struct PairingTab: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
-                        showCredits = true
+                        dismiss()
                     } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "heart.fill")
-                                .font(.caption)
-                            Text("鸣谢与捐赠")
+                        HStack(spacing: 2) {
+                            Image(systemName: "chevron.left")
+                                .font(.caption.weight(.semibold))
+                            Text("返回")
                                 .font(.caption.bold())
                         }
-                        .foregroundStyle(.pink)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
-                        .background(Color.pink.opacity(0.12))
-                        .clipShape(Capsule())
                     }
                 }
-            }
-            .sheet(isPresented: $showCredits) {
-                CreditsSheet()
             }
             .sheet(isPresented: $showFilePicker) {
                 DocumentPickerView(allowedContentTypes: [

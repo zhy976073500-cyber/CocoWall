@@ -26,9 +26,23 @@ struct LibraryView: View {
 
     private var recommendedSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("主播推荐")
-                .font(.title3.weight(.bold))
-                .padding(.horizontal, 20)
+            HStack(alignment: .firstTextBaseline) {
+                Text("主播推荐")
+                    .font(.title3.weight(.bold))
+                Spacer()
+                NavigationLink {
+                    LibraryRecommendedView()
+                } label: {
+                    HStack(spacing: 2) {
+                        Text("更多")
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 20)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 14) {
@@ -42,6 +56,7 @@ struct LibraryView: View {
                                 Text(item.name)
                                     .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(.primary)
+                                    .lineLimit(1)
                                 Text(item.numberText)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -74,7 +89,7 @@ struct LibraryView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 8) {
                             LibraryCover(item: item, asset: item.coverAsset)
-                                .aspectRatio(3.0 / 4.0, contentMode: .fit)
+                                .aspectRatio(3.0 / 4.0, contentMode: .fill)
                             HStack(spacing: 6) {
                                 Text(item.name)
                                     .font(.subheadline.weight(.semibold))
@@ -91,6 +106,53 @@ struct LibraryView: View {
                 }
             }
             .padding(.horizontal, 20)
+        }
+    }
+}
+
+/// 主播推荐全屏页：从壁纸库「主播推荐」标题行的「更多 ›」进入。
+/// 版式与壁纸库网格一致（两列、封面统一 3:4 fill），数据是推荐集合的全部壁纸；
+/// 点单张与主页点卡行为一致，打开 LibraryDetailView。返回走系统导航返回。
+struct LibraryRecommendedView: View {
+    @State private var selectedItem: LibraryItem?
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 14),
+                          GridItem(.flexible(), spacing: 14)],
+                spacing: 18
+            ) {
+                ForEach(LibraryCatalog.recommended) { item in
+                    Button {
+                        selectedItem = item
+                    } label: {
+                        VStack(alignment: .leading, spacing: 8) {
+                            LibraryCover(item: item, asset: item.coverAsset)
+                                .aspectRatio(3.0 / 4.0, contentMode: .fill)
+                            HStack(spacing: 6) {
+                                Text(item.name)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(item.numberText)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+        }
+        .background(Color(UIColor.systemBackground))
+        .navigationTitle("主播推荐")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $selectedItem) { item in
+            LibraryDetailView(item: item)
         }
     }
 }

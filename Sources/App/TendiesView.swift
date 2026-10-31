@@ -46,91 +46,8 @@ struct TendiesView: View {
                     }
                 }
 
-                // Section 1: Import Wallpapers
-                Section {
-                    Button {
-                        showFilePicker = true
-                    } label: {
-                        HStack(spacing: 8) {
-                            Spacer()
-                            Image(systemName: "doc.badge.plus")
-                            Text(vm.tendieItems.isEmpty ? "从文件选择 .tendies…" : "导入更多壁纸…")
-                            Spacer()
-                        }
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 48)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.blue)
-                } footer: {
-                    if vm.posterBoardContainer.isEmpty {
-                        Text("刷入时将自动检测 PosterBoard 容器。")
-                    } else {
-                        Text("目标：已检测到 PosterBoard 容器 ✅")
-                    }
-                }
-
-                // Section 2: PosterBoard Options
-                Section {
-                    Toggle(isOn: $vm.resetPBProtections) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("强制刷新 PosterBoard 缓存")
-                                .font(.subheadline.weight(.medium))
-                            Text("重置文件保护，让 iOS 立即重新索引壁纸")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                // Section 3: Wallpapers Gallery
-                if !vm.tendieItems.isEmpty {
-                    Section {
-                        HStack {
-                            Text("已导入 \(vm.tendieItems.count) 张壁纸")
-                                .font(.caption.bold())
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Button(selectedAll ? "取消全选" : "全选") {
-                                let target = !selectedAll
-                                for i in 0..<vm.tendieItems.count {
-                                    vm.tendieItems[i].isSelected = target
-                                }
-                            }
-                            .font(.caption)
-                        }
-
-                        ForEach($vm.tendieItems) { $item in
-                            TendieRowView(item: $item) {
-                                selectedDetailItem = item
-                            } onDelete: {
-                                vm.deleteTendie(item: item)
-                            }
-                        }
-                    } header: {
-                        Text("壁纸库")
-                    }
-                } else {
-                    Section {
-                        VStack(spacing: 10) {
-                            Image(systemName: "photo.stack")
-                                .font(.system(size: 32))
-                                .foregroundColor(.secondary)
-                            Text("还没有载入 .tendies 壁纸")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                            Text("点「从文件选择 .tendies」，或把壁纸拷到 我的 iPhone › CocoWall。")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                    }
-                }
-
-                // Section 4: Flash Action & Respring
+                // Section 1: Flash Action & Respring（原底部动作卡上移到此处；
+                // 导入入口只保留工具栏右上角 + 号）
                 Section {
                     VStack(spacing: 12) {
                         if case .running = vm.tendiesFlashPhase {
@@ -183,10 +100,76 @@ struct TendiesView: View {
                     }
                     .listRowInsets(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14))
                 } footer: {
-                    Text("刷入后将自动触发 NeoSpring 注销设备，应用新壁纸。")
+                    VStack(alignment: .leading, spacing: 4) {
+                        if vm.posterBoardContainer.isEmpty {
+                            Text("刷入时将自动检测 PosterBoard 容器。")
+                        } else {
+                            Text("目标：已检测到 PosterBoard 容器 ✅")
+                        }
+                        Text("刷入后将自动触发 NeoSpring 注销设备，应用新壁纸。")
+                    }
                 }
 
-                // Section 5: Flash Log (CompactLogView)
+                // Section 2: PosterBoard Options
+                Section {
+                    Toggle(isOn: $vm.resetPBProtections) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("强制刷新 PosterBoard 缓存")
+                                .font(.subheadline.weight(.medium))
+                            Text("重置文件保护，让 iOS 立即重新索引壁纸")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                // Section 3: Wallpapers Gallery
+                if !vm.tendieItems.isEmpty {
+                    Section {
+                        HStack {
+                            Text("已导入 \(vm.tendieItems.count) 张壁纸")
+                                .font(.caption.bold())
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button(selectedAll ? "取消全选" : "全选") {
+                                let target = !selectedAll
+                                for i in 0..<vm.tendieItems.count {
+                                    vm.tendieItems[i].isSelected = target
+                                }
+                            }
+                            .font(.caption)
+                        }
+
+                        ForEach($vm.tendieItems) { $item in
+                            TendieRowView(item: $item) {
+                                selectedDetailItem = item
+                            } onDelete: {
+                                vm.deleteTendie(item: item)
+                            }
+                        }
+                    } header: {
+                        Text("壁纸库")
+                    }
+                } else {
+                    Section {
+                        VStack(spacing: 10) {
+                            Image(systemName: "photo.stack")
+                                .font(.system(size: 32))
+                                .foregroundColor(.secondary)
+                            Text("还没有载入 .tendies 壁纸")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                            Text("点右上角「+」从文件选择 .tendies，或把壁纸拷到 我的 iPhone › CocoWall。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                    }
+                }
+
+                // Section 4: Flash Log (CompactLogView)
                 if !vm.tendiesFlashLog.isEmpty {
                     Section {
                         CompactLogView(
