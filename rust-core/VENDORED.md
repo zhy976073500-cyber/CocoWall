@@ -37,12 +37,25 @@ store detect/cleanup feature, registered in SPEC.md):
 
 - ADDED `src/poster_store.rs` — new module implementing enumeration
   and deletion of the descriptors actually present in the device's
-  PRBPosterExtensionDataStore, via AFC (com.apple.afc) over the RSD
-  tunnel: a temporary symlink is planted in the AFC media jail with
-  the AFC MakeLink operation pointing at the store's Extensions
-  directory, descriptors are listed/read/removed through it, and the
-  link is removed afterwards. Uses only the already-vendored
-  `idevice` crate's AFC client; no upstream file was altered.
+  PRBPosterExtensionDataStore, over the RSD tunnel. Enumeration and
+  auditing go through AFC (com.apple.afc): a temporary symlink is
+  planted in the AFC media jail with the AFC MakeLink operation
+  pointing at the store's Extensions directory, and descriptors are
+  listed/read through it. Deletion does NOT erase through AFC: each
+  descriptor is moved out of the store by an AirTraffic/Books sync
+  whose two books (staging link + the descriptor, identified by its
+  Airlock-escaping relative path) make the on-device ATAirlock daemon
+  download it into Media as an `airlift-quarantine-<token>` copy —
+  the Walllive-verified airlift.delete mechanism; the ATC wire flow
+  mirrors `exploit::run`'s, reusing the crate-public
+  `crate::grappa::generate_grappa_token`. A fresh-connection audit
+  must re-confirm each deleted path absent. Uses only the
+  already-vendored `idevice` crate; no upstream file was altered.
+- `src/poster_refresh.rs` — one branch added (same change series):
+  in the identity stage, a successfully read process list with no
+  PosterBoard entry now returns confirmed with an
+  `already_stopped` log line (Walllive parity) instead of a
+  pidNotFound failure. No other line changed.
 - `src/lib.rs` — pure additions only: `pub mod poster_store;` and the
   new FFI exports `al_poster_store_list` / `al_poster_store_delete`
   (with catch_unwind wrappers). No existing line changed.

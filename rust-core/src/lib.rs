@@ -468,7 +468,10 @@ pub unsafe extern "C" fn al_poster_store_list(
 /// PosterBoard data-store cleanup (local addition, see
 /// src/poster_store.rs): deletes the given descriptors ("<extension-id>/
 /// <descriptor-uuid>", comma-separated in targets_csv) from the device's
-/// PRBPosterExtensionDataStore via AFC over the RSD tunnel. Returns 0 when
+/// PRBPosterExtensionDataStore. Each descriptor is moved out of the
+/// store by an AirTraffic/Books sync into a Media quarantine copy
+/// (Walllive-verified mechanism) and re-audited absent on a fresh
+/// connection. Returns 0 when
 /// the operation ran (out_status "ok", or "partial" when some targets
 /// failed) with per-item results as JSON in out_json
 /// ({"deleted":N,"failed":M,"results":[{extension,uuid,ok}]}), 1 when the

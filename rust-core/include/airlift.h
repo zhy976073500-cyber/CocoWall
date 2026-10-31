@@ -162,9 +162,12 @@ int32_t al_poster_refresh(const char *pairing_path,
                           char **out_error);
 
 // PosterBoard data-store enumeration + cleanup (local addition,
-// src/poster_store.rs): list/delete the descriptors actually present in
-// the device's PRBPosterExtensionDataStore, via AFC over the RSD tunnel
-// through a temporary symlink planted in the AFC media jail. Both block
+// src/poster_store.rs): list the descriptors actually present in the
+// device's PRBPosterExtensionDataStore via AFC over the RSD tunnel
+// through a temporary symlink planted in the AFC media jail; delete
+// moves each descriptor out of the store via an AirTraffic/Books sync
+// into a Media quarantine copy (Walllive-verified mechanism) and
+// re-audits each path absent on a fresh connection. Both block
 // until done; run off the main thread. On success out_json carries the
 // JSON result (list: {"items":[{extension,uuid,identifier,packageName,
 // name}]}; delete: {"deleted":N,"failed":M,"results":[{extension,uuid,

@@ -5,7 +5,10 @@
 //  Device-side PosterBoard data-store detection + cleanup: asks the Rust
 //  core (al_poster_store_list / al_poster_store_delete) to enumerate the
 //  descriptors actually present in the device's PRBPosterExtensionDataStore
-//  and to delete user-selected ones, via AFC over the RSD tunnel. This is
+//  (AFC over the RSD tunnel) and to delete user-selected ones — deletion
+//  moves each descriptor out of the store via an AirTraffic/Books sync
+//  into a Media quarantine copy (the Walllive-verified mechanism), then
+//  re-audits every deleted path absent on a fresh connection. This is
 //  deliberately separate from the local imported-.tendies library — the
 //  items here come from the device, not from the app's own records.
 //

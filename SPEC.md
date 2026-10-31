@@ -186,8 +186,8 @@ Swift 侧（含 #95 不自动注销行为）、受保护文件、.github/workflo
    成功/失败数，之后自动走一次 poster_refresh 免注销刷新使删除
    生效（未确认只提示，不自动注销，与 #95 规则一致）。
 
-检测/清理通道（侦察结论）：刷入用的 ATC 同步通道只能写、不能列举
-或删除数据仓存量；数据仓本体是 PosterBoard 容器内的普通目录树
+检测/清理通道（侦察结论 + Walllive 删除日志实证，见下节修订）：
+数据仓本体是 PosterBoard 容器内的普通目录树
 （PRBPosterExtensionDataStore/<版本 61>/Extensions/<扩展>/descriptors/
 <UUID>）。AFC（com.apple.afc）被关在 /var/mobile/Media 内，但会跟随
 狱内符号链接——刷入暂存正是这么进数据仓的。据此新增 Rust 模块
@@ -198,14 +198,14 @@ Media 根临时植入指向数据仓 Extensions 目录的符号链接
 扩展目录（任务所指两个目标扩展含在其中）与其 descriptor，读
 identifier 文本文件与
 versions/<v>/contents/<名>.wallpaper 解析可读名（优先级：包名 >
-identifier > UUID 短码）；删除为逐个 remove_all descriptor 目录，
-删后回读计数；临时链接用完即删。新 FFI：`al_poster_store_list` /
+identifier > UUID 短码）；临时链接用完即删。**删除不走 AFC 直删**
+（机制见下节：ATC 同步搬移）。新 FFI：`al_poster_store_list` /
 `al_poster_store_delete`（lib.rs + airlift.h 纯新增），Swift 侧新增
 PosterStoreHelper.swift，AppViewModel 只增新状态与两方法
 （detectDevicePosters / cleanupSelectedDevicePosters +
 posterStoreContext 前置）。
 
-诚实边界：AFC MakeLink 植入链接 + 经链接遍历/删除数据仓，未经真机
+诚实边界：AFC MakeLink 植入链接 + 经链接遍历数据仓，未经真机
 验证（桌面仅 cargo check 主机目标通过）；若真机上 afcd 拒绝建链或
 遍历，检测会如实报 stageFailed/listFailed 并显示原因，不会拿本地
 库条目冒充。providerInfo.plist（NSKeyedArchiver）未解析，可读名
@@ -215,3 +215,58 @@ poster_refresh 同），Lockdown 路线设备暂不支持本功能。
 未动：TendiesEngine / PairingController / RespringHelper /
 GrappaHelper / Live Activity 既有函数体、#93 制作页、
 #94–96 poster_refresh 与不自动注销行为、.github/workflows。
+
+## 改动登记 · 删除机制改走 ATC 搬移 + poster_refresh already_stopped（2026-11-01，Walllive 完整删除日志实证后修订）
+
+证据：Sage 提供的 Walllive 完整删除日志
+（WallpaperImport-29E5799D-….txt，删除段 2026-10-31T19:30–19:31Z）。
+其删除不是 AFC 直删，而是与注入同路的 ATC 同步搬移，逐条对应：
+
+- 审计枚举可行：`delete.audit.listing stage=extensions count=22 →
+  stage=provider count=5 → stage=descriptors count=13`，逐级列数据仓，
+  `delete.audit.result status=present/absent level=descriptor`。
+  本实现检测/审计同口径（AFC 经临时链接逐级 list，日志同名）。
+- 删除 = 同步搬出：每 descriptor 一个 operation——暂存 zip（链接指向
+  其 descriptors 目录）+ Books.plist 恰 2 条 book（链接 + descriptor，
+  后者以相对 Airlock 的逃逸路径标识，与 vendored canary 的 target
+  book 同形）；`delete.manifest book_entries=2`，设备 manifest 两条
+  均 `download=true ready=true`；随后分两 phase 发 FileComplete：
+  phase=link（`delete.link.confirmed destination_verified=true`）、
+  phase=descriptor（`delete.quarantine.confirmed=true`），设备侧
+  ATAirlock 把 descriptor 下载/移出数据仓落到 Media 隔离区；
+  `delete.descriptor.confirmed`、`delete.stage.retained
+  no_read=true no_remove=true`（隔离副本保留不删）、Books.plist
+  恢复（`afc.books.restore.end verified=true`）。
+- 验收 = 新连接复审：全部 operation 后 `delete.commit.connection=
+  fresh after_restore=true`，逐个路径复审 absent，
+  `delete.commit.audit paths=3`（该批 3 个落点）、descriptors 计数
+  13→10，全 absent 才 `delete.receipts.committed
+  restoration_verified=true`。
+
+本实现（poster_store.rs 的 store_delete）：预审（present 才动手）
+→ 每目标一个 ATC operation（会话逐段镜像 exploit::run 的已验证线
+协议：zip 暂存 → Books.plist → ATC 握手/Grappa → ReadyForSync →
+FinishedSyncingMetadata → AssetManifest 校验 download 标记 →
+phase=link FileComplete 并验 Media 链接落点 → phase=descriptor
+FileComplete → quarantine 落点确认）→ 还原 Books.plist、清暂存与
+链接、保留 `airlift-quarantine-<token>` 隔离副本（Media 根，用户
+数据的唯一剩余副本，故不删）→ **新连接 commit 审计**：每个所选
+落点逐个复审 absent 才计成功，计数与逐项结果回 JSON
+（deleted/failed/commitAudit/results[].quarantine）。一只壁纸在
+双写扩展下有两个落点（WallpaperKit.CollectionsPoster 与
+Posters.CollectionsPosterApp），列表里逐项呈现、逐项勾选删除、
+逐项审计，不合并报成功。
+
+poster_refresh 补 already_stopped 分支（同一日志末尾实证：
+`poster_refresh.already_stopped confirmed=true` → `refresh_
+confirmed=true`）：identity 阶段进程列表读取成功但无 PosterBoard
+条目 → 打 already_stopped 日志并按 confirmed 返回（守护进程没在跑，
+下次启动自然读新数据仓），不再报 pidNotFound；列表读取本身失败
+仍按原错误（pidNotFound）处理。#95 不自动注销、#96 杀后新连接
+验活均未动。
+
+未验证项（诚实标注）：删除 ATC 会话为桌面镜像复刻 vendored
+exploit::run 线协议（cargo check 主机目标通过），未真机验证；
+manifest 中 Download 标记的字段路径若与真机结构不符，代码只在
+明确读到 download=false 时拒绝 FileComplete，其余情况以
+quarantine 落点 + commit 审计 absent 为最终判据，不会假报成功。

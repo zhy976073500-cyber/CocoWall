@@ -15,7 +15,10 @@
 //!      and connect a DVT RemoteServerClient (DTX handshake).
 //!   3. Via the deviceinfo channel, list running processes and lock onto the
 //!      PosterBoard daemon's pid (process name "PosterBoard"), verifying
-//!      identity with execname_for_pid.
+//!      identity with execname_for_pid. If the list reads fine but holds
+//!      no PosterBoard entry, the daemon is already stopped and the
+//!      refresh counts as confirmed (Walllive's already_stopped branch);
+//!      a failed list read is still an error.
 //!   4. Via the processcontrol channel, kill that pid
 //!      (ProcessControlClient::kill_app -> channel method killPid:).
 //!   5. Drop that connection (the kill makes the device close it —
@@ -353,10 +356,18 @@ async fn exploit_poster_refresh(pairing_path: String, logger: &PRLogger) -> Refr
             .find(|p| p.name == POSTERBOARD_PROCESS || p.real_app_name == POSTERBOARD_PROCESS)
             .map(|p| p.pid);
         let Some(pid) = candidate.filter(|p| *p != 0) else {
-            return Err((
-                RefreshStatus::PidNotFound,
-                "PosterBoard process not present in runningProcesses".to_string(),
+            // The process list WAS read successfully and PosterBoard is
+            // simply not in it: the daemon is not running, so there is
+            // nothing to restart — when it next launches it reads the
+            // store fresh. Walllive treats this as a confirmed refresh
+            // (airlift.poster_refresh.already_stopped), not a failure.
+            // (A failed running_processes() read above still errors.)
+            logger.log("airlift: airlift.poster_refresh.already_stopped confirmed=true");
+            logger.log(format!(
+                "airlift: airlift.poster_refresh.end refresh_confirmed=true duration_ms={}",
+                started.elapsed().as_millis()
             ));
+            return Ok(());
         };
         match info.execname_for_pid(pid).await {
             Ok(exec) if exec.contains(POSTERBOARD_PROCESS) => {}
