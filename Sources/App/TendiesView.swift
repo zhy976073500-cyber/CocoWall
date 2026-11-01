@@ -23,6 +23,40 @@ struct TendiesView: View {
         !vm.tendieItems.isEmpty && vm.tendieItems.allSatisfy { $0.isSelected }
     }
 
+    // MARK: - 状态区（run #124）
+
+    private var systemStatusLevel: SystemSupportLevel {
+        AppViewModel.systemSupportLevel(version: UIDevice.current.systemVersion)
+    }
+
+    private var systemStatusText: String {
+        let v = UIDevice.current.systemVersion
+        switch systemStatusLevel {
+        case .supported:
+            return "iOS \(v) · 支持"
+        case .patchedRisk:
+            return "iOS \(v) · 风险提示（27.2 起通道被修补）"
+        case .tooOld:
+            return "iOS \(v) · 不支持（需 iOS 17.0 起）"
+        }
+    }
+
+    private func statusLine(title: String, value: String, ok: Bool, warn: Bool = false) -> some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(ok ? Color.green : (warn ? Color.orange : Color.secondary))
+                .frame(width: 8, height: 8)
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+            Spacer()
+            Text(value)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -46,7 +80,71 @@ struct TendiesView: View {
                     }
                 }
 
-                // Section 0: 获取更多壁纸（页面最上方；点击用系统浏览器打开飞书合集）
+                // Section -1: 状态区（run #124 追加，页面最上方）：
+                // 「连接回环」入口 + 配对文件 / 本机系统 / 回环连接
+                // 三项状态。三项状态都读现成只读来源（配对文件 =
+                // vm.hasPairingFile，refreshPairingFile 校验规范配对
+                // 文件存在且非空；本机系统 = UIDevice 系统版本 +
+                // AppViewModel.systemSupportLevel 判定；回环连接 =
+                // vm.vpnUp，refreshNetworkStatus 的接口扫描探活，
+                // 不开新连接），进页面时查一次（见 onAppear），
+                // 区标题右侧按钮手动刷新。
+                Section {
+                    Button {
+                        // 与设置侧既有「启动 LocalDevVPN」同一动作：
+                        // 打开 LocalDevVPN 的 URL scheme 由它建回环；
+                        // 本页新增顶部入口，设置侧原入口保留。
+                        if let url = URL(string: "localdevvpn://") {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "network")
+                                .font(.title3)
+                                .foregroundStyle(Color.accentColor)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("连接回环")
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+                                Text("打开 LocalDevVPN 建立回环连接")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    statusLine(title: "配对文件",
+                               value: vm.hasPairingFile ? "已识别" : "未识别",
+                               ok: vm.hasPairingFile)
+                    statusLine(title: "本机系统",
+                               value: systemStatusText,
+                               ok: systemStatusLevel == .supported,
+                               warn: systemStatusLevel != .supported)
+                    statusLine(title: "回环连接",
+                               value: vm.vpnUp ? "已连接" : "未连接",
+                               ok: vm.vpnUp)
+                } header: {
+                    HStack {
+                        Text("状态")
+                        Spacer()
+                        Button {
+                            vm.refreshPairingFile()
+                            vm.refreshNetworkStatus()
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .font(.caption)
+                        .textCase(nil)
+                    }
+                }
+
+                // Section 0: 获取更多壁纸（点击用系统浏览器打开飞书合集）
                 Section {
                     Button {
                         if let url = URL(string: "https://my.feishu.cn/wiki/Oi6pwrRp9i8wd2kBl0Lc4bn9nTb") {
@@ -269,6 +367,10 @@ struct TendiesView: View {
                 vm.showSuccessAlert = false
                 vm.successAlertMessage = ""
                 vm.scanDocumentsForTendies()
+                // 状态区（run #124）：进页面查一次配对文件与回环
+                // 探活状态（均为现成只读轻量检查，不开新连接）。
+                vm.refreshPairingFile()
+                vm.refreshNetworkStatus()
             }
             .task {
                 if vm.posterBoardContainer.isEmpty {

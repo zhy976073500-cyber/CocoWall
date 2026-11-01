@@ -1451,3 +1451,34 @@ TendiesEngine 等受保护文件。#124 的登记表/缩略图改动零冲突
 - 产物自查：CI 绿后主线下载 artifact 解包应见
   Payload/CocoWall.app/PlugIns/CocoWallTunnel.appex（构建侧
   无法直接读 artifact 清单，此项随主线交付时一并核对）。
+
+### 追加（同轮 #124）：壁纸页顶部状态区
+
+Sage 2026-11-01 21:28 追加，与 #125（内置回环扩展，UI 在设置
+侧）并行不冲突。壁纸页 Form 最上方新增状态区 Section（在
+「获取更多壁纸」之前；原有两入口位置不变）：
+
+- 「连接回环」按钮：与设置侧既有「启动 LocalDevVPN」同一动
+  作（UIApplication 打开 localdevvpn://），本页新增顶部入
+  口，设置侧原入口保留、不迁走（两处同动作不打架）。
+- 配对文件：已识别 / 未识别。来源 = vm.hasPairingFile，由
+  refreshPairingFile() 刷新——口径为规范配对文件
+  （PairingController.pairingFilePath()，即 RPPairing 配对缓
+  存落盘的 aircard_pairing.plist）存在且非空；更深的有效性
+  只能在隧道连接时验证，无现成只读接口，故以此为口径。
+- 本机系统：iOS <UIDevice.current.systemVersion> + 判定。
+  判定纯函数 AppViewModel.systemSupportLevel：<17.0 不支
+  持；17.0–27.1 支持；≥27.2 风险提示（通道被修补口径）。
+  harness 边界验证 14 例全过（27.0.1→支持、27.2→风险、
+  28.0→风险、空串→不支持不崩）。
+- 回环连接：已连接 / 未连接。来源 = vm.vpnUp，由
+  refreshNetworkStatus() 刷新——NetworkStatus 接口扫描
+  （隧道接口/到设备 IP 10.7.0.1 的路由），不开新连接；内
+  置回环（#125）与外部 LocalDevVPN 任一连通都会点亮。
+- 刷新时机：进壁纸页 onAppear 各查一次 + 状态区标题右侧
+  刷新按钮手动合并刷新（refreshPairingFile +
+  refreshNetworkStatus）。
+
+真机验收追加：开壁纸页顶部四件齐全；未开 LocalDevVPN 时
+回环显示未连接、开启后手动刷新显示已连接；配对文件、本机
+系统（iOS 27.0.1 · 支持）与真机事实相符。

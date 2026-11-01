@@ -24,6 +24,19 @@ struct FlashRegistryEntry: Codable, Equatable {
     var relativePath: String
 }
 
+/// Support level of the device's iOS version for this tool
+/// (run #124). See AppViewModel.systemSupportLevel(version:).
+enum SystemSupportLevel {
+    /// iOS 17.0 – 27.1: inside the supported range.
+    case supported
+    /// Below iOS 17.0: the PosterBoard store layout this tool
+    /// writes is not available.
+    case tooOld
+    /// iOS 27.2+: the AirTraffic channel is patched; flashing may
+    /// fail — shown as a risk warning, not a block.
+    case patchedRisk
+}
+
 // MARK: - AppViewModel
 
 @MainActor
@@ -1086,6 +1099,20 @@ final class AppViewModel: ObservableObject {
             registry.removeValue(forKey: "\(res.extension)/\(res.uuid)")
         }
         if registry.count != before { saveFlashRegistry(registry) }
+    }
+
+    /// Support verdict for a system version string (run #124,
+    /// wallpaper-page status area): this tool needs iOS 17.0+;
+    /// the AirTraffic injection channel is patched from iOS 27.2
+    /// (beta 3 onward), so 27.2+ is a risk, not a hard block.
+    /// Pure function of the version string — no device access.
+    nonisolated static func systemSupportLevel(version: String) -> SystemSupportLevel {
+        let parts = version.split(separator: ".").map { Int($0) ?? 0 }
+        let major = parts.first ?? 0
+        let minor = parts.count > 1 ? parts[1] : 0
+        if major < 17 { return .tooOld }
+        if major > 27 || (major == 27 && minor >= 2) { return .patchedRisk }
+        return .supported
     }
 
     /// Fallback match key (run #124): lowercased, ".wallpaper"
