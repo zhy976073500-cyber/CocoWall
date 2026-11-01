@@ -1243,6 +1243,7 @@ struct PairingTab: View {
 
 struct VPNStatusRow: View {
     @ObservedObject var vm: AppViewModel
+    @StateObject private var loopback = LoopbackTunnelManager()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1257,15 +1258,60 @@ struct VPNStatusRow: View {
                         .font(.subheadline.bold())
                     Text(vm.vpnUp
                          ? "RSD 隧道已就绪——刷入时将自动连接。"
-                         : "运行刷入前请先连接 LocalDevVPN。")
+                         : "运行刷入前请先开启回环（内置或 LocalDevVPN）。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
+            if vm.vpnUp && loopback.status == .connected {
+                HStack(spacing: 8) {
+                    Text("当前连接由内置回环提供。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("关闭内置回环") {
+                        loopback.stop()
+                    }
+                    .font(.caption.bold())
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                }
+            }
+
             if !vm.vpnUp {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("设置 LocalDevVPN：")
+                    Text("内置回环（推荐）：")
+                        .font(.caption.bold())
+                    Text("无需再装 LocalDevVPN。点开启后，按系统提示允许添加 VPN 配置即可。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Button {
+                            loopback.toggle()
+                        } label: {
+                            Text(loopback.isActive ? "关闭内置回环" : "开启内置回环")
+                        }
+                        .font(.caption.bold())
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(loopback.isBusy)
+                        Text(loopback.statusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let loopbackError = loopback.lastError {
+                        Text(loopbackError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+                .padding(10)
+                .background(Color.green.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("或使用 LocalDevVPN（外部 App）：")
                         .font(.caption.bold())
                     ForEach([
                         "1. 打开 LocalDevVPN App 并点连接。",

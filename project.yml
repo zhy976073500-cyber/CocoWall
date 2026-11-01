@@ -30,10 +30,19 @@ targets:
       # packaging step picks it up without workflow changes.
       - target: PairingLiveActivity
         embed: true
+      # Built-in loopback packet tunnel (run #125). Same embed pattern
+      # as the Live Activity extension: built and embedded into the
+      # .app by the normal app scheme build, so the CI packaging step
+      # picks it up without workflow changes.
+      - target: CocoWallTunnel
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.coco.cocowall
         INFOPLIST_FILE: Sources/App/Info.plist
+        # NetworkExtension (packet-tunnel-provider) — required for the
+        # app to install/drive the built-in loopback VPN configuration.
+        CODE_SIGN_ENTITLEMENTS: Config/CocoWall.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_INCLUDE_PATHS: $(SRCROOT)/rust-core/include
         # Direct static-library link of the vendored AirliftFFI core
@@ -62,3 +71,17 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.coco.cocowall.pairingliveactivity
         INFOPLIST_FILE: Sources/PairingLiveActivity/Info.plist
+  # Packet Tunnel Provider extension hosting the built-in loopback
+  # (run #125): hairpins traffic for the RSD endpoint 10.7.0.1 back
+  # into the device so the Rust core can reach RemoteServiceDiscovery
+  # without the external LocalDevVPN app.
+  CocoWallTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Sources/CocoWallTunnel
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.coco.cocowall.tunnel
+        INFOPLIST_FILE: Sources/CocoWallTunnel/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Config/CocoWallTunnel.entitlements

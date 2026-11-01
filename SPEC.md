@@ -1339,3 +1339,115 @@ Rust 侧全部、PosterStoreHelper、删除/注入事务、标识重写
   缩略图 + 本地显示名同时出现。
 - 清理删掉该条后：登记表对应键已移除（行为面无感，仅防脏
   数据）。
+
+## 改动登记 · 内置回环 Packet Tunnel（run #125，2026-11-01，Sage 点名：App 本体自带回环，不再依赖 LocalDevVPN）
+
+### 研究结论（先行调查）
+
+- **现状分工**：Swift 侧不存在 TunnelManager。回环完全由外部
+  LocalDevVPN App 提供；本 App 只在 ContentView 的 VPNStatusRow
+  里检测 utun 接口是否已存在（NetworkStatus 接口扫描）、给出
+  localdevvpn:// 跳转链接，Rust 侧假定 RSD 在 10.7.0.1:49152
+  可达（exploit.rs / poster_refresh.rs / poster_store.rs 三处同
+  一常量 + 回退地址表 10.7.0.2/.3、10.0.0.1、172.16.0.1；
+  AppViewModel.deviceIP 默认 "10.7.0.1" 经 lib.rs setter 注入）。
+  Walllive 日志的 `mode=system_vpn` 即其 App 内自带系统 VPN
+  配置，与本项目标同形态。
+- **上游无可搬**：research/repos 的 AirCard-iOS 与
+  AirCard-iOS-latest 全树 grep NetworkExtension /
+  NEPacketTunnel / NETunnelProvider 零命中——上游同样依赖外部
+  LocalDevVPN，没有 packet tunnel 代码或扩展 target 可带。
+- **工程结构无硬卡点**：工程为 XcodeGen（project.yml）。CI
+  先 `xcodegen generate` 再 `xcodebuild build -scheme CocoWall`，
+  打包步整包拷贝 CocoWall.app；PairingLiveActivity 以
+  app-extension target + `embed: true` 先例已被同一构建自动带
+  入 PlugIns（#123 产物实测含 PairingLiveActivity.appex）。
+  新增扩展照此范式即可被现有构建命令自动带上，**不需要改
+  workflow 任何一行**。
+- **参考实现（生态内已验证）**：jkcoxson/LocalDevVPN 的
+  TunnelProv 源码已通读（GitHub 限流前取到 PacketTunnelProvider.swift
+  本体、Constants.swift、Info.plist、entitlements）。其机制：
+  接口地址 10.7.1.1/32（与拨号目标不同址）、仅把 peer
+  10.7.0.1/32 一条路由纳入隧道、排除默认路由；包环路把 IPv4
+  包的源/目的地址互换后写回 packetFlow（src+dst 集合不变，
+  IP 头校验和与 TCP 伪首部校验和均不受影响，无需修正校验和），
+  包遂以入站形态落到本机监听（RSD 通配监听 49152）。本项按此
+  形态自研实现，未复制其代码（该仓许可证为 Other/NOASSERTION）；
+  常量键名 TunnelIfaceIP / TunnelPeerIP 与其保持一致。
+
+### 改动清单
+
+- 新增 `Sources/CocoWallTunnel/PacketTunnelProvider.swift`：
+  NEPacketTunnelProvider 最小回环——startTunnel 读
+  options/providerConfiguration 的 iface/peer 地址（缺省
+  10.7.1.1/32 与 10.7.0.1/32，CIDR 解析含前缀缺省与掩码计
+  算）→ NEIPv4Settings（includedRoutes 仅 peer 一条，
+  excludedRoutes 默认路由）→ setTunnelNetworkSettings 后启
+  动 src/dst 互换环路；非 IPv4 与 runt 帧原样透传。
+- 新增 `Sources/CocoWallTunnel/Info.plist`：
+  NSExtensionPointIdentifier =
+  com.apple.networkextension.packet-tunnel，principal class
+  $(PRODUCT_MODULE_NAME).PacketTunnelProvider；其余键与
+  PairingLiveActivity 的 Info.plist 同构。
+- 新增 `Config/CocoWall.entitlements` 与
+  `Config/CocoWallTunnel.entitlements`：主 App 与扩展各一份
+  com.apple.developer.networking.networkextension =
+  [packet-tunnel-provider]（工程此前无任何 entitlements 文件，
+  本项首次引入，置于 Config/ 以免落入任何 target 的 sources
+  glob）。
+- `project.yml`：新增 CocoWallTunnel target（type:
+  app-extension，bundle id com.coco.cocowall.tunnel，
+  INFOPLIST_FILE + CODE_SIGN_ENTITLEMENTS）；CocoWall target
+  加 `- target: CocoWallTunnel, embed: true` 依赖与自身
+  CODE_SIGN_ENTITLEMENTS。
+- 新增 `Sources/App/LoopbackTunnelManager.swift`（@MainActor
+  ObservableObject）：NETunnelProviderManager 载入/查找既存
+  配置（按 providerBundleIdentifier 匹配）、首次创建配置
+  （serverAddress 10.7.0.1，providerConfiguration 写入
+  TunnelIfaceIP/TunnelPeerIP，localizedDescription
+  "CocoWall 内置回环"）→ saveToPreferences → 回读 →
+  startVPNTunnel；NEVPNStatusDidChange 观察回填状态；中文
+  状态文案与错误回显（lastError）。
+- `Sources/App/ContentView.swift`（仅 VPNStatusRow）：内置
+  回环升为主位——未连通时绿色框内「开启内置回环」按钮 +
+  状态/错误行；已连通且由内置回环提供时显示「关闭内置回
+  环」；原 LocalDevVPN 步骤与 localdevvpn:// 链接保留为兜
+  底（标题改「或使用 LocalDevVPN（外部 App）：」）；未连通
+  副标题文案改「运行刷入前请先开启回环（内置或
+  LocalDevVPN）。」。
+
+### 未动清单
+
+AppViewModel.swift、TendiesView.swift、poster_store 全部、
+Rust 侧全部（拨号地址与回退表不变——内置回环的 peer 正是
+10.7.0.1）、PairingLiveActivity、工作流文件、
+TendiesEngine 等受保护文件。#124 的登记表/缩略图改动零冲突
+（本项未碰其文件）。
+
+### 本地验证
+
+- project.yml 以 YAML 解析通过，三 target 结构与依赖/权益
+  设置回读正确；三份 plist 以 plistlib 解析通过（扩展点、
+  principal class、entitlements 内容逐项核对）。
+- 新 Swift 文件与 ContentView.swift 以本地 swiftc -parse
+  全过；CIDREndpoint 原文抽出编译实测（/32、/24 缺省、/8、
+  非法前缀回退共 5 项断言）+ 合成 IPv4 包 src/dst 互换断
+  言，全过。
+- 与远端 #123 的 ContentView.swift / project.yml 逐字 diff：
+  差异恰为本项改动，无夹带。
+
+### 未验证项（真机验收标准，诚实标注）
+
+- 首次点「开启内置回环」时 iOS 的「添加 VPN 配置」系统授
+  权弹窗及允许后配置落盘——只能真机验。
+- 扩展在 Sage 侧载签名链下能否被系统正常拉起：本构建为无
+  签名产物，entitlements 是否被其签名工具如实授予
+  （networkextension）属签名链行为，构建侧无法确证；若真
+  机 startVPNTunnel 报 entitlement 类错误，先查此项。
+- 回环连通性：开启后 VPNStatusRow 应转绿（utun 出现）、刷
+  入日志 tunnel connected 与 #114/#123 同形态跑通——真机
+  验。在此之前内置回环只算「已实装、未验证」，LocalDevVPN
+  兜底入口因此保留。
+- 产物自查：CI 绿后主线下载 artifact 解包应见
+  Payload/CocoWall.app/PlugIns/CocoWallTunnel.appex（构建侧
+  无法直接读 artifact 清单，此项随主线交付时一并核对）。
