@@ -240,6 +240,22 @@ SPEC.md in the Walllive-transaction section):
 - `include/airlift.h` — pure addition only: the
   `al_exploit_flash_transaction` declaration.
 
+Fifth local source change, 2026-11-01 (run #113, registered in
+SPEC.md in the two-links dedupe section):
+
+- `src/exploit.rs` — one-function fix inside the run-#112
+  addition `build_archive_two_links`: its target-directory
+  component loop wrote the directory chain of both preference
+  tails in full, re-adding the shared prefix entries (`var/`,
+  `var/mobile/`), and zip rejects duplicate entry names
+  ("Duplicate filename") at local archive-build time — the
+  #112 device run died there before upload. The loop now keeps
+  a HashSet of already-added directory names and writes each
+  shared directory once. The archive layout is otherwise
+  unchanged: `link`/`link_1` symlink targets
+  (`../../../<tail>`) and `payload_0`/`payload_1` are exactly
+  as shipped in run #112.
+
 Apart from the additions registered above, everything else in this
 tree remains a verbatim copy of upstream.
 The other adaptations live outside this directory:

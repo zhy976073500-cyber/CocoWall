@@ -770,3 +770,40 @@ refresh_confirmed=true。move.settle 的 AFC 轮询在真机
 是否解析中间 symlink、耗时几何，看首轮日志的
 confirmed 与 duration_ms。cargo check 主机目标通过
 （airlift_ffi 既有 3 条 dead_code 警告不变）。
+
+## 改动登记 · 合并偏好归档目录条目去重（run #113，2026-11-01，#112 真机日志定点修）
+
+#112 真机（Sage 15:48 刷 EVA出现）：事务前半全通——
+主落点注入 FileComplete [1/2][2/2]、atc.move.settle
+confirmed=true 各约 103ms、descriptor.completed、
+preferences.combined.begin——随即死在合并偏好建包：
+`build_archive_two_links: invalid Zip archive:
+Duplicate filename`（本地建包阶段，未及上传；失败
+路径已先还原 Books 并 verified=true 才报错）。
+
+根因：build_archive_two_links 的「两 tail 目录组件」
+循环对两个偏好目标各写一遍完整目录链，共享前缀被
+重复添加，zip 2.4.2 对重复条目名直接报错。两个真实
+目标 tail 为
+`var/mobile/Containers/Data/Application/<容器>/Library/Preferences`
+与 `var/mobile/Library/Preferences`，共享条目为
+`var/`、`var/mobile/`。本地抽取函数原文 + 真实参数
+复现：报错 `Duplicate filename: var/`，与真机一致。
+
+修法（单点）：该循环加 HashSet 去重，共享目录条目
+只写一次；link/link_1、payload_0/payload_1 与各自
+独有镜像条目、symlink 目标字符串
+（`../../../<tail>`）保持 #112 布局逐字不变，归档
+其余形状不动，事务其余部分与信号/检测代码不动。
+
+本地回归自检（抽取修复后函数原文，真实调用参数）：
+构建成功 2973 字节；条目共 19 个、去重后 19 个
+（全唯一）；link、link_1、payload_0、payload_1
+均在位；两 symlink 目标与修复前一致。cargo check
+主机目标通过（既有警告不变，无新增）。
+
+未验证项：与 #112 同一裁决项——真机刷一张 →
+move.settle ×6 全 confirmed → preferences
+FileComplete [1/4]..[4/4] + asset.confirmed ×4 →
+restore verified → refresh_confirmed → 不注销进
+选择器。
