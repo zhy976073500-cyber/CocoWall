@@ -72,6 +72,15 @@
 //! audit on a FRESH connection; a target only counts as deleted
 //! when its path re-audits absent.
 //!
+//! Run #115 adds two things. (1) A cleanup SCOPE: list/delete only
+//! ever touch the two CollectionsPoster providers (see
+//! CLEANUP_SCOPE_PROVIDERS below) — run #114's unscoped list let a
+//! select-all cleanup delete 16 system GradientPoster wallpapers.
+//! (2) Quarantine RECOVERY: the airlift-quarantine-* folders deletes
+//! leave in Media can be listed (AFC reaches Media freely) and
+//! restored into the store with the delete ATC mechanism reversed;
+//! restore is audited over DVT and is deliberately not scoped.
+//!
 //! Results come back as JSON in an out parameter, with a machine-
 //! readable status string like the other FFIs. Failures are
 //! reported, never disguised: if the DVT service refuses a listing,
@@ -149,6 +158,33 @@ impl StoreStatus {
 type StoreResult<T> = Result<T, (StoreStatus, String)>;
 
 const RSD_PORT: u16 = 49152;
+
+// ---------------------------------------------------------------------------
+// Cleanup scope (run #115, safety boundary)
+//
+// The detect/cleanup feature only ever lists or deletes descriptors
+// belonging to the two CollectionsPoster providers CocoWall itself
+// installs into. Every other provider in the store (GradientPoster,
+// ClockPoster, Photos, system extensions, …) is system or other-app
+// data. Run #114's unscoped list returned all 21 descriptors on
+// Sage's device — 5 CollectionsPoster plus 16 GradientPoster — and a
+// select-all cleanup deleted the lot, including the system's own
+// gradient wallpapers (they survived only as quarantine copies).
+// store_list now filters non-scope providers out entirely, and
+// store_delete refuses non-scope targets in the driver, before any
+// audit or ATC work. The quarantine RESTORE path is deliberately NOT
+// scoped this way: restoring a GradientPoster descriptor back into
+// its own provider is the recovery for exactly that accident.
+// ---------------------------------------------------------------------------
+
+const CLEANUP_SCOPE_PROVIDERS: [&str; 2] = [
+    "com.apple.WallpaperKit.CollectionsPoster",
+    "com.apple.Posters.CollectionsPosterApp",
+];
+
+fn provider_in_cleanup_scope(extension: &str) -> bool {
+    CLEANUP_SCOPE_PROVIDERS.contains(&extension)
+}
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -557,6 +593,15 @@ async fn enumerate_descriptors(
 
     let mut items: Vec<DescriptorItem> = Vec::new();
     for ext in &extensions {
+        // Run #115 cleanup scope: providers outside the two
+        // CollectionsPoster providers are not enumerated at all —
+        // they never reach the UI, so they can never be selected.
+        if !provider_in_cleanup_scope(ext) {
+            logger.log(format!(
+                "airlift: airlift.poster_store.descriptors.filtered extension={ext} reason=provider_scope"
+            ));
+            continue;
+        }
         let desc_dir = format!("{extensions_path}/{ext}/descriptors");
         let uuids = match dvt_list_dir(info, &desc_dir).await {
             Ok(names) => names,
@@ -1447,13 +1492,34 @@ async fn store_delete(
         struct_version
     );
 
+    // Run #115 hard block: a target whose provider is outside the
+    // cleanup scope is refused HERE, in the driver under the FFI —
+    // no audit, no ATC, no device mutation for it, whatever the
+    // caller asked for. (The list never offers such targets; this is
+    // the belt-and-braces layer underneath it.)
+    let blocked: Vec<bool> = targets
+        .iter()
+        .map(|(ext, _)| !provider_in_cleanup_scope(ext))
+        .collect();
+    for ((ext, uuid), b) in targets.iter().zip(blocked.iter()) {
+        if *b {
+            logger.log(format!(
+                "airlift: airlift.poster_store.delete.blocked target={ext}/{uuid} reason=provider_scope"
+            ));
+        }
+    }
+
     // Phase A: pre-audit on one DVT session — which targets are present?
     let mut present: Vec<bool> = Vec::new();
     {
         let (_adapter, _handshake, mut server) =
             connect_device_info(&pairing_bytes, logger).await?;
         let mut info = device_info_client(&mut server).await?;
-        for (ext, uuid) in &targets {
+        for (idx, (ext, uuid)) in targets.iter().enumerate() {
+            if blocked[idx] {
+                present.push(false);
+                continue;
+            }
             let audit = audit_target(&mut info, &store_root, ext, uuid, logger).await;
             present.push(audit.present);
         }
@@ -1478,6 +1544,13 @@ async fn store_delete(
             op_error: String::new(),
             quarantine: String::new(),
         };
+        if blocked[idx] {
+            st.op_error =
+                "provider outside cleanup scope (run #115 hard block); refused before audit/ATC"
+                    .to_string();
+            states.push(st);
+            continue;
+        }
         if !present[idx] {
             st.op_error = "not present in store at pre-audit".to_string();
             states.push(st);
@@ -1521,6 +1594,9 @@ async fn store_delete(
             match device_info_client(&mut server).await {
                 Ok(mut info) => {
                     for (idx, (ext, uuid)) in targets.iter().enumerate() {
+                        if blocked[idx] {
+                            continue;
+                        }
                         let audit =
                             audit_target(&mut info, &store_root, ext, uuid, logger).await;
                         absent[idx] = !audit.present;
@@ -1590,6 +1666,962 @@ async fn store_delete(
     Ok((json, failed > 0))
 }
 
+
+// ---------------------------------------------------------------------------
+// Quarantine recovery (run #115)
+//
+// Every delete MOVES the descriptor into Media as an
+// airlift-quarantine-<token> folder instead of destroying it.
+// Recovery is the same ATC mechanism run in reverse (the install
+// direction): a staging link lands at the Media root pointing at
+// the target provider's descriptors directory, the quarantined
+// descriptor — identified by its Airlock-relative path inside
+// Media — is FileCompleted through that link into the store, and a
+// fresh DVT audit decides success. Only after the audit confirms
+// the descriptor is back in the store is the quarantine folder
+// removed (via AFC, inside Media where AFC can reach).
+//
+// The quarantine folder's internal shape is discovered at runtime:
+// the delete sync's download lands the descriptor tree either as
+// the folder itself (its children carry the descriptor markers) or
+// as a single <UUID> child directory. scan_quarantine_entry handles
+// both and logs which shape it found. Provider/UUID provenance, in
+// order of trust: the Swift-side delete receipts (authoritative,
+// passed back into store_restore), the folder's child-dir name
+// (UUID), then content heuristics (suggestionMetadata $objects,
+// descriptor-identifier prefixes — the same rules as
+// TendiesEngine.determineExtension). Restore is NOT limited to the
+// cleanup scope: GradientPoster descriptors are the primary
+// recovery targets.
+// ---------------------------------------------------------------------------
+
+const DESCRIPTOR_MARKERS: [&str; 4] = [
+    "versions",
+    "providerInfo.plist",
+    "com.apple.posterkit.provider.descriptor.identifier",
+    "Wallpaper.plist",
+];
+
+fn names_have_marker(names: &[String]) -> bool {
+    names
+        .iter()
+        .any(|n| DESCRIPTOR_MARKERS.contains(&n.as_str()))
+}
+
+async fn afc_read_small(afc: &mut AfcClient, path: &str) -> Option<Vec<u8>> {
+    match afc.open(path, AfcFopenMode::RdOnly).await {
+        Ok(mut fd) => {
+            let data = fd.read_entire().await.ok();
+            let _ = fd.close().await;
+            data
+        }
+        Err(_) => None,
+    }
+}
+
+/// List the AFC Media root (paths are Media-relative; the root
+/// itself is addressed as "" on device, with "." and "/" as
+/// fallbacks — first form that answers wins).
+async fn afc_list_media_root(afc: &mut AfcClient, logger: &PSLogger) -> Vec<String> {
+    for p in ["", ".", "/"] {
+        if let Ok(names) = afc.list_dir(p).await {
+            logger.log(format!(
+                "airlift: airlift.poster_store.quarantine.root path=\"{p}\" entries={}",
+                names.len()
+            ));
+            return names;
+        }
+    }
+    logger.log("airlift: airlift.poster_store.quarantine.root unreadable");
+    Vec::new()
+}
+
+struct QuarantineEntry {
+    quarantine: String,
+    root_rel: String,
+    root_found: bool,
+    uuid: String,
+    descriptor_identifier: String,
+    package_name: String,
+    provider_guess: String,
+}
+
+async fn scan_quarantine_entry(
+    afc: &mut AfcClient,
+    folder: &str,
+    logger: &PSLogger,
+) -> QuarantineEntry {
+    let mut entry = QuarantineEntry {
+        quarantine: folder.to_string(),
+        root_rel: folder.to_string(),
+        root_found: false,
+        uuid: String::new(),
+        descriptor_identifier: String::new(),
+        package_name: String::new(),
+        provider_guess: String::new(),
+    };
+
+    let children = afc.list_dir(folder).await.unwrap_or_default();
+    if names_have_marker(&children) {
+        entry.root_found = true;
+    } else {
+        for child in &children {
+            let child_path = format!("{folder}/{child}");
+            let is_dir = afc
+                .get_file_info(&child_path)
+                .await
+                .map(|i| i.st_ifmt == "S_IFDIR")
+                .unwrap_or(false);
+            if !is_dir {
+                continue;
+            }
+            let grandkids = afc.list_dir(&child_path).await.unwrap_or_default();
+            if names_have_marker(&grandkids) {
+                entry.root_rel = child_path;
+                entry.uuid = child.clone();
+                entry.root_found = true;
+                break;
+            }
+        }
+    }
+
+    let root = entry.root_rel.clone();
+    if entry.root_found {
+        // Package name: versions/<v>/contents/<name>.wallpaper
+        // (AFC can list freely inside Media, unlike the store).
+        if let Ok(versions) = afc.list_dir(format!("{root}/versions")).await {
+            for v in versions {
+                if let Ok(contents) =
+                    afc.list_dir(format!("{root}/versions/{v}/contents")).await
+                {
+                    if let Some(pkg) =
+                        contents.iter().find(|n| n.ends_with(".wallpaper"))
+                    {
+                        entry.package_name =
+                            pkg.trim_end_matches(".wallpaper").to_string();
+                        break;
+                    }
+                }
+            }
+        }
+        // Descriptor identifier text (the PosterKit identity of the
+        // descriptor — also the prime suspect in the run #115
+        // "only one of a batch shows in the picker" investigation:
+        // two descriptors sharing this identifier are one logical
+        // collection to PosterBoard).
+        if let Some(bytes) = afc_read_small(
+            afc,
+            &format!("{root}/com.apple.posterkit.provider.descriptor.identifier"),
+        )
+        .await
+        {
+            entry.descriptor_identifier =
+                String::from_utf8_lossy(&bytes).trim().to_string();
+        }
+        // Provider guess (best effort; receipts outrank it):
+        // suggestionMetadata $objects naming a com.apple.*Poster*
+        // bundle (TendiesEngine.determineExtension rule 2), then
+        // descriptor-identifier prefixes (rule 3).
+        if let Some(bytes) = afc_read_small(
+            afc,
+            &format!(
+                "{root}/com.apple.posterkit.provider.identifierURL.suggestionMetadata.plist"
+            ),
+        )
+        .await
+        {
+            if let Ok(plist::Value::Dictionary(d)) = plist::from_bytes::<plist::Value>(&bytes)
+            {
+                if let Some(plist::Value::Array(objects)) = d.get("$objects") {
+                    for obj in objects {
+                        if let plist::Value::String(s) = obj {
+                            if s.starts_with("com.apple.") && s.contains("Poster") {
+                                entry.provider_guess = s.clone();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if entry.provider_guess.is_empty() {
+            let id = &entry.descriptor_identifier;
+            if id.starts_with("v6")
+                || id.starts_with("v5")
+                || id.starts_with("v4")
+                || id.contains(".color")
+            {
+                entry.provider_guess = "com.apple.MercuryPoster".to_string();
+            }
+        }
+    }
+
+    logger.log(format!(
+        "airlift: airlift.poster_store.quarantine.entry folder={} root_found={} root={} uuid={} identifier={} package={} provider_guess={}",
+        entry.quarantine,
+        entry.root_found,
+        entry.root_rel,
+        entry.uuid,
+        entry.descriptor_identifier,
+        entry.package_name,
+        entry.provider_guess
+    ));
+    entry
+}
+
+async fn store_quarantine_list(
+    pairing_path: String,
+    logger: &PSLogger,
+) -> StoreResult<String> {
+    let started = Instant::now();
+    logger.log("airlift: airlift.poster_store.quarantine.list.begin");
+
+    let pairing_bytes = std::fs::read(&pairing_path).map_err(|e| {
+        (
+            StoreStatus::ConnectFailed,
+            format!("Failed to read pairing file at {pairing_path}: {e}"),
+        )
+    })?;
+
+    let (mut adapter, mut handshake) = connect_rsd(&pairing_bytes, logger).await?;
+    let mut afc = handshake
+        .connect::<AfcClient>(&mut adapter)
+        .await
+        .map_err(|e| (StoreStatus::AfcFailed, format!("AFC connect failed: {e:?}")))?;
+
+    let root_names = afc_list_media_root(&mut afc, logger).await;
+    let folders: Vec<String> = root_names
+        .into_iter()
+        .filter(|n| n.starts_with("airlift-quarantine-"))
+        .collect();
+    logger.log(format!(
+        "airlift: airlift.poster_store.quarantine.found count={}",
+        folders.len()
+    ));
+
+    let mut items_json = String::new();
+    for (i, folder) in folders.iter().enumerate() {
+        let e = scan_quarantine_entry(&mut afc, folder, logger).await;
+        if i > 0 {
+            items_json.push(',');
+        }
+        items_json.push_str(&format!(
+            "{{\"quarantine\":\"{}\",\"uuid\":\"{}\",\"descriptorIdentifier\":\"{}\",\"packageName\":\"{}\",\"providerGuess\":\"{}\"}}",
+            json_escape(&e.quarantine),
+            json_escape(&e.uuid),
+            json_escape(&e.descriptor_identifier),
+            json_escape(&e.package_name),
+            json_escape(&e.provider_guess),
+        ));
+    }
+    let json = format!("{{\"items\":[{items_json}]}}");
+    logger.log(format!(
+        "airlift: airlift.poster_store.quarantine.list.end count={} duration_ms={}",
+        folders.len(),
+        started.elapsed().as_millis()
+    ));
+    Ok(json)
+}
+
+fn fresh_uuid() -> String {
+    let h = random_hex(16);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
+    .to_uppercase()
+}
+
+// --- One restore operation (one descriptor, one ATC sync) ---
+//
+// Modeled line-by-line on delete_operation with source and
+// destination swapped: the staging archive is the delete archive
+// (its link points at the target descriptors directory), book 1 is
+// that link, book 2 identifies the quarantined descriptor by its
+// Airlock-relative path inside Media, and the descriptor's
+// FileComplete destination is <landed-link>/<uuid> — the daemon
+// moves it through the link into the store, the same direction the
+// install payload move uses. delete_operation itself is untouched.
+
+struct RestoreOpOutcome {
+    link_verified: bool,
+    restored_local: bool,
+    source_consumed: bool,
+}
+
+async fn restore_operation(
+    pairing_bytes: &[u8],
+    descriptors_dir_abs: &str,
+    source_root_rel: &str,
+    uuid: &str,
+    logger: &PSLogger,
+) -> Result<RestoreOpOutcome, String> {
+    let (mut adapter, mut handshake) = connect_rsd(pairing_bytes, logger)
+        .await
+        .map_err(|(_, msg)| msg)?;
+
+    let mut afc = handshake
+        .connect::<AfcClient>(&mut adapter)
+        .await
+        .map_err(|e| format!("AFC connect failed: {e:?}"))?;
+
+    // Snapshot Books sync state (restored at the end of the operation).
+    let original_books_plist = match afc.open("Books/Sync/Books.plist", AfcFopenMode::RdOnly).await {
+        Ok(mut fd) => {
+            let data = fd.read_entire().await.ok();
+            let _ = fd.close().await;
+            data
+        }
+        Err(_) => None,
+    };
+
+    let token = random_hex(10);
+    let source = format!("airlift-src-{token}");
+    let link_destination = format!("airlift-link-{token}");
+
+    let descriptor_abs = format!("/var/mobile/Media/{source_root_rel}");
+    let link_identifier = format!("../../{source}/p0/p1/p2/link");
+    let descriptor_identifier = posix_rel(&descriptor_abs, AIRLOCK_ROOT);
+    let identifiers = vec![link_identifier, descriptor_identifier.clone()];
+    let destinations = vec![
+        link_destination.clone(),
+        format!("{link_destination}/{uuid}"),
+    ];
+
+    // Same staging archive as delete: the link lands at the Media
+    // root and points at the descriptors directory (three ../ to /).
+    let root_link_target = format!(
+        "../../../{}",
+        descriptors_dir_abs.trim_start_matches('/')
+    );
+    let archive = build_delete_archive(descriptors_dir_abs, &root_link_target)
+        .map_err(|e| format!("build archive: {e}"))?;
+    let books_plist = build_books_plist(&identifiers).map_err(|e| format!("build Books.plist: {e}"))?;
+
+    // Stage via streaming_zip_conduit (mirrors delete step 1).
+    let mut zip_stream = connect_service_rsd(
+        &mut adapter,
+        &mut handshake,
+        "com.apple.streaming_zip_conduit",
+        logger,
+    )
+    .await?;
+    {
+        let mut zip_init_dict = plist::Dictionary::new();
+        zip_init_dict.insert("MediaSubdir".to_string(), plist::Value::String(source.clone()));
+        let mut init_buf = Vec::new();
+        plist::to_writer_binary(&mut init_buf, &plist::Value::Dictionary(zip_init_dict))
+            .map_err(|e| format!("encode MediaSubdir: {e}"))?;
+        let init_len_bytes = (init_buf.len() as u32).to_be_bytes();
+        zip_stream
+            .write_all(&init_len_bytes)
+            .await
+            .map_err(|e| format!("write MediaSubdir length: {e}"))?;
+        zip_stream
+            .write_all(&init_buf)
+            .await
+            .map_err(|e| format!("write MediaSubdir body: {e}"))?;
+        zip_stream.flush().await.map_err(|e| format!("flush: {e}"))?;
+        zip_stream
+            .write_all(&archive)
+            .await
+            .map_err(|e| format!("write archive bytes: {e}"))?;
+        zip_stream.flush().await.map_err(|e| format!("flush: {e}"))?;
+        let mut resp_len_buf = [0u8; 4];
+        zip_stream
+            .read_exact(&mut resp_len_buf)
+            .await
+            .map_err(|e| format!("read zip response length: {e}"))?;
+        let resp_len = u32::from_be_bytes(resp_len_buf) as usize;
+        let mut resp_body = vec![0u8; resp_len];
+        zip_stream
+            .read_exact(&mut resp_body)
+            .await
+            .map_err(|e| format!("read zip response body: {e}"))?;
+    }
+    drop(zip_stream);
+    logger.log("airlift: airlift.restore.stage uploaded=true");
+
+    let source_link = format!("{source}/p0/p1/p2/link");
+    let source_payload = format!("{source}/payload");
+    let stage_ok = afc.get_file_info(&source).await.is_ok()
+        && afc.get_file_info(&source_link).await.is_ok()
+        && afc.get_file_info(&source_payload).await.is_ok();
+    if !stage_ok {
+        return Err("stage verification failed: extracted files not present in Media".to_string());
+    }
+
+    let _ = afc.mk_dir("Airlock").await;
+    let _ = afc.mk_dir("Airlock/Book").await;
+    let _ = afc.mk_dir("Books").await;
+    let _ = afc.mk_dir("Books/Sync").await;
+
+    let mut books_fd = afc
+        .open("Books/Sync/Books.plist", AfcFopenMode::WrOnly)
+        .await
+        .map_err(|e| format!("AFC open Books.plist: {e:?}"))?;
+    books_fd
+        .write_entire(&books_plist)
+        .await
+        .map_err(|e| format!("AFC write Books.plist: {e:?}"))?;
+    let _ = books_fd.close().await;
+    logger.log("airlift: airlift.restore.books.written=true");
+
+    // ATC session (mirrors delete_operation's wire flow).
+    let mut atc_stream = connect_service_rsd(&mut adapter, &mut handshake, "com.apple.atc", logger).await?;
+
+    let mut sync_allowed = false;
+    let mut session_number: i64 = 0;
+    let mut grappa_info: Option<(u32, u32, u32)> = None;
+    for _ in 0..12 {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(1500),
+            read_atc_dict(&mut atc_stream),
+        )
+        .await
+        {
+            Ok(Ok(dict)) => {
+                if let Some(sn) = atc_session_number(&dict) {
+                    session_number = sn;
+                }
+                if let Some(name) = atc_message_name(&dict) {
+                    logger.log(format!("airlift: atc received '{name}' (session={session_number})"));
+                    if name == "Capabilities" {
+                        if let Some(params) = dict.get("Params").and_then(|p| p.as_dictionary()) {
+                            if let Some(gi) = params.get("GrappaSupportInfo").and_then(|g| g.as_dictionary()) {
+                                let ver = gi.get("version").and_then(|v| v.as_unsigned_integer()).unwrap_or(1) as u32;
+                                let dt = gi.get("deviceType").and_then(|v| v.as_unsigned_integer()).unwrap_or(0) as u32;
+                                let pv = gi.get("protocolVersion").and_then(|v| v.as_unsigned_integer()).unwrap_or(1) as u32;
+                                logger.log(format!("airlift: captured GrappaSupportInfo: version={ver}, deviceType={dt}, protocolVersion={pv}"));
+                                grappa_info = Some((ver, dt, pv));
+                            }
+                        }
+                    }
+                    if name == "SyncAllowed" {
+                        sync_allowed = true;
+                        break;
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                logger.log(format!("airlift: atc initial read notice: {e}"));
+                break;
+            }
+            Err(_) => {}
+        }
+    }
+    if sync_allowed {
+        logger.log(format!("airlift: SyncAllowed observed (session={session_number})"));
+    } else {
+        logger.log(format!("airlift: SyncAllowed not emitted, proceeding with session={session_number}..."));
+    }
+
+    let mut host_info_dict = plist::Dictionary::new();
+    host_info_dict.insert("Type".into(), plist::Value::String("iTunes".into()));
+    host_info_dict.insert("Version".into(), plist::Value::String("13.7.0.161".into()));
+    host_info_dict.insert("MacOSVersion".into(), plist::Value::String("15.0".into()));
+    host_info_dict.insert("SyncHostName".into(), plist::Value::String("airlift".into()));
+    let library_id = format!(
+        "{}-{}-{}-{}-{}",
+        random_hex(4),
+        random_hex(2),
+        random_hex(2),
+        random_hex(2),
+        random_hex(6)
+    );
+    host_info_dict.insert("LibraryID".into(), plist::Value::String(library_id));
+    host_info_dict.insert(
+        "SyncedDataclasses".into(),
+        plist::Value::Array(vec![plist::Value::String("Book".into())]),
+    );
+    host_info_dict.insert(
+        "SyncedAssetTypes".into(),
+        plist::Value::Array(vec![plist::Value::String("Book".into())]),
+    );
+    host_info_dict.insert("Wakeable".into(), plist::Value::Boolean(false));
+
+    let grappa_token = crate::grappa::generate_grappa_token(grappa_info, |s| logger.log(s));
+    if let Some(ref token) = grappa_token {
+        host_info_dict.insert("Grappa".into(), plist::Value::Data(token.clone()));
+    }
+
+    let mut host_info_params = plist::Dictionary::new();
+    host_info_params.insert("HostInfo".into(), plist::Value::Dictionary(host_info_dict.clone()));
+    host_info_params.insert("LocalCloudSupport".into(), plist::Value::Boolean(false));
+    let msg_host_info = make_atc_msg("HostInfo", 0, Some(host_info_params));
+    send_atc_dict(&mut atc_stream, &msg_host_info).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let mut sync_req_params = plist::Dictionary::new();
+    sync_req_params.insert(
+        "Dataclasses".into(),
+        plist::Value::Array(vec![plist::Value::String("Book".into())]),
+    );
+    sync_req_params.insert(
+        "DataclassAnchors".into(),
+        plist::Value::Dictionary(plist::Dictionary::new()),
+    );
+    sync_req_params.insert("HostInfo".into(), plist::Value::Dictionary(host_info_dict));
+    if let Some(token) = grappa_token {
+        sync_req_params.insert("Grappa".into(), plist::Value::Data(token));
+    }
+    let msg_sync_req = make_atc_msg("RequestingSync", 1, Some(sync_req_params));
+    send_atc_dict(&mut atc_stream, &msg_sync_req).await?;
+
+    let mut ready = false;
+    for _ in 0..24 {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_atc_dict(&mut atc_stream),
+        )
+        .await
+        {
+            Ok(Ok(dict)) => {
+                if let Some(name) = atc_message_name(&dict) {
+                    logger.log(format!("airlift: atc sync state: '{name}'"));
+                    if name == "Ping" {
+                        let pong = make_atc_msg("Pong", 1, None);
+                        if let Err(e) = send_atc_dict(&mut atc_stream, &pong).await {
+                            logger.log(format!("airlift: pong send error: {e}"));
+                            break;
+                        }
+                        continue;
+                    }
+                    if name == "ReadyForSync" || name == "AssetManifest" {
+                        ready = true;
+                        break;
+                    }
+                    if name == "SyncFailed" {
+                        logger.log(format!("airlift: atc sync notice (non-fatal): {dict:?}"));
+                        continue;
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                logger.log(format!("airlift: atc sync read error: {e}"));
+                break;
+            }
+            Err(_) => {}
+        }
+    }
+    if !ready {
+        return Err("AirTraffic: ReadyForSync not observed (ensure official Apple Books app is installed and opened once)".to_string());
+    }
+    logger.log("airlift: ReadyForSync observed");
+
+    let mut sync_types = plist::Dictionary::new();
+    sync_types.insert("Book".into(), plist::Value::Integer(1.into()));
+    let mut meta_params = plist::Dictionary::new();
+    meta_params.insert("SyncTypes".into(), plist::Value::Dictionary(sync_types));
+    meta_params.insert(
+        "DataclassAnchors".into(),
+        plist::Value::Dictionary(plist::Dictionary::new()),
+    );
+    let msg_meta = make_atc_msg("FinishedSyncingMetadata", 1, Some(meta_params));
+    send_atc_dict(&mut atc_stream, &msg_meta).await?;
+
+    // Wait for AssetManifest and verify the device offers both books.
+    let mut manifest_entries: Vec<(String, Option<bool>)> = Vec::new();
+    let mut manifest_observed = false;
+    for _ in 0..20 {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_atc_dict(&mut atc_stream),
+        )
+        .await
+        {
+            Ok(Ok(dict)) => {
+                if let Some(name) = atc_message_name(&dict) {
+                    logger.log(format!("airlift: atc manifest message: '{name}'"));
+                    if name == "Ping" {
+                        let pong = make_atc_msg("Pong", 1, None);
+                        let _ = send_atc_dict(&mut atc_stream, &pong).await;
+                        continue;
+                    }
+                    if name == "AssetManifest" {
+                        manifest_observed = true;
+                        if let Some(params) = dict.get("Params") {
+                            collect_manifest_entries(params, &mut manifest_entries);
+                        }
+                        break;
+                    }
+                    if name == "SyncFailed" {
+                        logger.log(format!("airlift: atc manifest notice (non-fatal): {dict:?}"));
+                        continue;
+                    }
+                    if name == "SyncFinished" {
+                        break;
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                logger.log(format!("airlift: atc manifest read error: {e}"));
+                break;
+            }
+            Err(_) => {}
+        }
+    }
+    if !manifest_observed {
+        return Err("AirTraffic: AssetManifest not observed (ensure official Apple Books app is installed)".to_string());
+    }
+    logger.log(format!(
+        "airlift: airlift.restore.manifest book_entries={} expected={}",
+        identifiers.len(),
+        identifiers.len()
+    ));
+    for (idx, id) in identifiers.iter().enumerate() {
+        let matched: Vec<&(String, Option<bool>)> = manifest_entries
+            .iter()
+            .filter(|(eid, _)| eid == id)
+            .collect();
+        let download = matched.first().and_then(|(_, d)| *d);
+        logger.log(format!(
+            "airlift: airlift.restore.manifest.target index={idx} matching_entries={} download={} ready={}",
+            matched.len(),
+            download.map(|d| d.to_string()).unwrap_or_else(|| "unknown".to_string()),
+            !matched.is_empty()
+        ));
+        if idx == 1 && download == Some(false) {
+            return Err(format!(
+                "device manifest does not offer quarantined descriptor at {source_root_rel} for download; refusing to FileComplete it"
+            ));
+        }
+    }
+    logger.log("airlift: AssetManifest observed");
+
+    // FileComplete per book: link first (verify its Media
+    // destination), then the descriptor (the move into the store).
+    logger.log("airlift: airlift.restore.move.begin phase=link");
+    logger.log("airlift: airlift.restore.asset.requested index=0");
+    {
+        let mut params = plist::Dictionary::new();
+        params.insert("AssetID".into(), plist::Value::String(identifiers[0].clone()));
+        params.insert("Dataclass".into(), plist::Value::String("Book".into()));
+        params.insert("AssetPath".into(), plist::Value::String(destinations[0].clone()));
+        let msg = make_atc_msg("FileComplete", 1, Some(params));
+        send_atc_dict(&mut atc_stream, &msg).await?;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+    let link_verified = afc.get_file_info(&link_destination).await.is_ok();
+    logger.log(format!(
+        "airlift: airlift.restore.link.confirmed={} destination_verified={}",
+        link_verified, link_verified
+    ));
+
+    logger.log("airlift: airlift.restore.move.begin phase=descriptor");
+    logger.log("airlift: airlift.restore.asset.requested index=1");
+    {
+        let mut params = plist::Dictionary::new();
+        params.insert("AssetID".into(), plist::Value::String(identifiers[1].clone()));
+        params.insert("Dataclass".into(), plist::Value::String("Book".into()));
+        params.insert("AssetPath".into(), plist::Value::String(destinations[1].clone()));
+        let msg = make_atc_msg("FileComplete", 1, Some(params));
+        send_atc_dict(&mut atc_stream, &msg).await?;
+    }
+
+    // Give ATAirlock time to finish moving assets (vendored settle).
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    drop(atc_stream);
+    logger.log("airlift: AirTraffic sync complete");
+
+    // Local confirmation: through the freshly planted Media link
+    // (which points at the descriptors directory), the descriptor
+    // must now be listed; and the quarantine source should be
+    // consumed (AirTraffic moves, it does not copy).
+    let restored_local = match afc.list_dir(link_destination.clone()).await {
+        Ok(names) => names.iter().any(|n| n == uuid),
+        Err(_) => false,
+    };
+    if restored_local {
+        logger.log("airlift: airlift.restore.descriptor.confirmed");
+    }
+    let source_consumed = afc.get_file_info(source_root_rel).await.is_err();
+    logger.log(format!(
+        "airlift: airlift.restore.source.consumed={} source={}",
+        source_consumed, source_root_rel
+    ));
+
+    // Cleanup: remove staging source + link; the quarantine folder
+    // is removed by the driver only after the fresh DVT audit
+    // confirms the descriptor is back in the store.
+    let _ = afc.remove_all(&link_destination).await;
+    let _ = afc.remove_all(&source).await;
+
+    // Restore original Books state.
+    let mut restored = false;
+    if let Some(orig) = &original_books_plist {
+        if let Ok(mut fd) = afc.open("Books/Sync/Books.plist", AfcFopenMode::WrOnly).await {
+            restored = fd.write_entire(orig).await.is_ok();
+            let _ = fd.close().await;
+        }
+    } else {
+        restored = afc.remove("Books/Sync/Books.plist").await.is_ok();
+    }
+    logger.log(format!(
+        "airlift: airlift.afc.books.restore.end verified={restored}"
+    ));
+
+    Ok(RestoreOpOutcome {
+        link_verified,
+        restored_local,
+        source_consumed,
+    })
+}
+
+// --- Restore driver: resolve roots -> pre-audit -> per-target ATC
+// move -> fresh commit audit -> quarantine cleanup (audit-gated) ---
+
+struct RestoreTarget {
+    quarantine: String,
+    extension: String,
+    uuid: String,
+}
+
+async fn store_restore(
+    pairing_path: String,
+    container_path: String,
+    struct_version: i64,
+    targets: Vec<RestoreTarget>,
+    logger: &PSLogger,
+) -> StoreResult<(String, bool)> {
+    let started = Instant::now();
+    logger.log(format!(
+        "airlift: airlift.poster_store.restore.begin targets={}",
+        targets.len()
+    ));
+    logger.log("airlift: airlift.restore.begin method=atc-manifest-move");
+
+    let pairing_bytes = std::fs::read(&pairing_path).map_err(|e| {
+        (
+            StoreStatus::ConnectFailed,
+            format!("Failed to read pairing file at {pairing_path}: {e}"),
+        )
+    })?;
+
+    let store_root = format!(
+        "{}/Library/Application Support/PRBPosterExtensionDataStore/{}",
+        container_path.trim_end_matches('/'),
+        struct_version
+    );
+
+    // Resolve each target's descriptor root inside its quarantine
+    // folder and finalize the restore UUID: caller-supplied
+    // (receipt/original) first, then the child folder name, then a
+    // fresh UUID (the store folder name is just a unique directory;
+    // PosterBoard keys the descriptor by its contents).
+    struct Resolved {
+        quarantine: String,
+        extension: String,
+        uuid: String,
+        root_rel: String,
+        root_found: bool,
+    }
+    let mut resolved: Vec<Resolved> = Vec::new();
+    {
+        let (mut adapter, mut handshake) = connect_rsd(&pairing_bytes, logger).await?;
+        let mut afc = handshake
+            .connect::<AfcClient>(&mut adapter)
+            .await
+            .map_err(|e| (StoreStatus::AfcFailed, format!("AFC connect failed: {e:?}")))?;
+        for t in &targets {
+            let scan = scan_quarantine_entry(&mut afc, &t.quarantine, logger).await;
+            let uuid = if !t.uuid.is_empty() {
+                t.uuid.clone()
+            } else if !scan.uuid.is_empty() {
+                scan.uuid.clone()
+            } else {
+                fresh_uuid()
+            };
+            resolved.push(Resolved {
+                quarantine: t.quarantine.clone(),
+                extension: t.extension.clone(),
+                uuid,
+                root_rel: scan.root_rel,
+                root_found: scan.root_found,
+            });
+        }
+    }
+
+    // Phase A: pre-audit — already back in the store?
+    let mut already_present: Vec<bool> = Vec::new();
+    {
+        let (_adapter, _handshake, mut server) =
+            connect_device_info(&pairing_bytes, logger).await?;
+        let mut info = device_info_client(&mut server).await?;
+        for r in &resolved {
+            let audit = audit_target(&mut info, &store_root, &r.extension, &r.uuid, logger).await;
+            already_present.push(audit.present);
+        }
+    }
+
+    // Phase B: one ATC move per target that needs it.
+    struct RState {
+        op_ok: bool,
+        op_error: String,
+    }
+    let mut states: Vec<RState> = Vec::new();
+    for (idx, r) in resolved.iter().enumerate() {
+        let mut st = RState {
+            op_ok: false,
+            op_error: String::new(),
+        };
+        if already_present[idx] {
+            st.op_ok = true;
+            states.push(st);
+            continue;
+        }
+        if !r.root_found {
+            st.op_error =
+                "no descriptor root found inside quarantine folder".to_string();
+            states.push(st);
+            continue;
+        }
+        logger.log(format!(
+            "airlift: airlift.restore.operation.begin target={}/{} source={}",
+            r.extension, r.uuid, r.root_rel
+        ));
+        let descriptors_dir_abs = format!("{store_root}/Extensions/{}/descriptors", r.extension);
+        match restore_operation(&pairing_bytes, &descriptors_dir_abs, &r.root_rel, &r.uuid, logger)
+            .await
+        {
+            Ok(outcome) => {
+                logger.log(format!(
+                    "airlift: airlift.restore.operation.outcome target={}/{} link_verified={} restored_local={} source_consumed={}",
+                    r.extension, r.uuid, outcome.link_verified, outcome.restored_local, outcome.source_consumed
+                ));
+                // The operation's own gate is the through-link
+                // listing; the fresh audit in phase C decides.
+                st.op_ok = outcome.restored_local;
+                if !outcome.restored_local {
+                    st.op_error =
+                        "descriptor not listed through the landed link after sync".to_string();
+                }
+            }
+            Err(e) => {
+                st.op_error = e;
+            }
+        }
+        states.push(st);
+    }
+
+    // Phase C: commit audit on a FRESH connection — a target only
+    // counts as restored when its store path re-audits present.
+    let mut commit_audit_done = false;
+    let mut present_after: Vec<bool> = vec![false; resolved.len()];
+    match connect_device_info(&pairing_bytes, logger).await {
+        Ok((_adapter, _handshake, mut server)) => {
+            logger.log("airlift: airlift.restore.commit.connection=fresh after_restore=true");
+            match device_info_client(&mut server).await {
+                Ok(mut info) => {
+                    for (idx, r) in resolved.iter().enumerate() {
+                        let audit =
+                            audit_target(&mut info, &store_root, &r.extension, &r.uuid, logger)
+                                .await;
+                        present_after[idx] = audit.present;
+                    }
+                    logger.log(format!(
+                        "airlift: airlift.restore.commit.audit batched=true paths={}",
+                        resolved.len()
+                    ));
+                    commit_audit_done = true;
+                }
+                Err((_, msg)) => {
+                    logger.log(format!(
+                        "airlift: airlift.restore.commit.audit unavailable error={msg}"
+                    ));
+                }
+            }
+        }
+        Err((_, msg)) => {
+            logger.log(format!(
+                "airlift: airlift.restore.commit.audit unavailable error={msg}"
+            ));
+        }
+    }
+
+    let mut oks: Vec<bool> = Vec::new();
+    for (idx, st) in states.iter().enumerate() {
+        let ok = if commit_audit_done {
+            st.op_ok && present_after[idx]
+        } else {
+            st.op_ok
+        };
+        oks.push(ok);
+    }
+
+    // Quarantine cleanup, strictly audit-gated: only folders whose
+    // descriptor re-audited present in the store are removed.
+    if commit_audit_done {
+        let cleaned: Vec<String> = resolved
+            .iter()
+            .zip(oks.iter())
+            .filter(|(_, ok)| **ok)
+            .map(|(r, _)| r.quarantine.clone())
+            .collect();
+        if !cleaned.is_empty() {
+            match connect_rsd(&pairing_bytes, logger).await {
+                Ok((mut adapter, mut handshake)) => {
+                    if let Ok(mut afc) = handshake.connect::<AfcClient>(&mut adapter).await {
+                        for folder in &cleaned {
+                            let removed = afc.remove_all(folder).await.is_ok();
+                            logger.log(format!(
+                                "airlift: airlift.restore.quarantine.cleaned folder={} removed={}",
+                                folder, removed
+                            ));
+                        }
+                    }
+                }
+                Err((_, msg)) => {
+                    logger.log(format!(
+                        "airlift: airlift.restore.quarantine.cleanup unavailable error={msg}"
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut restored_count = 0usize;
+    let mut failed = 0usize;
+    let mut results_json = String::new();
+    for (idx, r) in resolved.iter().enumerate() {
+        let ok = oks[idx];
+        if ok {
+            restored_count += 1;
+        } else {
+            failed += 1;
+        }
+        logger.log(format!(
+            "airlift: airlift.poster_store.restore.item target={}/{} quarantine={} ok={} error={}",
+            r.extension, r.uuid, r.quarantine, ok, states[idx].op_error
+        ));
+        if idx > 0 {
+            results_json.push(',');
+        }
+        results_json.push_str(&format!(
+            "{{\"extension\":\"{}\",\"uuid\":\"{}\",\"quarantine\":\"{}\",\"ok\":{}}}",
+            json_escape(&r.extension),
+            json_escape(&r.uuid),
+            json_escape(&r.quarantine),
+            ok
+        ));
+    }
+    if commit_audit_done && failed == 0 {
+        logger.log("airlift: airlift.restore.receipts.committed restoration_verified=true");
+    }
+
+    let json = format!(
+        "{{\"restored\":{restored_count},\"failed\":{failed},\"commitAudit\":{commit_audit_done},\"results\":[{results_json}]}}"
+    );
+    logger.log(format!(
+        "airlift: airlift.poster_store.restore.end restored={restored_count} failed={failed} duration_ms={}",
+        started.elapsed().as_millis()
+    ));
+    Ok((json, failed > 0))
+}
 
 // ---------------------------------------------------------------------------
 // FFI entries (shape mirrors poster_refresh::poster_refresh)
@@ -1755,5 +2787,196 @@ pub unsafe fn poster_store_delete(
         0
     } else {
         1
+    }
+}
+
+/// # Safety
+/// Same contract as poster_store_list. Lists the Media quarantine
+/// folders left behind by deletes (run #115 recovery).
+pub unsafe fn poster_store_quarantine_list(
+    pairing_path: *const c_char,
+    log_cb: ALLogCallback,
+    ctx: *mut c_void,
+    out_json: *mut *mut c_char,
+    out_status: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> i32 {
+    let pairing_path = opt_str(pairing_path, "airlift_pairing.plist");
+    let ctx_usize = ctx as usize;
+
+    let res = crate::ffi_util::run_with_large_stack("al_poster_store_quarantine_list", move || {
+        let logger = PSLogger { cb: log_cb, ctx: ctx_usize as *mut c_void };
+        idevice_ffi::run_sync_local(async move {
+            match tokio::time::timeout(
+                Duration::from_secs(120),
+                store_quarantine_list(pairing_path, &logger),
+            )
+            .await
+            {
+                Ok(Ok(json)) => (Some(json), StoreStatus::Ok, None),
+                Ok(Err((status, message))) => {
+                    logger.log(format!(
+                        "airlift: airlift.poster_store.quarantine.list.end status={} error={message}",
+                        status.as_str()
+                    ));
+                    (None, status, Some(message))
+                }
+                Err(_) => (
+                    None,
+                    StoreStatus::AfcFailed,
+                    Some("poster store quarantine list timed out after 120s".to_string()),
+                ),
+            }
+        })
+    });
+
+    let (json, status, error) = match res {
+        Ok(triple) => triple,
+        Err(panic_msg) => (None, StoreStatus::ConnectFailed, Some(panic_msg)),
+    };
+    write_outs(out_json, out_status, out_error, json.as_deref(), status, error.as_deref());
+    if status == StoreStatus::Ok {
+        0
+    } else {
+        1
+    }
+}
+
+/// # Safety
+/// Same contract as poster_store_list. `targets_csv` is a
+/// comma-separated list of "<quarantine-folder>|<extension-id>|
+/// <descriptor-uuid-or-empty>" entries to restore from quarantine
+/// back into the store (run #115 recovery). Restore is deliberately
+/// NOT limited to the cleanup scope — any provider may be restored
+/// into its own descriptors directory.
+pub unsafe fn poster_store_restore(
+    pairing_path: *const c_char,
+    container_path: *const c_char,
+    struct_version: i64,
+    targets_csv: *const c_char,
+    log_cb: ALLogCallback,
+    ctx: *mut c_void,
+    out_json: *mut *mut c_char,
+    out_status: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> i32 {
+    let pairing_path = opt_str(pairing_path, "airlift_pairing.plist");
+    let container_path = opt_str(container_path, "");
+    let targets_raw = opt_str(targets_csv, "");
+    let ctx_usize = ctx as usize;
+
+    let targets: Vec<RestoreTarget> = targets_raw
+        .split(',')
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            let mut parts = entry.split('|');
+            let quarantine = parts.next()?.trim();
+            let extension = parts.next()?.trim();
+            let uuid = parts.next().unwrap_or("").trim();
+            if !quarantine.starts_with("airlift-quarantine-")
+                || extension.is_empty()
+                || extension.contains('/')
+                || parts.next().is_some()
+            {
+                return None;
+            }
+            Some(RestoreTarget {
+                quarantine: quarantine.to_string(),
+                extension: extension.to_string(),
+                uuid: uuid.to_string(),
+            })
+        })
+        .collect();
+
+    let res = crate::ffi_util::run_with_large_stack("al_poster_store_restore", move || {
+        let logger = PSLogger { cb: log_cb, ctx: ctx_usize as *mut c_void };
+        idevice_ffi::run_sync_local(async move {
+            if targets.is_empty() {
+                return (
+                    None,
+                    StoreStatus::AfcFailed,
+                    Some("no valid restore targets supplied".to_string()),
+                );
+            }
+            let budget_secs = 240 + 120 * (targets.len() as u64);
+            match tokio::time::timeout(
+                Duration::from_secs(budget_secs.min(1800)),
+                store_restore(pairing_path, container_path, struct_version, targets, &logger),
+            )
+            .await
+            {
+                Ok(Ok((json, had_failures))) => (
+                    Some(json),
+                    if had_failures { StoreStatus::Partial } else { StoreStatus::Ok },
+                    None,
+                ),
+                Ok(Err((status, message))) => {
+                    logger.log(format!(
+                        "airlift: airlift.poster_store.restore.end status={} error={message}",
+                        status.as_str()
+                    ));
+                    (None, status, Some(message))
+                }
+                Err(_) => (
+                    None,
+                    StoreStatus::AfcFailed,
+                    Some("poster store restore timed out (per-target ATC budget exhausted)".to_string()),
+                ),
+            }
+        })
+    });
+
+    let (json, status, error) = match res {
+        Ok(triple) => triple,
+        Err(panic_msg) => (None, StoreStatus::ConnectFailed, Some(panic_msg)),
+    };
+    write_outs(out_json, out_status, out_error, json.as_deref(), status, error.as_deref());
+    if matches!(status, StoreStatus::Ok | StoreStatus::Partial) {
+        0
+    } else {
+        1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests (run #115 assertion-level self-checks)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod cleanup_scope_tests {
+    use super::provider_in_cleanup_scope;
+
+    #[test]
+    fn scope_admits_only_the_two_collections_poster_providers() {
+        assert!(provider_in_cleanup_scope(
+            "com.apple.WallpaperKit.CollectionsPoster"
+        ));
+        assert!(provider_in_cleanup_scope(
+            "com.apple.Posters.CollectionsPosterApp"
+        ));
+    }
+
+    #[test]
+    fn scope_rejects_system_and_other_providers() {
+        // The run #114 accident set: system gradients must never be
+        // listable or deletable through the cleanup feature.
+        assert!(!provider_in_cleanup_scope(
+            "com.apple.GradientPoster.GradientPosterExtension"
+        ));
+        assert!(!provider_in_cleanup_scope(
+            "com.apple.ClockPoster.ClockPosterExtension"
+        ));
+        assert!(!provider_in_cleanup_scope(
+            "com.apple.PhotosUIPrivate.PhotosPosterProvider"
+        ));
+        assert!(!provider_in_cleanup_scope("com.apple.MercuryPoster"));
+        assert!(!provider_in_cleanup_scope(""));
+        // Near-miss strings must not sneak through an exact match.
+        assert!(!provider_in_cleanup_scope(
+            "com.apple.WallpaperKit.CollectionsPoster.evil"
+        ));
+        assert!(!provider_in_cleanup_scope(
+            "com.apple.WallpaperKit.CollectionsPoster "
+        ));
     }
 }

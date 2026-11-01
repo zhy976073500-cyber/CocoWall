@@ -279,6 +279,35 @@ SPEC.md in the poster_store DVT transport section):
   moved from the AFC link to DVT. No vendored file changed; the
   #112/#113 transaction and signal code is untouched.
 
+Seventh local source change, 2026-11-01 (run #115, registered in
+SPEC.md in the cleanup-scope + quarantine-recovery section):
+
+- `src/poster_store.rs` — (A) cleanup scope: list/delete are
+  restricted to the two CollectionsPoster providers
+  (`CLEANUP_SCOPE_PROVIDERS`, exact match); out-of-scope providers
+  are filtered from enumeration and hard-blocked in the delete
+  driver before any audit/ATC work, with `#[cfg(test)]`
+  assertion-level tests for the predicate. (B) quarantine
+  recovery: new `store_quarantine_list` (AFC scan of Media-root
+  `airlift-quarantine-*` folders — descriptor-root shape
+  detection, package name / descriptor identifier / provider
+  guess reads) and `store_restore` with `restore_operation`, a
+  line-level mirror of `delete_operation` running the same ATC
+  mechanism in reverse (delete's operation and archive builder
+  remain byte-identical), DVT-audited, with quarantine cleanup
+  gated on the fresh audit. Two new module FFIs
+  (`poster_store_quarantine_list`, `poster_store_restore`);
+  matching wrappers in `src/lib.rs` and declarations in
+  `include/airlift.h`. Restore is deliberately NOT scope-limited.
+- `src/exploit.rs` — settle tri-state: `wait_move_settle` now
+  returns `SettleOutcome` (log lines unchanged), and the combined
+  preferences session's file assets settle via the new
+  `wait_file_asset_settle` (directory-listing observation, 1500 ms
+  budget, honest `skipped` outcome) instead of the destination
+  poll that deterministically timed out at 5000 ms on device.
+  The #111 signal encoding and the #112/#113 transaction skeleton
+  are untouched; no vendored file changed.
+
 Apart from the additions registered above, everything else in this
 tree remains a verbatim copy of upstream.
 The other adaptations live outside this directory:

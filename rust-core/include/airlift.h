@@ -180,18 +180,21 @@ int32_t al_poster_refresh(const char *pairing_path,
 
 // PosterBoard data-store enumeration + cleanup (local addition,
 // src/poster_store.rs): list the descriptors actually present in the
-// device's PRBPosterExtensionDataStore via AFC over the RSD tunnel
-// through a temporary symlink planted in the AFC media jail; delete
+// device's PRBPosterExtensionDataStore via DVT deviceinfo directory
+// listings over the RSD tunnel (run #114 transport); delete
 // moves each descriptor out of the store via an AirTraffic/Books sync
 // into a Media quarantine copy (Walllive-verified mechanism) and
-// re-audits each path absent on a fresh connection. Both block
-// until done; run off the main thread. On success out_json carries the
-// JSON result (list: {"items":[{extension,uuid,identifier,packageName,
-// name}]}; delete: {"deleted":N,"failed":M,"results":[{extension,uuid,
-// ok}]}), out_status is "ok" (delete may report "partial") and the
-// return value is 0. On failure out_status is machine-readable
-// ("connectFailed" / "serviceUnavailable" / "stageFailed" / "listFailed"
-// / "afcFailed"), out_error is human-readable and the return value is 1.
+// re-audits each path absent on a fresh connection. Run #115: list
+// and delete are scoped to the two CollectionsPoster providers;
+// out-of-scope delete targets are refused before any device
+// mutation. Both block until done; run off the main thread. On
+// success out_json carries the JSON result (list: {"items":[{extension,
+// uuid,identifier,packageName,name}]}; delete: {"deleted":N,"failed":M,
+// "results":[{extension,uuid,ok,quarantine}]}), out_status is "ok"
+// (delete may report "partial") and the return value is 0. On failure
+// out_status is machine-readable ("connectFailed" /
+// "serviceUnavailable" / "stageFailed" / "listFailed" / "afcFailed"),
+// out_error is human-readable and the return value is 1.
 // Heap strings must be released with al_string_free().
 int32_t al_poster_store_list(const char *pairing_path,
                              const char *container_path,
@@ -211,6 +214,34 @@ int32_t al_poster_store_delete(const char *pairing_path,
                                char **out_json,
                                char **out_status,
                                char **out_error);
+
+// PosterBoard quarantine recovery (local addition, run #115,
+// src/poster_store.rs): quarantine_list enumerates the
+// airlift-quarantine-* folders deletes left in the device Media
+// root ({"items":[{quarantine,uuid,descriptorIdentifier,packageName,
+// providerGuess}]}); restore moves the given descriptors back into
+// the store via the delete mechanism reversed, re-audits each path
+// present on a fresh connection, and removes a quarantine folder
+// only after its descriptor re-audits present. targets_csv entries
+// are "<quarantine-folder>|<extension-id>|<descriptor-uuid-or-empty>".
+// Restore is not limited to the cleanup provider scope. Same
+// blocking / out-param contract as the delete entry above.
+int32_t al_poster_store_quarantine_list(const char *pairing_path,
+                                        ALLogCallback log_cb,
+                                        void *ctx,
+                                        char **out_json,
+                                        char **out_status,
+                                        char **out_error);
+
+int32_t al_poster_store_restore(const char *pairing_path,
+                                const char *container_path,
+                                int64_t struct_version,
+                                const char *targets_csv,
+                                ALLogCallback log_cb,
+                                void *ctx,
+                                char **out_json,
+                                char **out_status,
+                                char **out_error);
 
 // ---------------------------------------------------------------------------
 // Target Host Configuration

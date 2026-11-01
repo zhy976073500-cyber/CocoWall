@@ -933,3 +933,201 @@ descriptors.found 列出此前刷入的全部 descriptor（含
 absent、复检 list 该条消失。本版为该功能第一次在 DVT
 传输上的真机验证，directoryListingForPath: 对数据仓
 绝对路径的返回内容（条目名形态）以真机日志为准。
+
+## 改动登记 · 清理限域 + 隔离区恢复 + 偏好 settle 顺修（run #115，2026-11-01，#114 真机事故定点修）
+
+#114 真机（Sage 17:32）：双包连刷全通、合并偏好 FileComplete×4
+首跑完、refresh_confirmed 901ms、壁纸免注销进选择器（#112
+克隆路线裁决通过）；检测（DVT）列出 descriptor 21 个
+（CollectionsPoster 5 + GradientPoster 16），Sage 全选删除
+21/21 成功（均搬入 Media 的 airlift-quarantine-<token> 隔离
+夹保留、非销毁），复检 count=0。事故与新问题共四项，本版
+逐项处置：
+
+### A — 清理限域（安全边界，已实装）
+
+根源：list 未按 provider 限域，系统自带/自建的 16 张
+GradientPoster 渐变壁纸被一并列出并全选删除。
+- rust-core/src/poster_store.rs 新增 CLEANUP_SCOPE_PROVIDERS
+  （com.apple.WallpaperKit.CollectionsPoster、
+  com.apple.Posters.CollectionsPosterApp）与
+  provider_in_cleanup_scope 精确匹配判定。
+- enumerate_descriptors 对范围外 provider 整段跳过（日志
+  descriptors.filtered extension=… reason=provider_scope），
+  UI 天然只剩自家壁纸，全选不再能触及系统数据。
+- store_delete 在驱动层（FFI 正下方）硬拦截范围外 target：
+  记 delete.blocked 日志、以明确 error 计入 failed，Phase A
+  审计、Phase B ATC、Phase C 审计全部跳过——不依赖 UI 行为。
+- 断言级自检：poster_store.rs 内 #[cfg(test)]
+  cleanup_scope_tests 两组（两 provider 放行；GradientPoster/
+  ClockPoster/Photos/Mercury/空串/近似串拒绝），cargo test
+  --lib cleanup_scope 通过（见构建报告）。
+- 注意：恢复（B）刻意不限域——GradientPoster 正是首要恢复
+  对象，恢复与删除限域是两回事。
+
+### B — 隔离区恢复（已实装）
+
+可行性调查结论：
+(1) AFC 可列 Media 根（路径 ""，"."、"/" 兜底，日志
+quarantine.root 注明实际命中形态），airlift-quarantine-*
+文件夹可枚举；其内部 descriptor 根形态运行时判定：文件夹
+本身带 descriptor 标记（versions/、providerInfo.plist、
+descriptor.identifier、Wallpaper.plist 之一）→ 根即文件夹、
+原 UUID 不可知；或单个子目录带标记 → 根为子目录、子目录名
+即原 UUID。AFC 在 Media 内可自由 list/读小文件，故包名
+（versions/*/contents/*.wallpaper）、descriptor.identifier
+文本、suggestionMetadata 均可读出。
+(2) 反向搬回用删除同款 ATC 机制的镜像：暂存归档复用
+build_delete_archive（链接落 Media 根、指向目标 provider 的
+descriptors 目录）；book2 以 Airlock 相对路径标识隔离区内的
+descriptor（../../airlift-quarantine-<token>[/<UUID>]，与
+install 的 payload book 同形），FileComplete 目的地为
+<落位链接>/<UUID>，守护进程经链接把 descriptor 搬进数据仓
+——与 install 已验证的 payload 搬运同向。删除的
+delete_operation 逐字未动，restore_operation 为其镜像副本
+（代码库内 ATC 会话多处复制为既有风格）。
+(3) 流程：store_restore 先逐条扫描隔离夹定 root 与最终
+UUID（调用方传入的回执 UUID > 子目录名 > 新生成 UUID——
+数据仓目录名只是唯一名，PosterBoard 按内容认 descriptor）；
+Phase A DVT 预审（已在仓则幂等成功）；Phase B 逐条 ATC
+搬回；Phase C 新连接 DVT 审计 present 才计恢复成功；仅对
+审计通过的条目才经 AFC 删除隔离夹（审计门控清理）。
+(4) 出处判定优先级：Swift 侧删除回执（UserDefaults 持久化，
+PosterStoreReceipts，本版起 deleteImported 回传完整结果并
+落盘 quarantine→provider+UUID）> 子目录名（UUID）> 内容
+启发式（suggestionMetadata $objects 中 com.apple.*Poster*
+串、descriptor.identifier 前缀，与 TendiesEngine
+.determineExtension 同规则）。#114 那批 21 个隔离夹没有
+回执：GradientPoster 条目将依赖内容启发式——其 descriptor
+多半无 suggestionMetadata，provider_guess 可能为空、UI 显示
+「来源未知，暂不可恢复」；这是已知缺口（见未验证项），不
+伪造出处。
+(5) 新 FFI：al_poster_store_quarantine_list /
+al_poster_store_restore（lib.rs 包装 + airlift.h 声明同步）；
+Swift：PosterStoreHelper 新增 listQuarantine /
+restoreQuarantine + DeleteResponse 解码 quarantine 字段；
+AppViewModel 新增 loadQuarantine / restoreQuarantineEntry
+（恢复后 re-detect + 免注销 refresh，与清理同范式）；
+清理页新增「隔离区（可恢复）」区，逐条恢复；清理确认文案
+改实话（移入隔离区、可恢复）。
+
+### C — 同批刷 2 张只显示 1 张（只交调查结论，未盲改）
+
+证据链：
+- 17:29 截图（刷后删前）：「添加新墙纸」页 iPhone 15 Pro
+  Max 专属区只有一张卡片；Sage 17:35 确认画面云朵是最后刷
+  的 HarmonyOSEmoji——「同批多张、末刷者独占选择器」坐实。
+- 但「偏好 plist 整份覆盖」不是载体：我方每刷写入的
+  unprotectedUserDefaults.plist 是固定字典（PBF_RESET_FILE_
+  PROTECTIONS、PBF_LOCALE_DID_CHANGE、PersistedPoster
+  ContainerBundleIdentifiers=5 个 provider id、
+  CompletedPosterBundleIdentifierMigrations=6 个 id），
+  两刷归档同为 4457 字节、内容逐字相同，根本不含任何
+  descriptor 条目——覆盖一份相同字节不可能丢掉先刷的壁纸。
+  Walllive 二进制字符串核查：其偏好 payload 键集与我方
+  一致（PBF_*、PersistedPosterContainerBundleIdentifiers），
+  同样无 descriptor 集合键。故原计划「DVT 枚举 descriptor
+  全集、合并进偏好再写」在 schema 上无落点，未实装（按
+  #115 任务 C 原定的 schema 门控：不是列表形态则只交调查）。
+- 替代解释（首要嫌疑）：descriptor 内部身份撞车。
+  PosterBoard 按 descriptor 的内部标识认「同一张壁纸」：
+  descriptor 根目录的 com.apple.posterkit.provider
+  .descriptor.identifier 文本、suggestionMetadata 里的
+  descriptorIdentifier（与 contents 的 wallpaper
+  identifiers 成套，如 7400.DYNAMIC <-> 7400）、
+  Wallpaper.plist 的 identifier。两个 descriptor 文件夹名
+  （UUID）不同、但内部标识相同 → 在 PosterBoard 眼里是同一
+  collection 的两个版本，只展示最新一个——与「末刷胜出」
+  严丝合缝；且出问题的是「专为 iPhone 设计」区，正是
+  suggestion 驱动的展示面。我方 updatePlistIdentifiers
+  只在无 suggestionMetadata 时才随机化标识（有 metadata 时
+  为保配对关系整段跳过）——若 EVA 与 HarmonyOS 两包都带
+  suggestionMetadata 且出自同一导出管线、共用同一套标识，
+  正好绕过随机化而撞车。次要嫌疑：两包 contents 内
+  .wallpaper 包名相同（同管线默认名）。
+- 定案路径（零额外成本）：B 的隔离区列表会读出每个隔离
+  descriptor 的 descriptorIdentifier 与 packageName——EVA
+  与 HarmonyOS 的 descriptor 此时都在隔离夹里。真机跑一次
+  隔离区列表，两相对照：descriptorIdentifier 相同即定案，
+  修复方向随之为「刷入时对 suggestionMetadata 包做整套
+  标识一致性重写（descriptorIdentifier 与其下属 wallpaper
+  identifiers 同步换新前缀）」，而非动偏好。此修复涉及
+  受保护的 TendiesEngine.updatePlistIdentifiers，待定案后
+  单独一版做，不在本版盲改。
+
+### D — 偏好文件资产 settle 轮询顺修（已实装）
+
+现象：#114 两刷中，偏好段 FileComplete [2/4][4/4]（plist
+文件资产）的 atc.move.settle 每次超时 5000ms
+confirmed=false；链接资产 [1/4][3/4] 约 103ms 命中；同刷
+Phase 1 的文件夹 payload 在同一轮询下约 105ms 命中。偏好
+本身生效（壁纸正常进选择器），即文件搬运落地、观测点错
+位：AFC GetFileInfo 对「经 Media 根链接指向的目录内文件」
+这一形态恒不可见。
+- exploit.rs：SettleOutcome 三态（Confirmed/TimedOut/
+  Skipped）；run_atc_asset_session 在合并偏好会话
+  （log_asset_confirmed 标记）中，奇数位文件资产改走
+  wait_file_asset_settle：轮询落位链接的目录列表（ReadDir，
+  与 GetFileInfo 不同的 AFC 操作）看 leaf 是否出现，预算
+  1500ms；命中记 confirmed=true，未命中记
+  skipped=true reason=file_asset_unobserved（诚实标注未观测，
+  不冒充 false 的失败），由 FileComplete 回执 + 会话结论
+  承载该资产。asset.confirmed 日志相应输出 true/false/
+  skipped。
+- Phase 1（descriptor 会话）与其余资产的轮询逐字未变；
+  #111 信号编码、#112/#113 事务骨架未动。
+- 预期：每刷省掉约 7–10 秒白等（2×(5000−~实际命中/1500)）。
+
+### 改动清单
+
+- rust-core/src/poster_store.rs：A（限域常量/判定 + 列表
+  过滤 + 删除硬拦截 + 单元测试）；B（隔离区扫描/列表、
+  restore_operation、store_restore、两新 FFI 入口）。
+- rust-core/src/lib.rs：两新 FFI 包装；delete 文档补限域。
+- rust-core/include/airlift.h：两新声明；poster_store 注释
+  更新为 #114 DVT 传输 + #115 限域/恢复实情。
+- rust-core/src/exploit.rs：D（SettleOutcome 三态 +
+  wait_file_asset_settle + 会话内文件资产分流）。
+- Sources/App/PosterStoreHelper.swift：DeleteResponse 补
+  quarantine 解码并回传完整结果；listQuarantine /
+  restoreQuarantine；PosterStoreReceipts 持久化；
+  QuarantineDisplayItem。
+- Sources/App/AppViewModel.swift：清理后落盘回执；隔离区
+  状态 + loadQuarantine / restoreQuarantineEntry。
+- Sources/App/TendiesView.swift：清理页加隔离区恢复区；
+  刷新按钮兼刷隔离区；清理确认文案改实话。
+
+### 未动清单
+
+#111 sendSignal 编码、#112/#113 事务骨架（flash_transaction
+的 identifiers/destinations/归档构造）、delete_operation 与
+build_delete_archive（ATC 搬移本体）、poster_refresh、
+TendiesEngine（C 的修复方向待定案后单独处理）、工作流文件。
+
+### 未验证项（真机验收标准）
+
+- A：点检测 → 日志 descriptors.filtered 出现且
+  GradientPoster 等系统 provider 不再进 UI 列表，只剩
+  CollectionsPoster 双 provider 的壁纸；全选清理不再可能
+  触及系统壁纸。（构造范围外 delete target 的 FFI 级拦截
+  只能由日志 delete.blocked 在异常调用时观察，正常 UI 路径
+  不应出现。）
+- B：清理页出现「隔离区（可恢复）」区并列出 #114 留下的
+  21 个隔离夹（日志 quarantine.entry 逐条打出 root 形态、
+  identifier、package、provider_guess——此日志同时是 C 的
+  定案材料）；选一条已判定 provider 的条目恢复 → DVT 审计
+  present、隔离夹被清、刷新后选择器可见。已知风险点：
+  (i) 隔离夹内部形态（文件夹自身为根 vs UUID 子目录）以
+  首跑日志为准，若两种都不是，restore 会以 root_found=false
+  明确失败、不硬搬；(ii) 无回执条目的 provider 判定靠内容
+  启发式，GradientPoster 可能判不出而暂不可恢复——若如此，
+  下一版补「手动指定 provider 恢复」入口，不在本版伪造；
+  (iii) ATC 反向搬运的 manifest download 标记以真机日志为
+  准（delete 同款守卫：显式 false 才拒绝）。
+- C：见上定案路径——隔离区列表日志中 EVA 与 HarmonyOS 两
+  条的 descriptorIdentifier / packageName 是否相同。
+- D：单刷日志中偏好段 asset index=1/3 不再出现
+  settle confirmed=false 的 5000ms 超时（应为 confirmed=true
+  或 skipped=true），Phase 2 总时长从 ~12700ms 明显回落；
+  index=0/2 维持 ~103ms confirmed=true；合并偏好结论与壁纸
+  进选择器不受影响。
