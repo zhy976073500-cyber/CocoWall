@@ -243,7 +243,8 @@ public final class TendiesEngine {
         resetProtections: Bool,
         pairingPath: String,
         log: @escaping (String) -> Void,
-        progress: @escaping (Double) -> Void
+        progress: @escaping (Double) -> Void,
+        onDescriptorInstalled: ((TendieItem, String, String) -> Void)? = nil
     ) async throws {
         guard !items.isEmpty else {
             log("⚠️ No wallpapers selected to flash")
@@ -361,6 +362,14 @@ public final class TendiesEngine {
                     pairingPath: pairingPath,
                     log: log
                 )
+
+                // Run #124: report each descriptor the moment its
+                // install transaction has succeeded, so the caller
+                // can register store UUID -> source library item
+                // (the cleanup list's authoritative thumbnail /
+                // display-name source). A throw above skips this —
+                // only descriptors that actually landed register.
+                onDescriptorInstalled?(item, descItem.ext, targetUUID)
 
                 // 2. Mirror destination (modern .Posters.<Name>App container):
                 //    deferred this transaction, mirroring Walllive's

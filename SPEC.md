@@ -1272,3 +1272,70 @@ deleteImported 的 completion 暴露该类型，连同 listQuarantine
 其余 FileHandle 调用（seekToEndOfFile/readData/closeFile）均非 throwing，
 已逐一审计。本地验证：swiftc -parse 全文件通过；函数原文抽出编译后
 对真实 zip 正确返回 .wallpaper 包名、坏路径返回空。
+
+## Run #124（2026-11-01）：清理列表缩略图匹配修复（登记表 + 基底剥离兜底）
+
+### 病因（真机定案）
+
+#123 真机（Sage 2026-11-01 21:19 截图）：清理列表 5 条缩略图
+全为占位图。五条仓内 packageName 基底为 1572/4845/5383/3071/
+9589（全 .WWDC_2022-390w-844h@3x~iphone.wallpaper）——正是
+#122 标识重写逐包随机化的新基底；本地库同包内部名仍是原始
+基底（7400.…）。#122 的匹配按 packageName 精确比对（外加小写/
+去后缀归一化），重写后的包必然全灭。匹配键选错了锚：基底恰
+是每刷必变的量。
+
+### 修法（只动 Swift 侧；三层，权威性递减）
+
+1. **刷入登记表（主）**：TendiesEngine.flashTendies 新增可选
+   回调 onDescriptorInstalled(item, ext, storeUUID)，在每个
+   descriptor 的注入事务成功返回后立即调用（抛错则不登记，
+   只登记真落仓者；多 descriptor 包逐个登记）。AppViewModel
+   在回调里把映射落盘：键 "<ext>/<uuid>"（即
+   DevicePosterItem.id）→ FlashRegistryEntry{itemID, itemName,
+   relativePath}，JSON 存 UserDefaults 键
+   cocowall.flash_registry（与 aircard.saved_tendies 同模式，
+   编解码全 try?，无 throwing 调用外泄）。
+2. **清理列表三层匹配**（prepareDevicePosterThumbnails 重写）：
+   ① 登记表按仓 id 查：命中用库条目（id 优先、relativePath
+   兜底）的现成预览与显示名（条目已删时用登记时存的 itemName
+   兜底标题）；标题经 devicePosterDisplayNames 覆盖
+   item.name，不再显示重写后的仓内包名。② 精确 packageName
+   匹配（#122 原逻辑，覆盖重写机制存在前刷入的包），命中同
+   时给出缩略图与本地名。③ 基底剥离兜底（仅缩略图）：两侧键
+   经 packageFallbackKey 归一（小写、去 .wallpaper 后缀、剥
+   开头纯数字基底段 ^\d+\.），后缀一致即命中——覆盖 #122–#123
+   间刷入、无登记的存量。已知风险（代码注释已注明）：仅数
+   字基底不同的同名异包剥离后会撞键，多命中取库中第一条；
+   此层只作存量兜底，新刷入一律走登记表。
+3. **删除联动**：清理成功回调按 DeleteResponse.results 中
+   ok 的条目移除登记表对应键，避免脏数据。
+
+### 验证（本地）
+
+- swiftc -parse：AppViewModel / TendiesView / TendiesEngine
+  三个改动文件全过。
+- 逻辑原文 harness（FlashRegistryEntry 与 packageFallbackKey
+  逐字抽出编译运行）：Sage 真机五条仓内名（1572/4845/5383/
+  3071/9589.…）对本地名 7400.… 精确层全灭（预期）、剥离层
+  全命中；异后缀不撞；v6x./3D. 等非纯数字头段不剥；登记表
+  JSON 往返一致、按仓 id 命中取本地名、未知 id 落空走下层。
+  共 25 项断言全过。
+- throwing 审计：新增代码仅 JSONEncoder/Decoder 两处，均
+  try? 收口；packageFallbackKey 为纯字符串操作；无新增
+  FileHandle 调用；zip 中央目录解析器（#122/#123）复用未动。
+
+### 未动清单
+
+Rust 侧全部、PosterStoreHelper、删除/注入事务、标识重写
+（#122）、工作流文件。
+
+### 未验证项（真机验收标准）
+
+- 装 #124 后打开清理列表：#123 前刷入的 5 条 WWDC 应经基底
+  剥离兜底显示出库中同包缩略图（若那 5 条实为同包反复刷入，
+  标题仍显示仓内名——显示名只来自登记表/精确层）。
+- 新刷一张（#124 后）：再开清理列表，该条应经登记表命中，
+  缩略图 + 本地显示名同时出现。
+- 清理删掉该条后：登记表对应键已移除（行为面无感，仅防脏
+  数据）。

@@ -4,6 +4,26 @@ import SwiftUI
 import ImageIO
 import AirliftFFI
 
+// MARK: - Flash registry entry (run #124)
+
+/// One flash-registry row: a descriptor that landed in the device
+/// PosterBoard data store, mapped back to the local library item it
+/// was flashed from. Keyed in the registry by the store id
+/// ("<extension>/<uuid>", the same string as DevicePosterItem.id).
+/// Persisted as JSON in UserDefaults (key
+/// "cocowall.flash_registry"), following the same pattern as the
+/// saved library itself ("aircard.saved_tendies").
+struct FlashRegistryEntry: Codable, Equatable {
+    /// TendieItem.id (uuidString) of the source library entry.
+    var itemID: String
+    /// The library entry's display name at flash time — shown in the
+    /// cleanup list even if the library entry is later removed.
+    var itemName: String
+    /// TendieItem.relativePath — secondary identity for finding the
+    /// live library entry if its id is no longer present.
+    var relativePath: String
+}
+
 // MARK: - AppViewModel
 
 @MainActor
@@ -85,10 +105,15 @@ final class AppViewModel: ObservableObject {
     @Published var isScanningDevicePosters: Bool = false
     @Published var isCleaningDevicePosters: Bool = false
     @Published var devicePosterStatus: String = ""
-    /// Cleanup-list thumbnails (run #122): DevicePosterItem.id ->
-    /// JPEG preview borrowed from the matching local library entry
-    /// (see prepareDevicePosterThumbnails).
+    /// Cleanup-list thumbnails (run #122; layered matching run #124):
+    /// DevicePosterItem.id -> JPEG preview borrowed from the matching
+    /// local library entry (see prepareDevicePosterThumbnails).
     @Published var devicePosterThumbs: [String: Data] = [:]
+    /// Cleanup-list display names (run #124): DevicePosterItem.id ->
+    /// local library display name, for rows whose source library
+    /// entry is known (flash registry hit, or exact package-name
+    /// match). Rows without an entry keep the store-reported name.
+    @Published var devicePosterDisplayNames: [String: String] = [:]
     @Published var showDevicePosterSheet: Bool = false
 
     // MARK: - AirCard UI States & Properties
@@ -970,6 +995,15 @@ final class AppViewModel: ObservableObject {
                     DispatchQueue.main.async {
                         self?.tendiesFlashProgress = p
                     }
+                },
+                onDescriptorInstalled: { [weak self] item, ext, storeUUID in
+                    // Run #124: the engine invokes this from its own
+                    // execution context per landed descriptor; hop to
+                    // the main queue like the log/progress closures
+                    // above and record the flash-registry row.
+                    DispatchQueue.main.async {
+                        self?.registerFlashedDescriptor(item: item, extensionID: ext, storeUUID: storeUUID)
+                    }
                 }
             )
             tendiesFlashPhase = .done(ok: true)
@@ -1004,6 +1038,72 @@ final class AppViewModel: ObservableObject {
         tendiesFlashLog.append("⚡ 正在触发 NeoSpring 注销…")
         isNeoSpringing = true
         RespringHelper.triggerNeoSpring()
+    }
+
+    // MARK: - Flash registry (run #124)
+
+    private static let flashRegistryDefaultsKey = "cocowall.flash_registry"
+
+    /// Loads the persisted flash registry (store id -> entry).
+    /// Absent or corrupt data reads as an empty registry. All
+    /// registry reads/writes go through JSON codable with `try?`,
+    /// so no throwing call can escape into the flash/cleanup flows.
+    static func loadFlashRegistry() -> [String: FlashRegistryEntry] {
+        guard let data = UserDefaults.standard.data(forKey: flashRegistryDefaultsKey),
+              let decoded = try? JSONDecoder().decode([String: FlashRegistryEntry].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+
+    static func saveFlashRegistry(_ registry: [String: FlashRegistryEntry]) {
+        guard let data = try? JSONEncoder().encode(registry) else { return }
+        UserDefaults.standard.set(data, forKey: flashRegistryDefaultsKey)
+    }
+
+    /// Records one successfully landed descriptor against the
+    /// library item it was flashed from. Invoked once per descriptor
+    /// from the flash flow's success branch (a multi-descriptor
+    /// package registers each of its descriptors).
+    func registerFlashedDescriptor(item: TendieItem, extensionID: String, storeUUID: String) {
+        var registry = Self.loadFlashRegistry()
+        registry["\(extensionID)/\(storeUUID)"] = FlashRegistryEntry(
+            itemID: item.id.uuidString,
+            itemName: item.name,
+            relativePath: item.relativePath
+        )
+        Self.saveFlashRegistry(registry)
+    }
+
+    /// Drops registry rows for descriptors the cleanup flow has
+    /// actually deleted (per-item `ok` results only), so the
+    /// registry never points at a store id that no longer exists.
+    static func removeFlashRegistryEntries(deletedResults: [PosterStoreHelper.DeleteResponse.ItemResult]) {
+        let gone = deletedResults.filter { $0.ok }
+        guard !gone.isEmpty else { return }
+        var registry = loadFlashRegistry()
+        let before = registry.count
+        for res in gone {
+            registry.removeValue(forKey: "\(res.extension)/\(res.uuid)")
+        }
+        if registry.count != before { saveFlashRegistry(registry) }
+    }
+
+    /// Fallback match key (run #124): lowercased, ".wallpaper"
+    /// suffix trimmed, and a leading purely-numeric base segment
+    /// ("1572." — exactly the part run #122's identifier rewrite
+    /// randomizes per flash) stripped. Pure string surgery — no
+    /// regex, no throwing calls. Names whose first segment is not
+    /// purely numeric keep it ("v6x.…", "3d.…").
+    nonisolated static func packageFallbackKey(_ s: String) -> String {
+        var t = s.lowercased()
+        if t.hasSuffix(".wallpaper") { t = String(t.dropLast(".wallpaper".count)) }
+        if let dot = t.firstIndex(of: ".") {
+            let head = t[..<dot]
+            if !head.isEmpty, head.allSatisfy({ $0.isNumber }) {
+                t = String(t[t.index(after: dot)...])
+            }
+        }
+        return t
     }
 
     // MARK: - Device PosterBoard store detection / cleanup
@@ -1051,6 +1151,7 @@ final class AppViewModel: ObservableObject {
         devicePosters = []
         devicePosterSelection = []
         devicePosterThumbs = [:]
+        devicePosterDisplayNames = [:]
         let version = posterStoreStructVersion
         let result: Result<[DevicePosterItem], PosterStoreError> = await withCheckedContinuation { cont in
             PosterStoreHelper.listImported(
@@ -1079,51 +1180,99 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Matches device-store descriptors to local library items by
-    /// package name (run #122): the device list carries each
-    /// descriptor's inner `<name>.wallpaper` directory name
-    /// (DevicePosterItem.packageName, read from the store by the
-    /// Rust core), and the same name appears as a path component
-    /// inside the local .tendies zip — read from the zip's central
-    /// directory, no extraction. Exact match first, then a
-    /// normalized fallback (case-insensitive, ".wallpaper" suffix
-    /// trimmed). The descriptor's `identifier` field would be the
-    /// natural secondary key but the DVT listing cannot read it
-    /// (left empty by design, run #114), so normalization is the
-    /// fallback. Unmatched descriptors keep the placeholder.
+    /// Resolves cleanup-list thumbnails — and, where the source
+    /// library entry is known, its display name — for device-store
+    /// descriptors, in three layers (run #124; the run #122
+    /// package-name-only matching is kept as layer 2):
+    ///   1. Flash registry: store id ("<ext>/<uuid>") -> the library
+    ///      item the descriptor was flashed from, recorded at flash
+    ///      time. Authoritative: yields both the thumbnail and the
+    ///      local display name.
+    ///   2. Exact package-name match: the store-reported inner
+    ///      `<name>.wallpaper` directory name against the same name
+    ///      as a path component inside the local .tendies zips
+    ///      (central directory, no extraction). Right for packages
+    ///      flashed before the identifier rewrite existed.
+    ///   3. Base-stripped fallback (thumbnails only), for packages
+    ///      flashed before the registry existed but after run #122:
+    ///      that rewrite renames the packaged numeric base inside
+    ///      the store (7400.… came back as 1572.… / 4845.… / … —
+    ///      Sage's 2026-11-01 device list) while the local library
+    ///      keeps the original name, so layer 2 can never hit for
+    ///      them. Both sides are keyed by packageFallbackKey
+    ///      (numeric base stripped, suffix after it must agree).
+    ///      NOTE: the stripped key collides for packages that
+    ///      differ ONLY in their numeric base （同名异包） — the
+    ///      first library item wins; that residual ambiguity is
+    ///      accepted for this legacy layer, and layer 1 exists
+    ///      precisely so new flashes never depend on it.
+    /// The descriptor's `identifier` field would be another key but
+    /// the DVT listing cannot read it (left empty by design, run
+    /// #114). Unmatched descriptors keep the placeholder.
     func prepareDevicePosterThumbnails() {
         let posters = devicePosters
-        let library = tendieItems
-        guard !posters.isEmpty, !library.isEmpty else {
+        guard !posters.isEmpty else {
             devicePosterThumbs = [:]
+            devicePosterDisplayNames = [:]
             return
         }
+        let library = tendieItems
+        let registry = Self.loadFlashRegistry()
         Task.detached(priority: .utility) {
-            func norm(_ s: String) -> String {
-                var t = s.lowercased()
-                if t.hasSuffix(".wallpaper") { t = String(t.dropLast(".wallpaper".count)) }
-                return t
-            }
-            var exact: [String: Data] = [:]
-            var normalized: [String: Data] = [:]
-            for item in library {
-                guard let data = item.previewImageData else { continue }
-                for pkg in Self.wallpaperPackageNames(inZipAt: item.fileURL) {
-                    if exact[pkg] == nil { exact[pkg] = data }
-                    let n = norm(pkg)
-                    if normalized[n] == nil { normalized[n] = data }
-                }
-            }
             var thumbs: [String: Data] = [:]
-            for poster in posters where !poster.packageName.isEmpty {
-                if let d = exact[poster.packageName] ?? normalized[norm(poster.packageName)] {
-                    thumbs[poster.id] = d
+            var names: [String: String] = [:]
+
+            // Layer 1: flash registry, by store id.
+            var pending: [DevicePosterItem] = []
+            for poster in posters {
+                guard let entry = registry[poster.id] else {
+                    pending.append(poster)
+                    continue
+                }
+                // Live entry (by id, falling back to its file path)
+                // supplies the thumbnail and the current name; the
+                // recorded name still applies if the entry is gone.
+                let item = library.first { $0.id.uuidString == entry.itemID }
+                    ?? library.first { $0.relativePath == entry.relativePath }
+                names[poster.id] = item?.name ?? entry.itemName
+                if let data = item?.previewImageData {
+                    thumbs[poster.id] = data
                 }
             }
+
+            // Layers 2+3: package-name matching for the rest.
+            if !pending.isEmpty, !library.isEmpty {
+                var exact: [String: Data] = [:]
+                var exactItemName: [String: String] = [:]
+                var stripped: [String: Data] = [:]
+                for item in library {
+                    guard let data = item.previewImageData else { continue }
+                    for pkg in Self.wallpaperPackageNames(inZipAt: item.fileURL) {
+                        if exact[pkg] == nil {
+                            exact[pkg] = data
+                            exactItemName[pkg] = item.name
+                        }
+                        let key = Self.packageFallbackKey(pkg)
+                        if stripped[key] == nil { stripped[key] = data }
+                    }
+                }
+                for poster in pending where !poster.packageName.isEmpty {
+                    if let d = exact[poster.packageName] {
+                        thumbs[poster.id] = d
+                        if let n = exactItemName[poster.packageName] {
+                            names[poster.id] = n
+                        }
+                    } else if let d = stripped[Self.packageFallbackKey(poster.packageName)] {
+                        thumbs[poster.id] = d
+                    }
+                }
+            }
+
             await MainActor.run { [weak self] in
                 // Apply only if the list hasn't been replaced since.
                 guard let self, self.devicePosters == posters else { return }
                 self.devicePosterThumbs = thumbs
+                self.devicePosterDisplayNames = names
             }
         }
     }
@@ -1228,6 +1377,10 @@ final class AppViewModel: ObservableObject {
 
         switch result {
         case .success(let r):
+            // Run #124: drop flash-registry rows for the descriptors
+            // that were actually deleted, so the registry never maps
+            // a store id that no longer exists.
+            Self.removeFlashRegistryEntries(deletedResults: r.results)
             var message = "清理完成：成功 \(r.deleted) 条"
             if r.failed > 0 { message += "，失败 \(r.failed) 条" }
             message += "。"

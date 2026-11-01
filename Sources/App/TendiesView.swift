@@ -539,10 +539,12 @@ struct DevicePosterCleanupView: View {
                                     HStack(spacing: 12) {
                                         Image(systemName: vm.devicePosterSelection.contains(item.id) ? "checkmark.circle.fill" : "circle")
                                             .foregroundStyle(vm.devicePosterSelection.contains(item.id) ? Color.accentColor : Color.secondary)
-                                        // Run #122: thumbnail borrowed from the
-                                        // matching local library entry (matched
-                                        // by package name in AppViewModel), so a
-                                        // row can be recognised by its picture.
+                                        // Runs #122/#124: thumbnail borrowed
+                                        // from the matching local library
+                                        // entry (flash registry first, then
+                                        // package-name matching in
+                                        // AppViewModel), so a row can be
+                                        // recognised by its picture.
                                         if let thumbData = vm.devicePosterThumbs[item.id],
                                            let thumb = UIImage(data: thumbData) {
                                             Image(uiImage: thumb)
@@ -562,7 +564,14 @@ struct DevicePosterCleanupView: View {
                                                 }
                                         }
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text(item.name)
+                                            // Run #124: prefer the local
+                                            // library display name when the
+                                            // row's source entry is known —
+                                            // the store-reported name carries
+                                            // the rewritten packaged base
+                                            // (e.g. "1572.WWDC_2022-…"), which
+                                            // identifies nothing.
+                                            Text(vm.devicePosterDisplayNames[item.id] ?? item.name)
                                                 .font(.subheadline.bold())
                                                 .foregroundStyle(.primary)
                                                 .lineLimit(1)
