@@ -18,6 +18,14 @@ final class LoopbackTunnelManager: ObservableObject {
     static let ifaceIP = "10.7.1.1/32"
     static let peerIP = "10.7.0.1/32"
 
+    /// The one shared instance (run #127). The settings-page row and
+    /// the wallpaper-page status area drive the same saved VPN
+    /// configuration, so both must observe and control a single
+    /// manager: each private instance filters NEVPNStatus change
+    /// notifications against its own connection object, and two
+    /// instances can disagree about the tunnel's state.
+    static let shared = LoopbackTunnelManager()
+
     @Published private(set) var status: NEVPNStatus = .invalid
     @Published private(set) var isBusy = false
     @Published var lastError: String?

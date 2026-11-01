@@ -8,6 +8,86 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import NetworkExtension
+
+// MARK: - 状态区回环呈现（run #127，纯逻辑，可离线断言）
+
+/// 内置回环隧道状态的纯枚举镜像，与 NEVPNStatus 一一对应。
+/// 下面的映射逻辑只依赖这个镜像（不依赖 NetworkExtension），
+/// 因此可原文抽出、在离线 harness 里跑断言。
+enum LoopbackPhase {
+    case connected
+    case connecting
+    case disconnecting
+    case reasserting
+    case disconnected
+    case invalid
+    case unknown
+}
+
+/// 壁纸页状态区回环按钮与「回环连接」状态行的呈现结果。
+/// 可发现性纪律（run #127，Sage 2026-11-02 真机反馈：设置页的
+/// 内置回环开关他根本没找到）：壁纸页这一处就是唯一入口的心智
+/// 模型——按钮标题在任何状态下都必须写明「内置回环」，不许只
+/// 写含糊的「连接」二字让人分不清连的是内是外；连接状态紧贴
+/// 按钮下方一行显示（见状态区排版）。
+struct LoopbackPresentation {
+    let buttonTitle: String
+    let buttonSubtitle: String
+    let buttonEnabled: Bool
+    let lineValue: String
+    let lineOK: Bool
+    let lineWarn: Bool
+}
+
+/// 纯映射（run #127）：隧道相位 + 保存配置忙碌位 + 外部回环探活
+/// → 按钮标题/副文案/可用性与状态行文案。
+///
+/// 「回环连接」一行的口径：以内置隧道状态为主——内置已连接 /
+/// 连接中 / 断开中都据实显示；内置不在场（未连接 / 未配置）时，
+/// 外部 LocalDevVPN 在跑（externalUp = vm.vpnUp 的接口扫描结果）
+/// 仍显示「已连接」，因为刷入照样走得通。isBusy 表示 start() 正
+/// 在保存 VPN 配置（NEVPNStatus 尚未翻到 connecting），此时按
+/// 连接中呈现，避免按钮在授权弹窗前后闪回可点状态。
+func loopbackPresentation(phase: LoopbackPhase,
+                          isBusy: Bool,
+                          externalUp: Bool) -> LoopbackPresentation {
+    let effective: LoopbackPhase =
+        (isBusy && (phase == .disconnected || phase == .invalid || phase == .unknown))
+        ? .connecting : phase
+    switch effective {
+    case .connected:
+        return LoopbackPresentation(
+            buttonTitle: "断开内置回环",
+            buttonSubtitle: "内置回环已连接，点击断开",
+            buttonEnabled: true,
+            lineValue: "已连接（内置回环）",
+            lineOK: true, lineWarn: false)
+    case .connecting, .reasserting:
+        return LoopbackPresentation(
+            buttonTitle: "内置回环连接中…",
+            buttonSubtitle: "正在建立内置回环…",
+            buttonEnabled: false,
+            lineValue: "连接中…",
+            lineOK: false, lineWarn: true)
+    case .disconnecting:
+        return LoopbackPresentation(
+            buttonTitle: "内置回环断开中…",
+            buttonSubtitle: "正在断开内置回环…",
+            buttonEnabled: false,
+            lineValue: "断开中…",
+            lineOK: false, lineWarn: true)
+    case .disconnected, .invalid, .unknown:
+        return LoopbackPresentation(
+            buttonTitle: "连接内置回环",
+            buttonSubtitle: phase == .invalid
+                ? "CocoWall 自带回环；首次连接会弹出系统提示，允许添加 VPN 配置"
+                : "CocoWall 自带回环，点按直接连接，无需其他 App",
+            buttonEnabled: true,
+            lineValue: externalUp ? "已连接" : "未连接",
+            lineOK: externalUp, lineWarn: false)
+    }
+}
 
 struct TendiesView: View {
     @EnvironmentObject var vm: AppViewModel
@@ -23,7 +103,30 @@ struct TendiesView: View {
         !vm.tendieItems.isEmpty && vm.tendieItems.allSatisfy { $0.isSelected }
     }
 
-    // MARK: - 状态区（run #124）
+    // MARK: - 状态区（run #124 / #127）
+
+    /// 与设置页 VPNStatusRow 共用同一 LoopbackTunnelManager 共享
+    /// 实例（run #127 收敛）：同一份 VPN 配置档案、同一状态源，
+    /// 两处启停互通、状态一致。
+    @ObservedObject private var loopback = LoopbackTunnelManager.shared
+
+    private var loopbackPhase: LoopbackPhase {
+        switch loopback.status {
+        case .connected: return .connected
+        case .connecting: return .connecting
+        case .disconnecting: return .disconnecting
+        case .reasserting: return .reasserting
+        case .disconnected: return .disconnected
+        case .invalid: return .invalid
+        @unknown default: return .unknown
+        }
+    }
+
+    private var loopbackUI: LoopbackPresentation {
+        loopbackPresentation(phase: loopbackPhase,
+                             isBusy: loopback.isBusy,
+                             externalUp: vm.vpnUp)
+    }
 
     private var systemStatusLevel: SystemSupportLevel {
         AppViewModel.systemSupportLevel(version: UIDevice.current.systemVersion)
@@ -80,45 +183,74 @@ struct TendiesView: View {
                     }
                 }
 
-                // Section -1: 状态区（run #124 追加，页面最上方）：
-                // 「连接回环」入口 + 配对文件 / 本机系统 / 回环连接
-                // 三项状态。三项状态都读现成只读来源（配对文件 =
-                // vm.hasPairingFile，refreshPairingFile 校验规范配对
-                // 文件存在且非空；本机系统 = UIDevice 系统版本 +
-                // AppViewModel.systemSupportLevel 判定；回环连接 =
-                // vm.vpnUp，refreshNetworkStatus 的接口扫描探活，
-                // 不开新连接），进页面时查一次（见 onAppear），
-                // 区标题右侧按钮手动刷新。
+                // Section -1: 状态区（run #124 追加、run #127 改回环
+                // 接线，页面最上方）：「连接回环」按钮 + 配对文件 /
+                // 本机系统 / 回环连接三项状态。配对文件 =
+                // vm.hasPairingFile（refreshPairingFile 校验规范配对
+                // 文件存在且非空）；本机系统 = UIDevice 系统版本 +
+                // AppViewModel.systemSupportLevel 判定。「连接回环」
+                // 按钮与「回环连接」一行自 run #127 起改接内置回环
+                // （LoopbackTunnelManager 共享实例，与设置页同一份
+                // VPN 配置）：按钮点按直接启停 CocoWall 自己的隧道
+                // 扩展、任何状态下都不跳转外部 App；状态行以内置
+                // NEVPNStatus 为主口径，内置不在场时外部回环在跑
+                // （vm.vpnUp 接口扫描）仍显示已连接（口径详见文件
+                // 顶部 loopbackPresentation）。进页面时查一次（见
+                // onAppear），区标题右侧按钮手动刷新。
                 Section {
                     Button {
-                        // 与设置侧既有「启动 LocalDevVPN」同一动作：
-                        // 打开 LocalDevVPN 的 URL scheme 由它建回环；
-                        // 本页新增顶部入口，设置侧原入口保留。
-                        if let url = URL(string: "localdevvpn://") {
-                            UIApplication.shared.open(url)
+                        // run #127：未连接时点按 = 保存 VPN 配置
+                        // （首次触发系统「添加 VPN 配置」授权弹窗，
+                        // 属预期）并启动内置隧道；已连接时点按断开。
+                        // 连接中/断开中按钮禁用，不重复触发。
+                        if loopbackPhase == .connected {
+                            loopback.stop()
+                        } else {
+                            loopback.start()
                         }
+                        // 外部口径（vm.vpnUp）顺手刷新一次；内置
+                        // 状态由共享实例的 NEVPNStatus 观察自动
+                        // 跟随，不用手刷、不用猜。
+                        vm.refreshNetworkStatus()
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "network")
                                 .font(.title3)
                                 .foregroundStyle(Color.accentColor)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("连接回环")
+                                Text(loopbackUI.buttonTitle)
                                     .font(.headline)
                                     .foregroundStyle(.primary)
-                                Text("打开 LocalDevVPN 建立回环连接")
+                                Text(loopbackUI.buttonSubtitle)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
+                            if !loopbackUI.buttonEnabled {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else if loopbackPhase == .connected {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.body)
+                                    .foregroundStyle(Color.green)
+                            } else {
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .disabled(!loopbackUI.buttonEnabled)
 
+                    // run #127：回环状态紧贴按钮显示（Sage 真机
+                    // 反馈：设置页的内置开关根本没被找到——壁纸页
+                    // 这一处就是唯一入口，状态必须一眼可见）。
+                    statusLine(title: "回环连接",
+                               value: loopbackUI.lineValue,
+                               ok: loopbackUI.lineOK,
+                               warn: loopbackUI.lineWarn)
                     statusLine(title: "配对文件",
                                value: vm.hasPairingFile ? "已识别" : "未识别",
                                ok: vm.hasPairingFile)
@@ -126,9 +258,16 @@ struct TendiesView: View {
                                value: systemStatusText,
                                ok: systemStatusLevel == .supported,
                                warn: systemStatusLevel != .supported)
-                    statusLine(title: "回环连接",
-                               value: vm.vpnUp ? "已连接" : "未连接",
-                               ok: vm.vpnUp)
+
+                    // run #127：启停失败（尤其签名 / entitlement
+                    // 类错误）原样显示在状态区内——管理器文案已是
+                    // 「中文前缀 + 系统错误原文」，是下一步诊断
+                    // 签名链的关键证据，不许吞成一句「失败」。
+                    if let loopbackError = loopback.lastError {
+                        Text(loopbackError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 } header: {
                     HStack {
                         Text("状态")
@@ -136,6 +275,7 @@ struct TendiesView: View {
                         Button {
                             vm.refreshPairingFile()
                             vm.refreshNetworkStatus()
+                            Task { await loopback.reload() }
                         } label: {
                             Image(systemName: "arrow.clockwise")
                         }
@@ -371,6 +511,10 @@ struct TendiesView: View {
                 // 探活状态（均为现成只读轻量检查，不开新连接）。
                 vm.refreshPairingFile()
                 vm.refreshNetworkStatus()
+                // 状态区回环（run #127）：进页面再对一次内置回环
+                // 的已保存配置与状态（共享实例 init 已载入过，
+                // 这里只读对齐，不触发任何启停）。
+                Task { await loopback.reload() }
             }
             .task {
                 if vm.posterBoardContainer.isEmpty {

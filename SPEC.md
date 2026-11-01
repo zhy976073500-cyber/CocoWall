@@ -1482,3 +1482,81 @@ Sage 2026-11-01 21:28 追加，与 #125（内置回环扩展，UI 在设置
 真机验收追加：开壁纸页顶部四件齐全；未开 LocalDevVPN 时
 回环显示未连接、开启后手动刷新显示已连接；配对文件、本机
 系统（iOS 27.0.1 · 支持）与真机事实相符。
+
+## 改动登记 · 壁纸页连接回环改接内置回环（run #127，2026-11-02，Sage 纠正：回环长在软件本身，不下载、不跳转 LocalDevVPN）
+
+### 病因（真机定案）
+
+#126 真机（Sage 2026-11-02 01:21）：点壁纸页顶部状态区的
+「连接回环」仍跳转到 LocalDevVPN。#124 当时把该按钮接的
+是旧的外跳动作，与 Sage 本意（回环长在 CocoWall 本体里、
+用户在 App 内点连接就直接连上）不符。#125 的内置回环开关
+只落在设置页 VPNStatusRow，壁纸页没有接上。
+补充定案（Sage 2026-11-02 01:25）：设置页里那个内置回环
+开关他根本没找到——可发现性就是这次的真 bug。故本轮定纪
+律：壁纸页这一处就是唯一入口的心智模型，不依赖用户先去
+设置页开任何东西；按钮标题在任何状态下都写明「内置回
+环」（不许只写含糊的「连接」二字）；连接状态紧贴按钮下
+方一行显示。设置侧原样保留，不为此额外做引导。
+
+### 改动清单（只动 TendiesView 状态区 + 管理器共享接线；ContentView 仅一行接线）
+
+1. **TendiesView 状态区「连接回环」按钮改接内置回环**：
+   改接 LoopbackTunnelManager（start/stop）。未连接点按 =
+   保存 VPN 配置（首次触发系统「添加 VPN 配置」授权弹窗，
+   属预期）并启动 CocoWallTunnel 扩展；标题按状态恒带「内
+   置回环」：未连接「连接内置回环」（副文案「CocoWall 自
+   带回环，点按直接连接，无需其他 App」；未配置时副文案
+   提示首次系统授权）、连接中「内置回环连接中…」/断开中
+   「内置回环断开中…」（按钮禁用 + ProgressView）、已连接
+   「断开内置回环」。「回环连接」状态行挪到紧贴按钮下方
+   （在配对文件/本机系统之前）。按钮任何状态下不跳
+   localdevvpn:// 或 App Store；壁纸页可见文案中的
+   LocalDevVPN 字样一并撤掉（文件内仅剩口径说明注释）。
+2. **状态行双口径**：「回环连接」一行改由纯函数
+   loopbackPresentation 映射——以内置隧道 NEVPNStatus 为主
+   （已连接（内置回环）/连接中…/断开中…/未连接）；内置不
+   在场时外部 LocalDevVPN 在跑（vm.vpnUp 接口扫描）仍显示
+   「已连接」（刷入照样可用）。isBusy（正在保存配置、状态
+   尚未翻转）按连接中呈现，防重复点。进页面 onAppear 与区
+   头刷新按钮都会 reload 内置状态 + 刷新外部探活。
+3. **错误原样进状态区**：loopback.lastError 若有值，在状态
+   区内以红色 caption 原样显示（管理器文案已是「中文前缀
+   + 系统错误原文」，如「开启内置回环失败：…」），供截图
+   回传诊断签名/entitlement 链，不吞错。
+4. **管理器收敛为共享实例**：LoopbackTunnelManager 新增
+   static let shared；TendiesView 与 ContentView 的
+   VPNStatusRow 都改用共享实例（按 provider bundle id
+   com.coco.cocowall.tunnel 匹配的同一份系统 VPN 配置档
+   案）。ContentView 除该一行接线外逐字未动；隧道扩展本
+   体与管理器核心逻辑（start/stop/reload 实现）未动。
+
+### 本地验证
+
+- swiftc -parse：TendiesView / ContentView /
+  LoopbackTunnelManager 三文件全过（本地 Swift 6.1 工具链，
+  parse 级；完整类型检查以 CI 为准）。
+- 按钮状态映射原文抽出 harness（LoopbackPhase 纯枚举镜像
+  NEVPNStatus 七态 + loopbackPresentation 本体）：16 条断
+  言全过——五态×（忙碌位/外部探活）关键组合的标题/可用性/
+  状态行文案全对；副文案口径（invalid 提示首次授权、
+  connected 说明点按断开）对；全部呈现文案无 LocalDevVPN
+  字样；全部状态下按钮标题均含「内置回环」（可发现性纪
+  律断言）。
+
+### 未动清单
+
+- ContentView 设置侧 UI 与行为（仅 @StateObject→共享实例
+  一行接线）；隧道扩展 CocoWallTunnel 本体；AppViewModel；
+  TendiesEngine；poster_store；project.yml；.github/workflows。
+
+### 未验证项（真机验收标准）
+
+- 装 #127 后在壁纸页点「连接回环」：首次应弹系统「添加
+  VPN 配置」授权 → 标题变「连接中…」按钮禁用 → 变「断开
+  回环」且状态行「已连接（内置回环）」→ 不开 LocalDevVPN
+  直接刷入应跑通。全程不应出现跳转 LocalDevVPN。
+- 若签名链未授予 networkextension 权限，点按后状态区应出
+  现一行红字「开启内置回环失败：<系统错误原文>」（典型为
+  NEVPNError / entitlement 类描述）——截图该行即为下一步诊
+  断证据。

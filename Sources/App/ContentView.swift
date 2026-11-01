@@ -1243,7 +1243,11 @@ struct PairingTab: View {
 
 struct VPNStatusRow: View {
     @ObservedObject var vm: AppViewModel
-    @StateObject private var loopback = LoopbackTunnelManager()
+    // run #127: shared instance — the wallpaper-page status area
+    // drives the same manager, so both surfaces share one saved VPN
+    // configuration and one status source (wiring only; this row's
+    // UI and behavior are unchanged).
+    @ObservedObject private var loopback = LoopbackTunnelManager.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
