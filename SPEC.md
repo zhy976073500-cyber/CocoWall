@@ -1560,3 +1560,174 @@ Sage 2026-11-01 21:28 追加，与 #125（内置回环扩展，UI 在设置
   现一行红字「开启内置回环失败：<系统错误原文>」（典型为
   NEVPNError / entitlement 类描述）——截图该行即为下一步诊
   断证据。
+
+## 改动登记 · 壁纸页整页改版（run #128，2026-11-02，Sage 设计定稿 v5/v8 一次整批实装）
+
+### 定稿来源
+
+Sage 2026-11-02 凌晨亲自美术指导、逐项删改后定稿：主页面
+照设计稿 v5（~/workspace/cocowall-design/wallpaper-page-v5.png）、
+全屏选择页照 v8（imported-picker-page-v8.png）。核心口径：
+扇形排版是他定的、不得被替换；展开 = 全屏 push 进独立页面
+（不是弹层、不是原地换网格，此前两版理解均被当场纠正）。
+
+### 改动清单（只重排布局与位置，全部现有行为与判定逻辑复用）
+
+1. **TendiesView 整页改版**（Form → ScrollView 自绘）：
+   - 页头：左大标题「我的壁纸」；右上角圆形展开按钮（浅蓝
+     底、蓝色 chevron.down），点按经现有 NavigationStack 的
+     navigationDestination push 全屏「已导入的壁纸」页。原
+     工具栏 + 导入按钮从页头移除；系统导航栏在本页隐藏
+     （toolbar(.hidden, for: .navigationBar)），推送页自带
+     系统导航栏（返回 + 标题 + 全选）。
+   - 扇形壁纸区：本地库壁纸横向 ScrollView，卡片 150×200
+     竖幅、按索引循环旋转 [-8,-4,0,4,8] 度、HStack 负间距
+     （-62）交叠、zIndex 按与中心索引距离叠放（中间靠前），
+     从左至右排列、左滑浏览、右侧自然露半张。缩略图/名称
+     用现有数据；已选蓝圈描边 + 右下蓝勾徽标；点按切换选中
+     （vm.tendieItems[i].isSelected，与旧列表同一选择模型）。
+     空库沿用旧空态口径（文案中原「点右上角 +」因按钮搬家
+     改为「点下方『导入壁纸』」）。
+   - 已选行：左「已选 <名字、…>」（未选显示「还没选择要刷
+     入的壁纸」）、右「共 N 张」。
+   - 底部 sheet 区（浅灰 #F7F7FA 圆角 28 大卡、白卡瓷砖）：
+     a. 顶部白色胶囊状态条：回环 / 配对文件 / 系统三段，
+        值语义色（已连接/已识别/支持=绿，未连接/未识别=红，
+        系统风险提示=橙、不支持=红），段前同色小圆点。判定
+        全部复用现有实现：回环 = #127 loopbackPresentation
+        同源的 NEVPN 主口径 + vm.vpnUp 兜底（紧凑短值）；
+        配对文件 = vm.hasPairingFile；系统 = systemSupportLevel
+        （紧凑文案「iOS x · 支持/风险提示/不支持」）。刷新触发
+        沿用 #127（onAppear 三查 + 管理器 NEVPN 观察），本轮
+        不做手动刷新按钮（旧状态区右上角刷新按钮随旧区撤除）。
+        启停失败红字沿用 #127 纪律：loopback.lastError 原文
+        显示在状态条正下方，有错才显示。
+     b. 主按钮：整宽蓝胶囊「刷入 N 张壁纸」，行为 = 现有
+        vm.flashSelectedTendies()；刷入中呈现沿用旧口径
+        （spinner + 进度条，白卡内）；N=0 禁用。
+     c. 「导入壁纸」白色宽条紧贴主按钮下方（蓝色圆圈 + 号）：
+        原页头 + 号搬家，showFilePicker → TendiesDocumentPickerView
+        → vm.importTendieFiles 链路与原来完全一致。
+     d. 小字行：容器已检测到时单行「目标：已检测到
+        PosterBoard 容器 ✓ · 刷入后先尝试免注销刷新」；未
+        检测到时沿用旧文案「刷入时将自动检测 PosterBoard
+        容器。」。注：旧第二行尾句「如未生效可手动点注销」
+        因注销按钮已删（见删除项）不再成立，按定稿稿面只保留
+        前半口径。
+     e. 双列瓷砖：左「获取更多壁纸」（副文案定稿稿面
+        「飞书合集，持续更新」，行为不变 = 系统浏览器打开
+        飞书 wiki Oi6pwrRp9i8wd2kBl0Lc4bn9nTb）；右「内置回环」
+        （副文案随状态：已连接·点击断开=绿 / 未连接·点击连接 /
+        连接中…=橙；点击 = #127 现成启停：LoopbackTunnelManager.shared
+        start/stop，任何状态不跳转外部 App；忙态禁用）。
+     f. 整宽瓷砖压底「清除壁纸」（红色垃圾桶，副文案「检测
+        并清除本机已导入的壁纸」）：点击 = 旧「检测本机已导
+        入的壁纸」入口原行为（vm.showDevicePosterSheet = true
+        + detectDevicePosters()），进现有 DevicePosterCleanupView；
+        devicePosterStatus 非空时仍在 sheet 内显示一行（旧
+        信息面保留）。
+   - 长按菜单（判断性保留）：旧列表行的「详情 / 删除」在新
+     版式无位置，扇形卡与选择页格子均挂 contextMenu 提供
+     详情（TendieDetailSheet）与删除（vm.deleteTendie），
+     不改变点按 = 选中的定稿行为。
+   - 缩略图共用组件 TendieThumbnailView（扇形卡与选择页
+     共用；缺预览时 .task 调 vm.regenerateTendiePreview，
+     与旧行同口径）。旧 TendieRowView 保留未删（暂无引用）。
+
+2. **新增全屏选择页 ImportedWallpapersView.swift**（新文件，
+   project.yml 的 Sources/App 目录源自动纳入，无需改工程）：
+   系统导航栏（返回、标题「已导入的壁纸」、右上「全选/取消
+   全选」）；副行「共 N 张 · 已选 M 张，点按勾选要刷入的
+   壁纸」；三列 LazyVGrid 竖幅大格（缩略图 + 名称，未选右
+   下空心圈、已选蓝圈描边 + 蓝勾徽标）；点按切换选中，与
+   扇形区共用同一份 isSelected 状态、实时一致；底部固定栏
+   左「已选 M 张」、右蓝色胶囊「完成」（dismiss pop 回
+   壁纸页）。
+
+3. **日志搬家**：SettingsView（设置页本体在 SettingsView.swift，
+   ScrollView + 卡片式，非 ContentView 内 Form）在现有两张
+   入口卡（作者 / 设备配对）之后、页面最下面追加日志卡：
+   CompactLogView「刷入日志（\(vm.tendiesFlashLog.count) 行）」
+   绑 vm.tendiesFlashLog、「活动日志（\(vm.log.count) 行）」
+   绑 vm.log，标题与 onClear 与现有用法对齐，并沿用全 App
+   「非空才显示」口径。密码盘页 passthm 刷入日志、配对页
+   活动日志均不动。SettingsView 为此新增 @EnvironmentObject
+   vm 注入（根 TabView 环境现成）。
+
+4. **壁纸页删除项**：强制刷新 PosterBoard 缓存开关行（其
+   resetProtections 参数本就是死的——TendiesEngine 内写死
+   true，删 UI 即可；AppViewModel.resetPBProtections 属性
+   按定稿保留不用）；注销（NeoSpring）按钮行（NeoSpring
+   overlay 与 vm.isNeoSpringing 复位逻辑保留——刷入管线侧
+   仍可能置位）；壁纸页刷入日志 Section（CompactLogView
+   从 TendiesView 撤除，见 3）；#126/#127 旧状态区整块
+   （被 4a 状态条取代；loopbackPresentation 纯函数与管理
+   器接线保留复用）；旧壁纸库列表与「壁纸库」小节（被扇
+   形区 + 全屏页取代；旧列表头部的全选入口由全屏页右上
+   「全选」承接）；旧「获取更多壁纸」独立 Section（改瓷
+   砖入 sheet）；旧「检测本机已导入的壁纸」独立 Section
+   （改「清除壁纸」瓷砖入 sheet）。不新增「配对文件教程」
+   「本机系统」按钮（Sage 已删；配对/系统信息只在状态条
+   显示）。
+
+5. **未动**：TendiesEngine.swift、rust 树、受保护文件、
+   CI workflow、刷入管线 / 标识重写 / 闪存登记 / 清理页
+   本体 / 配对页 / 制作页 / 密码盘页 / 底栏四 tab 结构。
+   AppViewModel 本轮零改动（删除项只删 UI）。
+
+### 与设计稿的已知偏差
+
+- v5 稿页头右上角仍画 + 号（那是加号搬家前的稿），实装按
+  后续定稿（v6/v7 起）画展开按钮；v5 的页脚小字与稿面有
+  一行合一行之差（见 1d 注）。
+- 扇形区 zIndex 按「与中心索引距离」叠放，横滑时视觉中心
+  与索引中心不完全重合——静态稿无法表达滚动中状态，取
+  索引中心为近似；真机观感待 Sage 验。
+- 全屏页底栏在本 App 的 push 呈现下位于系统 tab bar 之上
+  （safeAreaInset），稿面为无底栏全屏——以现成导航模式
+  为准，未改 tab 架构（任务书口径）。
+
+### 本地核查
+
+- swiftc -parse 三文件（TendiesView / ImportedWallpapersView /
+  SettingsView）全过；推送前远程 head = 808fa28，三份将改
+  文件（TendiesView / SettingsView / SPEC）远程内容与本地
+  逐字节一致、无分叉。
+- 真机视觉与交互（扇形手感、状态条折行、push 转场、日志
+  位置）未验证，等 Sage 装机验。
+
+### #128 附则 · 液态玻璃（Sage 2026-11-02 追加，同轮生效）
+
+**Standing 要求（全 App 长期有效）**：所有新建 / 重排的 UI
+表面默认按 iOS 26 液态玻璃实现——原生 glassEffect +
+GlassEffectContainer 收拢同组玻璃元素，按钮类优先系统
+glass / glassProminent 样式；部署目标仍含 iOS 17–25，用
+编译期 #if compiler(>=6.2)（旧 SDK 不编译玻璃分支）+ 运行时
+#available(iOS 26, *) 双路，旧系统回退 .ultraThinMaterial
+等价外观，功能与布局不因回退而变。本轮只覆盖 #128 新表面；
+其余页面（制作 / 密码盘 / 设置正文）的玻璃化为紧随其后的
+独立批次，不在本轮扩改。既有底栏透镜 dock 是既有玻璃实现，
+不动。
+
+本轮落点（共用辅助在 TendiesView.swift 顶部：View.glassSurface
+（tint / interactive 可选）+ GlassGroup 容器）：
+
+- 壁纸页错误横幅：glassSurface（红 tint）。
+- 页头展开圆钮：glassSurface(Circle, 蓝 tint, interactive)
+  ——固定 38pt 圆形几何，系统 .glass 样式无法约束尺寸，
+  故用 glassEffect 表面实现（仍是原生玻璃 + interactive）。
+- 底部 sheet：整体入 GlassGroup（GlassEffectContainer），
+  面板本体 glassSurface（圆角 28）。
+- 状态胶囊条：glassSurface(Capsule)，在 sheet 的玻璃容器内。
+- 刷入主按钮：iOS 26 用系统 .glassProminent 样式（tint 蓝、
+  controlSize .large）；旧系统回退自绘蓝胶囊（原 #128
+  实现）。刷入中进度卡同换 glassSurface。
+- 导入宽条 / 双列瓷砖 / 清除宽条：glassSurface（圆角 20，
+  interactive: true），不再自绘白底。
+- 全屏选择页底部固定栏：入 GlassGroup，栏面 glassSurface
+  (Rectangle)；「完成」按钮同刷入主按钮双路（glassProminent /
+  自绘蓝胶囊回退）。
+- 扇形区无容器底板（卡片直接浮于页面），无玻璃面可加；
+  卡片本体是壁纸缩略图，不玻璃化。
+- 设置页日志卡不在本轮清单（属设置正文，随后续独立批次
+  一起玻璃化），本轮维持入口卡同款卡面。

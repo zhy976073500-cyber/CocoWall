@@ -4,6 +4,7 @@ import UIKit
 /// 设置页：沿用我方旧版的卡片版式。只有作者入口与配对入口两行
 /// （配对页本体仍是上游 PairingTab，从这里以 sheet 打开）。
 struct SettingsView: View {
+    @EnvironmentObject var vm: AppViewModel
     @State private var showPairingPage = false
 
     var body: some View {
@@ -12,6 +13,7 @@ struct SettingsView: View {
                 VStack(spacing: 16) {
                     authorEntry
                     pairingEntry
+                    logSection
                 }
                 .padding(20)
             }
@@ -81,5 +83,40 @@ struct SettingsView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: - 日志（run #128 从壁纸页搬家到设置页最下面）
+
+    /// 刷入日志 + 活动日志，沿用全 App 统一的 CompactLogView 与
+    /// 「非空才显示」口径（与配对页活动日志、密码盘刷入日志一致）。
+    @ViewBuilder
+    private var logSection: some View {
+        if !vm.tendiesFlashLog.isEmpty {
+            logCard {
+                CompactLogView(
+                    title: "刷入日志（\(vm.tendiesFlashLog.count) 行）",
+                    lines: vm.tendiesFlashLog,
+                    onClear: { vm.tendiesFlashLog.removeAll() }
+                )
+            }
+        }
+        if !vm.log.isEmpty {
+            logCard {
+                CompactLogView(
+                    title: "活动日志（\(vm.log.count) 行）",
+                    lines: vm.log,
+                    onClear: { vm.log.removeAll() }
+                )
+            }
+        }
+    }
+
+    /// 与入口行同款卡面，把日志包成一张卡放在页面最下面。
+    private func logCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .background(Color(UIColor.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .shadow(color: .black.opacity(0.06), radius: 10, x: 0, y: 3)
     }
 }

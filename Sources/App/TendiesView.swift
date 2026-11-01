@@ -10,6 +10,70 @@ import SwiftUI
 import UniformTypeIdentifiers
 import NetworkExtension
 
+// MARK: - 液态玻璃（run #128 起全 App standing 要求）
+//
+// 新建 / 重排的 UI 表面一律走这组辅助：iOS 26 用原生
+// glassEffect / GlassEffectContainer 与 glass / glassProminent
+// 按钮样式；部署目标仍含 iOS 17–25，旧系统回退
+// .ultraThinMaterial 等价外观，功能与布局不因回退而变。
+// 玻璃 API 只存在于新 SDK：编译期以 #if compiler(>=6.2)
+// 分流（旧 SDK 根本不编译玻璃分支），运行时再以
+// #available(iOS 26, *) 把关。
+
+extension View {
+    /// 玻璃表面：26+ 原生玻璃（可带 tint / 可 interactive），
+    /// 旧系统 = ultraThinMaterial + 同色淡 tint 叠色 + 发丝描边。
+    @ViewBuilder
+    func glassSurface<S: Shape>(_ shape: S, tint: Color? = nil, interactive: Bool = false) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            let baseGlass = Glass.regular
+            let tintedGlass = tint.map { baseGlass.tint($0) } ?? baseGlass
+            self.glassEffect(interactive ? tintedGlass.interactive() : tintedGlass, in: shape)
+        } else {
+            glassMaterialFallback(shape, tint: tint)
+        }
+        #else
+        glassMaterialFallback(shape, tint: tint)
+        #endif
+    }
+
+    @ViewBuilder
+    fileprivate func glassMaterialFallback<S: Shape>(_ shape: S, tint: Color?) -> some View {
+        self.background {
+            ZStack {
+                shape.fill(.ultraThinMaterial)
+                if let tint {
+                    shape.fill(tint)
+                }
+            }
+        }
+        .overlay {
+            shape.stroke(Color.primary.opacity(0.05), lineWidth: 0.5)
+        }
+    }
+}
+
+/// 玻璃收拢容器：26+ 用 GlassEffectContainer 让同组玻璃元素
+/// 共享采样与融合；旧系统直通（各表面各自走材质回退）。
+struct GlassGroup<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer {
+                content()
+            }
+        } else {
+            content()
+        }
+        #else
+        content()
+        #endif
+    }
+}
+
 // MARK: - 状态区回环呈现（run #127，纯逻辑，可离线断言）
 
 /// 内置回环隧道状态的纯枚举镜像，与 NEVPNStatus 一一对应。
@@ -94,16 +158,17 @@ struct TendiesView: View {
     @State private var showFilePicker = false
     @State private var selectedDetailItem: TendieItem? = nil
     @State private var isNeoSpringing = false
+    @State private var showImportedPage = false
 
     private var selectedCount: Int {
         vm.tendieItems.filter { $0.isSelected }.count
     }
 
-    private var selectedAll: Bool {
-        !vm.tendieItems.isEmpty && vm.tendieItems.allSatisfy { $0.isSelected }
+    private var selectedItems: [TendieItem] {
+        vm.tendieItems.filter { $0.isSelected }
     }
 
-    // MARK: - 状态区（run #124 / #127）
+    // MARK: - 状态条（run #128 改版：底部 sheet 顶部胶囊状态条）
 
     /// 与设置页 VPNStatusRow 共用同一 LoopbackTunnelManager 共享
     /// 实例（run #127 收敛）：同一份 VPN 配置档案、同一状态源，
@@ -132,40 +197,57 @@ struct TendiesView: View {
         AppViewModel.systemSupportLevel(version: UIDevice.current.systemVersion)
     }
 
-    private var systemStatusText: String {
+    /// 状态条「系统」段的值（run #128 紧凑口径）：iOS 版本 + 支持
+    /// 等级短文案；等级判定仍走 AppViewModel.systemSupportLevel。
+    private var systemSegmentText: String {
         let v = UIDevice.current.systemVersion
         switch systemStatusLevel {
         case .supported:
             return "iOS \(v) · 支持"
         case .patchedRisk:
-            return "iOS \(v) · 风险提示（27.2 起通道被修补）"
+            return "iOS \(v) · 风险提示"
         case .tooOld:
-            return "iOS \(v) · 不支持（需 iOS 17.0 起）"
+            return "iOS \(v) · 不支持"
         }
     }
 
-    private func statusLine(title: String, value: String, ok: Bool, warn: Bool = false) -> some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(ok ? Color.green : (warn ? Color.orange : Color.secondary))
-                .frame(width: 8, height: 8)
-            Text(title)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-            Spacer()
-            Text(value)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.trailing)
+    private var systemSegmentColor: Color {
+        switch systemStatusLevel {
+        case .supported: return .green
+        case .patchedRisk: return .orange
+        case .tooOld: return .red
+        }
+    }
+
+    /// 状态条「回环」段的值与语义色（run #128）：以内置隧道状态为
+    /// 主口径（与 run #127 loopbackPresentation 同一判定），内置不
+    /// 在场时外部回环在跑（vm.vpnUp）仍算已连接。
+    private var loopbackSegment: (value: String, color: Color) {
+        switch loopbackPhase {
+        case .connected:
+            return ("已连接", .green)
+        case .connecting, .reasserting:
+            return ("连接中…", .orange)
+        case .disconnecting:
+            return ("断开中…", .orange)
+        case .disconnected, .invalid, .unknown:
+            if loopback.isBusy { return ("连接中…", .orange) }
+            return vm.vpnUp ? ("已连接", .green) : ("未连接", .red)
+        }
+    }
+
+    private func toggleSelection(itemID: UUID) {
+        if let idx = vm.tendieItems.firstIndex(where: { $0.id == itemID }) {
+            vm.tendieItems[idx].isSelected.toggle()
         }
     }
 
     var body: some View {
         NavigationStack {
-            Form {
-                // Notice Banners
-                if let err = vm.errorMessage {
-                    Section {
+            ScrollView {
+                VStack(spacing: 0) {
+                    // 错误横幅（沿用旧版文案与关闭行为）
+                    if let err = vm.errorMessage {
                         HStack(spacing: 8) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundColor(.red)
@@ -180,313 +262,25 @@ struct TendiesView: View {
                                     .foregroundColor(.secondary)
                             }
                         }
+                        .padding(12)
+                        .glassSurface(RoundedRectangle(cornerRadius: 14, style: .continuous), tint: Color.red.opacity(0.10))
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
                     }
+
+                    headerRow
+                    fanZone
+                    if !vm.tendieItems.isEmpty {
+                        selectedLine
+                    }
+                    bottomSheet
                 }
-
-                // Section -1: 状态区（run #124 追加、run #127 改回环
-                // 接线，页面最上方）：「连接回环」按钮 + 配对文件 /
-                // 本机系统 / 回环连接三项状态。配对文件 =
-                // vm.hasPairingFile（refreshPairingFile 校验规范配对
-                // 文件存在且非空）；本机系统 = UIDevice 系统版本 +
-                // AppViewModel.systemSupportLevel 判定。「连接回环」
-                // 按钮与「回环连接」一行自 run #127 起改接内置回环
-                // （LoopbackTunnelManager 共享实例，与设置页同一份
-                // VPN 配置）：按钮点按直接启停 CocoWall 自己的隧道
-                // 扩展、任何状态下都不跳转外部 App；状态行以内置
-                // NEVPNStatus 为主口径，内置不在场时外部回环在跑
-                // （vm.vpnUp 接口扫描）仍显示已连接（口径详见文件
-                // 顶部 loopbackPresentation）。进页面时查一次（见
-                // onAppear），区标题右侧按钮手动刷新。
-                Section {
-                    Button {
-                        // run #127：未连接时点按 = 保存 VPN 配置
-                        // （首次触发系统「添加 VPN 配置」授权弹窗，
-                        // 属预期）并启动内置隧道；已连接时点按断开。
-                        // 连接中/断开中按钮禁用，不重复触发。
-                        if loopbackPhase == .connected {
-                            loopback.stop()
-                        } else {
-                            loopback.start()
-                        }
-                        // 外部口径（vm.vpnUp）顺手刷新一次；内置
-                        // 状态由共享实例的 NEVPNStatus 观察自动
-                        // 跟随，不用手刷、不用猜。
-                        vm.refreshNetworkStatus()
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "network")
-                                .font(.title3)
-                                .foregroundStyle(Color.accentColor)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(loopbackUI.buttonTitle)
-                                    .font(.headline)
-                                    .foregroundStyle(.primary)
-                                Text(loopbackUI.buttonSubtitle)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if !loopbackUI.buttonEnabled {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else if loopbackPhase == .connected {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.body)
-                                    .foregroundStyle(Color.green)
-                            } else {
-                                Image(systemName: "chevron.right")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!loopbackUI.buttonEnabled)
-
-                    // run #127：回环状态紧贴按钮显示（Sage 真机
-                    // 反馈：设置页的内置开关根本没被找到——壁纸页
-                    // 这一处就是唯一入口，状态必须一眼可见）。
-                    statusLine(title: "回环连接",
-                               value: loopbackUI.lineValue,
-                               ok: loopbackUI.lineOK,
-                               warn: loopbackUI.lineWarn)
-                    statusLine(title: "配对文件",
-                               value: vm.hasPairingFile ? "已识别" : "未识别",
-                               ok: vm.hasPairingFile)
-                    statusLine(title: "本机系统",
-                               value: systemStatusText,
-                               ok: systemStatusLevel == .supported,
-                               warn: systemStatusLevel != .supported)
-
-                    // run #127：启停失败（尤其签名 / entitlement
-                    // 类错误）原样显示在状态区内——管理器文案已是
-                    // 「中文前缀 + 系统错误原文」，是下一步诊断
-                    // 签名链的关键证据，不许吞成一句「失败」。
-                    if let loopbackError = loopback.lastError {
-                        Text(loopbackError)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                } header: {
-                    HStack {
-                        Text("状态")
-                        Spacer()
-                        Button {
-                            vm.refreshPairingFile()
-                            vm.refreshNetworkStatus()
-                            Task { await loopback.reload() }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .font(.caption)
-                        .textCase(nil)
-                    }
-                }
-
-                // Section 0: 获取更多壁纸（点击用系统浏览器打开飞书合集）
-                Section {
-                    Button {
-                        if let url = URL(string: "https://my.feishu.cn/wiki/Oi6pwrRp9i8wd2kBl0Lc4bn9nTb") {
-                            UIApplication.shared.open(url)
-                        }
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "photo.on.rectangle.angled")
-                                .font(.title3)
-                                .foregroundStyle(Color.accentColor)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("获取更多壁纸")
-                                    .font(.headline)
-                                    .foregroundStyle(.primary)
-                                Text("在浏览器打开飞书合集，持续更新")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                // Section 1: Flash Action & Respring（原底部动作卡上移到此处；
-                // 导入入口只保留工具栏右上角 + 号）
-                Section {
-                    VStack(spacing: 12) {
-                        if case .running = vm.tendiesFlashPhase {
-                            HStack(spacing: 10) {
-                                ProgressView()
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("正在刷入壁纸…").font(.subheadline.bold())
-                                    ProgressView(value: vm.tendiesFlashProgress)
-                                }
-                            }
-                            .padding(.vertical, 4)
-                        } else {
-                            Button {
-                                Task {
-                                    await vm.flashSelectedTendies()
-                                }
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Spacer()
-                                    Image(systemName: "sparkles")
-                                    Text("刷入 \(selectedCount) 张壁纸")
-                                    Spacer()
-                                }
-                                .font(.headline)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 48)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.blue)
-                            .disabled(selectedCount == 0)
-                        }
-
-                        Button(role: .destructive) {
-                            // 先试免注销刷新（只重启 PosterBoard 守护进程）；未确认才回退 NeoSpring 注销整机。
-                            PosterRefreshHelper.attemptRefresh(
-                                pairingPath: PairingController.pairingFilePath(),
-                                log: { _ in }
-                            ) { confirmed, _ in
-                                if !confirmed {
-                                    vm.isNeoSpringing = true
-                                    isNeoSpringing = true
-                                    RespringHelper.triggerNeoSpring()
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 8) {
-                                Spacer()
-                                Image(systemName: "bolt.fill")
-                                Text("注销（NeoSpring）")
-                                Spacer()
-                            }
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 48)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
-                    }
-                    .listRowInsets(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14))
-                } footer: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if vm.posterBoardContainer.isEmpty {
-                            Text("刷入时将自动检测 PosterBoard 容器。")
-                        } else {
-                            Text("目标：已检测到 PosterBoard 容器 ✅")
-                        }
-                        Text("刷入后将先尝试免注销刷新系统壁纸；本版不会自动注销，如未生效可手动点注销。")
-                    }
-                }
-
-                // Section 2: PosterBoard Options
-                Section {
-                    Toggle(isOn: $vm.resetPBProtections) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("强制刷新 PosterBoard 缓存")
-                                .font(.subheadline.weight(.medium))
-                            Text("重置文件保护，让 iOS 立即重新索引壁纸")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                // Section 3: Wallpapers Gallery
-                if !vm.tendieItems.isEmpty {
-                    Section {
-                        HStack {
-                            Text("已导入 \(vm.tendieItems.count) 张壁纸")
-                                .font(.caption.bold())
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Button(selectedAll ? "取消全选" : "全选") {
-                                let target = !selectedAll
-                                for i in 0..<vm.tendieItems.count {
-                                    vm.tendieItems[i].isSelected = target
-                                }
-                            }
-                            .font(.caption)
-                        }
-
-                        ForEach($vm.tendieItems) { $item in
-                            TendieRowView(item: $item) {
-                                selectedDetailItem = item
-                            } onDelete: {
-                                vm.deleteTendie(item: item)
-                            }
-                        }
-                    } header: {
-                        Text("壁纸库")
-                    }
-                } else {
-                    Section {
-                        VStack(spacing: 10) {
-                            Image(systemName: "photo.stack")
-                                .font(.system(size: 32))
-                                .foregroundColor(.secondary)
-                            Text("还没有载入 .tendies 壁纸")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                            Text("点右上角「+」从文件选择 .tendies，或把壁纸拷到 我的 iPhone › CocoWall。")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                    }
-                }
-
-                // Section 3.5: 检测本机已导入的壁纸（设备 PosterBoard 数据仓
-                // 的真实存量，与上方 App 本地导入列表是两回事，可勾选清理）
-                Section {
-                    Button {
-                        vm.showDevicePosterSheet = true
-                        Task { await vm.detectDevicePosters() }
-                    } label: {
-                        Label("检测本机已导入的壁纸", systemImage: "checklist")
-                    }
-                    if !vm.devicePosterStatus.isEmpty {
-                        Text(vm.devicePosterStatus)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } footer: {
-                    Text("检测设备 PosterBoard 数据仓中实际存在的壁纸（包括其他工具导入的），可勾选后清理。")
-                }
-
-                // Section 4: Flash Log (CompactLogView)
-                if !vm.tendiesFlashLog.isEmpty {
-                    Section {
-                        CompactLogView(
-                            title: "刷入日志（\(vm.tendiesFlashLog.count) 行）",
-                            lines: vm.tendiesFlashLog,
-                            onClear: { vm.tendiesFlashLog.removeAll() }
-                        )
-                    }
-                }
+                .padding(.bottom, 66)
             }
-            .safeAreaInset(edge: .bottom) {
-                Color.clear.frame(height: 60)
-            }
-            .navigationTitle("壁纸")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        showFilePicker = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.headline)
-                    }
-                }
+            .background(Color(UIColor.systemBackground))
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(isPresented: $showImportedPage) {
+                ImportedWallpapersView()
             }
             .sheet(isPresented: $showFilePicker) {
                 TendiesDocumentPickerView { urls in
@@ -507,13 +301,11 @@ struct TendiesView: View {
                 vm.showSuccessAlert = false
                 vm.successAlertMessage = ""
                 vm.scanDocumentsForTendies()
-                // 状态区（run #124）：进页面查一次配对文件与回环
-                // 探活状态（均为现成只读轻量检查，不开新连接）。
+                // 状态条（沿用 run #124/#127 触发）：进页面查一次
+                // 配对文件与回环探活状态（均为现成只读轻量检查）。
                 vm.refreshPairingFile()
                 vm.refreshNetworkStatus()
-                // 状态区回环（run #127）：进页面再对一次内置回环
-                // 的已保存配置与状态（共享实例 init 已载入过，
-                // 这里只读对齐，不触发任何启停）。
+                // 内置回环的已保存配置与状态只读对齐（共享实例）。
                 Task { await loopback.reload() }
             }
             .task {
@@ -530,6 +322,479 @@ struct TendiesView: View {
                             .ignoresSafeArea()
                     }
                 }
+            }
+        }
+    }
+
+    // MARK: - 页头（标题 + 展开按钮）
+
+    private var headerRow: some View {
+        HStack(alignment: .center) {
+            Text("我的壁纸")
+                .font(.largeTitle.bold())
+            Spacer()
+            Button {
+                showImportedPage = true
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.blue)
+                    .frame(width: 38, height: 38)
+                    .glassSurface(Circle(), tint: Color.blue.opacity(0.12), interactive: true)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+    }
+
+    // MARK: - 扇形壁纸区
+
+    private var fanZone: some View {
+        Group {
+            if vm.tendieItems.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "photo.stack")
+                        .font(.system(size: 32))
+                        .foregroundColor(.secondary)
+                    Text("还没有载入 .tendies 壁纸")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Text("点下方「导入壁纸」从文件选择 .tendies，或把壁纸拷到 我的 iPhone › CocoWall。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 30)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: -62) {
+                        ForEach(Array(vm.tendieItems.enumerated()), id: \.element.id) { idx, item in
+                            fanCard(item: item, index: idx, count: vm.tendieItems.count)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 28)
+                }
+            }
+        }
+    }
+
+    private func fanCard(item: TendieItem, index: Int, count: Int) -> some View {
+        let rotations: [Double] = [-8, -4, 0, 4, 8]
+        let center = Double(count - 1) / 2.0
+        return Button {
+            toggleSelection(itemID: item.id)
+        } label: {
+            ZStack(alignment: .bottomLeading) {
+                TendieThumbnailView(item: item)
+                    .frame(width: 150, height: 200)
+                LinearGradient(colors: [.clear, .black.opacity(0.38)],
+                               startPoint: .center, endPoint: .bottom)
+                Text(item.name)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .padding(.leading, 10)
+                    .padding(.bottom, 9)
+                    .padding(.trailing, item.isSelected ? 34 : 10)
+                if item.isSelected {
+                    ZStack {
+                        Circle().fill(Color.blue)
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(width: 21, height: 21)
+                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    .padding(8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                }
+            }
+            .frame(width: 150, height: 200)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                if item.isSelected {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.blue, lineWidth: 3)
+                }
+            }
+            .shadow(color: .black.opacity(0.18), radius: 12, x: 0, y: 6)
+        }
+        .buttonStyle(.plain)
+        .rotationEffect(.degrees(rotations[index % rotations.count]))
+        .zIndex(-abs(Double(index) - center))
+        .contextMenu {
+            Button {
+                selectedDetailItem = item
+            } label: {
+                Label("详情", systemImage: "info.circle")
+            }
+            Button(role: .destructive) {
+                vm.deleteTendie(item: item)
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+        }
+        .task {
+            // 已存预览缺失或解码失败时，从包内重新提取（与旧列表行同口径）。
+            vm.regenerateTendiePreview(itemID: item.id)
+        }
+    }
+
+    // MARK: - 已选行
+
+    private var selectedLine: some View {
+        HStack(spacing: 6) {
+            if selectedItems.isEmpty {
+                Text("还没选择要刷入的壁纸")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("已选")
+                    .foregroundStyle(.secondary)
+                Text(selectedItems.map(\.name).joined(separator: "、"))
+                    .fontWeight(.bold)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer()
+            Text("共 \(vm.tendieItems.count) 张")
+                .foregroundStyle(.secondary)
+        }
+        .font(.subheadline)
+        .padding(.horizontal, 22)
+        .padding(.bottom, 14)
+    }
+
+    // MARK: - 底部 sheet 区
+
+    private var bottomSheet: some View {
+        GlassGroup {
+            VStack(spacing: 12) {
+                statusCapsule
+
+                // run #127 纪律沿用：启停失败原文红字显示在状态条下方。
+                if let loopbackError = loopback.lastError {
+                    Text(loopbackError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                flashButton
+                importTile
+                microcopy
+
+                HStack(spacing: 10) {
+                    moreWallpapersTile
+                    loopbackTile
+                }
+
+                cleanupTile
+
+                if !vm.devicePosterStatus.isEmpty {
+                    Text(vm.devicePosterStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(16)
+            .glassSurface(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        }
+        .padding(.horizontal, 12)
+    }
+
+    // MARK: 状态条
+
+    private var statusCapsule: some View {
+        HStack(spacing: 8) {
+            statusSegment(label: "回环",
+                          value: loopbackSegment.value,
+                          color: loopbackSegment.color)
+            Rectangle()
+                .fill(Color.secondary.opacity(0.18))
+                .frame(width: 1, height: 14)
+            statusSegment(label: "配对文件",
+                          value: vm.hasPairingFile ? "已识别" : "未识别",
+                          color: vm.hasPairingFile ? .green : .red)
+            Rectangle()
+                .fill(Color.secondary.opacity(0.18))
+                .frame(width: 1, height: 14)
+            statusSegment(label: "系统",
+                          value: systemSegmentText,
+                          color: systemSegmentColor)
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .glassSurface(Capsule())
+        .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
+    }
+
+    private func statusSegment(label: String, value: String, color: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.primary)
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(color)
+        }
+    }
+
+    // MARK: 刷入主按钮
+
+    @ViewBuilder
+    private var flashButton: some View {
+        if case .running = vm.tendiesFlashPhase {
+            HStack(spacing: 10) {
+                ProgressView()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("正在刷入壁纸…").font(.subheadline.bold())
+                    ProgressView(value: vm.tendiesFlashProgress)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        } else {
+            flashActionButton
+        }
+    }
+
+    /// 刷入主按钮双路（run #128 液态玻璃）：iOS 26 用系统
+    /// glassProminent 样式（蓝色主行动）；旧系统回退自绘蓝
+    /// 胶囊，文案 / 禁用口径 / 行为完全一致。
+    @ViewBuilder
+    private var flashActionButton: some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            Button {
+                Task {
+                    await vm.flashSelectedTendies()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                    Text("刷入 \(selectedCount) 张壁纸")
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.glassProminent)
+            .tint(.blue)
+            .controlSize(.large)
+            .disabled(selectedCount == 0)
+        } else {
+            legacyFlashButton
+        }
+        #else
+        legacyFlashButton
+        #endif
+    }
+
+    private var legacyFlashButton: some View {
+        Button {
+            Task {
+                await vm.flashSelectedTendies()
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                Text("刷入 \(selectedCount) 张壁纸")
+            }
+            .font(.headline)
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+            .background(selectedCount == 0 ? Color.blue.opacity(0.45) : Color.blue, in: Capsule())
+            .shadow(color: .blue.opacity(0.25), radius: 10, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .disabled(selectedCount == 0)
+    }
+
+    // MARK: 导入壁纸（原页头 + 号搬家，fileImporter 行为不变）
+
+    private var importTile: some View {
+        Button {
+            showFilePicker = true
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle().fill(Color.blue.opacity(0.10))
+                    Image(systemName: "plus")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.blue)
+                }
+                .frame(width: 34, height: 34)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("导入壁纸")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("从文件导入 .tendies 壁纸包")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(12)
+            .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: true)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: 微文案
+
+    private var microcopy: some View {
+        VStack(spacing: 2) {
+            if vm.posterBoardContainer.isEmpty {
+                Text("刷入时将自动检测 PosterBoard 容器。")
+            } else {
+                Text("目标：已检测到 PosterBoard 容器 ✓ · 刷入后先尝试免注销刷新")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+    }
+
+    // MARK: 双列瓷砖
+
+    private func sheetTile(icon: String,
+                            tint: Color,
+                            title: String,
+                            subtitle: String,
+                            subtitleColor: Color,
+                            enabled: Bool = true,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 0) {
+                ZStack {
+                    Circle().fill(tint.opacity(0.12))
+                    Image(systemName: icon)
+                        .font(.system(size: 16))
+                        .foregroundStyle(tint)
+                }
+                .frame(width: 34, height: 34)
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.top, 8)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(subtitleColor)
+                    .padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(13)
+            .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: true)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+
+    private var moreWallpapersTile: some View {
+        sheetTile(icon: "photo.on.rectangle.angled",
+                  tint: .blue,
+                  title: "获取更多壁纸",
+                  subtitle: "飞书合集，持续更新",
+                  subtitleColor: .secondary) {
+            if let url = URL(string: "https://my.feishu.cn/wiki/Oi6pwrRp9i8wd2kBl0Lc4bn9nTb") {
+                UIApplication.shared.open(url)
+            }
+        }
+    }
+
+    private var loopbackTile: some View {
+        let connected = loopbackPhase == .connected
+        let busy = !loopbackUI.buttonEnabled
+        let subtitle: String
+        let subtitleColor: Color
+        if connected {
+            subtitle = "已连接 · 点击断开"
+            subtitleColor = .green
+        } else if busy {
+            subtitle = loopbackUI.lineValue
+            subtitleColor = .orange
+        } else {
+            subtitle = "未连接 · 点击连接"
+            subtitleColor = .secondary
+        }
+        return sheetTile(icon: "globe",
+                         tint: .green,
+                         title: "内置回环",
+                         subtitle: subtitle,
+                         subtitleColor: subtitleColor,
+                         enabled: !busy) {
+            // run #127 接线沿用：点按直接启停内置隧道（共享实例），
+            // 任何状态下都不跳转外部 App。
+            if loopbackPhase == .connected {
+                loopback.stop()
+            } else {
+                loopback.start()
+            }
+            vm.refreshNetworkStatus()
+        }
+    }
+
+    // MARK: 清除壁纸（进现有清理页）
+
+    private var cleanupTile: some View {
+        Button {
+            vm.showDevicePosterSheet = true
+            Task { await vm.detectDevicePosters() }
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle().fill(Color.red.opacity(0.10))
+                    Image(systemName: "trash")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.red)
+                }
+                .frame(width: 34, height: 34)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("清除壁纸")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("检测并清除本机已导入的壁纸")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(12)
+            .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: true)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Tendie Thumbnail（扇形卡与全屏选择页共用）
+
+struct TendieThumbnailView: View {
+    let item: TendieItem
+
+    var body: some View {
+        if let imgData = item.previewImageData, let uiImg = UIImage(data: imgData) {
+            Image(uiImage: uiImg)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            ZStack {
+                Color(UIColor.tertiarySystemFill)
+                Image(systemName: item.posterType.systemIcon)
+                    .foregroundColor(.secondary)
             }
         }
     }
