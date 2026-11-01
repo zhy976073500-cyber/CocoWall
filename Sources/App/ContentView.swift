@@ -748,8 +748,7 @@ struct CompactLogView: View {
                     .foregroundStyle(copied ? .green : .blue)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
-                    .background(Color(uiColor: .tertiarySystemFill))
-                    .clipShape(Capsule())
+                    .glassSurface(Capsule(), interactive: true)
                 }
                 .buttonStyle(.borderless)
                 .transaction { $0.animation = nil }
@@ -770,12 +769,7 @@ struct CompactLogView: View {
                     .padding(8)
                 }
                 .frame(maxHeight: 180)
-                .background(Color(uiColor: .tertiarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.secondary.opacity(0.18), lineWidth: 0.5)
-                )
+                .glassSurface(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .onChange(of: lines.count) { _, _ in
                     if !lines.isEmpty {
                         proxy.scrollTo(lines.count - 1, anchor: .bottom)
@@ -919,7 +913,7 @@ struct PairingTab: View {
                             Text("iOS \(ProcessInfo.processInfo.operatingSystemVersion.majorVersion) · v1.3.2")
                                 .font(.caption.monospaced().bold())
                                 .padding(.horizontal, 8).padding(.vertical, 3)
-                                .background(Color.blue.opacity(0.12))
+                                .glassSurface(Capsule(), tint: Color.blue.opacity(0.12))
                                 .foregroundStyle(.blue)
                                 .clipShape(Capsule())
                         }
@@ -1062,7 +1056,7 @@ struct PairingTab: View {
                                     Button("使用") {
                                         vm.selectPairingFile(filename: filename)
                                     }
-                                    .buttonStyle(.bordered)
+                                    .glassButton()
                                     .controlSize(.small)
                                 }
                             }
@@ -1101,8 +1095,7 @@ struct PairingTab: View {
                                                 Label("复制", systemImage: "doc.on.doc")
                                                     .font(.caption.bold())
                                             }
-                                            .buttonStyle(.bordered)
-                                            .tint(.orange)
+                                            .glassButton(tint: .orange)
                                         }
 
                                         Text("设置 › 隐私与安全性 › 开发者模式 › 与 CocoWall 配对")
@@ -1118,12 +1111,10 @@ struct PairingTab: View {
                                                 .bold()
                                                 .frame(maxWidth: .infinity, alignment: .center)
                                         }
-                                        .buttonStyle(.borderedProminent)
-                                        .tint(.orange)
+                                        .glassProminentButton(tint: .orange)
                                     }
                                     .padding(14)
-                                    .background(Color.orange.opacity(0.12))
-                                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                                    .glassSurface(RoundedRectangle(cornerRadius: 14, style: .continuous), tint: Color.orange.opacity(0.12))
                                 }
 
                                 Button(role: .cancel) {
@@ -1139,8 +1130,7 @@ struct PairingTab: View {
                                     .frame(maxWidth: .infinity)
                                     .frame(height: 44)
                                 }
-                                .buttonStyle(.bordered)
-                                .tint(.red)
+                                .glassButton(tint: .red)
                             }
                         } else {
                             VStack(spacing: 12) {
@@ -1170,7 +1160,7 @@ struct PairingTab: View {
                                     .frame(maxWidth: .infinity)
                                     .frame(height: 48)
                                 }
-                                .buttonStyle(.borderedProminent)
+                                .glassProminentButton()
                             }
                             .listRowInsets(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14))
                         }
@@ -1278,7 +1268,7 @@ struct VPNStatusRow: View {
                         loopback.stop()
                     }
                     .font(.caption.bold())
-                    .buttonStyle(.bordered)
+                    .glassButton()
                     .controlSize(.mini)
                 }
             }
@@ -1297,7 +1287,7 @@ struct VPNStatusRow: View {
                             Text(loopback.isActive ? "关闭内置回环" : "开启内置回环")
                         }
                         .font(.caption.bold())
-                        .buttonStyle(.bordered)
+                        .glassButton()
                         .controlSize(.small)
                         .disabled(loopback.isBusy)
                         Text(loopback.statusText)
@@ -1311,8 +1301,7 @@ struct VPNStatusRow: View {
                     }
                 }
                 .padding(10)
-                .background(Color.green.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .glassSurface(RoundedRectangle(cornerRadius: 10, style: .continuous), tint: Color.green.opacity(0.10))
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("或使用 LocalDevVPN（外部 App）：")
@@ -1330,8 +1319,7 @@ struct VPNStatusRow: View {
                         .font(.caption.bold())
                 }
                 .padding(10)
-                .background(Color.orange.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .glassSurface(RoundedRectangle(cornerRadius: 10, style: .continuous), tint: Color.orange.opacity(0.10))
             }
 
             HStack(spacing: 8) {
@@ -1354,7 +1342,7 @@ struct VPNStatusRow: View {
                     Image(systemName: "arrow.clockwise")
                         .font(.caption.bold())
                 }
-                .buttonStyle(.bordered)
+                .glassButton()
                 .controlSize(.mini)
             }
 
@@ -1434,7 +1422,7 @@ struct ApplyThemeSection: View {
                             vm.loadPassthmFromDocuments(filename: file)
                         }
                         .font(.caption.bold())
-                        .buttonStyle(.borderedProminent)
+                        .glassProminentButton()
                         .controlSize(.small)
                     }
                 }
@@ -1490,7 +1478,7 @@ struct ApplyThemeSection: View {
                     Label("在主题制作中编辑", systemImage: "pencil")
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
-                .buttonStyle(.bordered)
+                .glassButton()
             }
 
             PasscodeTargetSection()
@@ -1512,8 +1500,7 @@ struct ApplyThemeSection: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: 48)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
+                    .glassButton(tint: .red)
                 }
                 .listRowInsets(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14))
             }
@@ -1545,8 +1532,7 @@ struct ApplyThemeSection: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 48)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.orange)
+            .glassProminentButton(tint: .orange)
             .disabled(!vm.canFlashPassthm)
         } else {
             Button {
@@ -1562,7 +1548,7 @@ struct ApplyThemeSection: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 48)
             }
-            .buttonStyle(.borderedProminent)
+            .glassProminentButton()
             .disabled(!vm.canFlashPassthm)
         }
     }
@@ -1715,7 +1701,7 @@ struct ThemeCreatorSection: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: 48)
                     }
-                    .buttonStyle(.bordered)
+                    .glassButton()
 
                     Button(role: .destructive) {
                         vm.clearAllCreator()
@@ -1730,8 +1716,7 @@ struct ThemeCreatorSection: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: 48)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
+                    .glassButton(tint: .red)
                 }
             }
             .listRowInsets(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14))
@@ -1997,8 +1982,7 @@ struct ThemeCreatorSection: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 48)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.orange)
+            .glassProminentButton(tint: .orange)
             .disabled(!vm.canFlashPassthm)
         } else {
             Button {
@@ -2014,7 +1998,7 @@ struct ThemeCreatorSection: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 48)
             }
-            .buttonStyle(.borderedProminent)
+            .glassProminentButton()
             .disabled(!vm.canFlashPassthm)
         }
     }

@@ -10,12 +10,14 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
-                    authorEntry
-                    pairingEntry
-                    logSection
+                GlassGroup {
+                    VStack(spacing: 16) {
+                        authorEntry
+                        pairingEntry
+                        logSection
+                    }
+                    .padding(20)
                 }
-                .padding(20)
             }
             .background(Color(UIColor.systemBackground))
             .navigationTitle("设置")
@@ -27,7 +29,8 @@ struct SettingsView: View {
 
     // MARK: - 入口行（作者 / 配对）
 
-    /// 圆角入口行：内容 + 右侧箭头。卡面用语义色，跟随系统深浅。
+    /// 圆角入口行：内容 + 右侧箭头。run #129 起卡面走液态玻璃
+    /// （glassSurface，interactive），版式与原来一致。
     private func entryRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         HStack(spacing: 12) {
             content()
@@ -38,8 +41,7 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(Color(UIColor.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .shadow(color: .black.opacity(0.06), radius: 10, x: 0, y: 3)
+        .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: true)
     }
 
     private var authorEntry: some View {
@@ -111,12 +113,11 @@ struct SettingsView: View {
         }
     }
 
-    /// 与入口行同款卡面，把日志包成一张卡放在页面最下面。
+    /// 与入口行同款玻璃卡面，把日志包成一张卡放在页面最下面。
     private func logCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
-            .background(Color(UIColor.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .shadow(color: .black.opacity(0.06), radius: 10, x: 0, y: 3)
+            .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 }

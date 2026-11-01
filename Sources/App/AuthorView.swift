@@ -67,7 +67,7 @@ struct AuthorView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
                 }
-                .buttonStyle(.borderedProminent)
+                .glassProminentButton()
 
                 VStack(spacing: 10) {
                     AuthorQRPlaceholder()

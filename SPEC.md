@@ -1704,10 +1704,14 @@ GlassEffectContainer 收拢同组玻璃元素，按钮类优先系统
 glass / glassProminent 样式；部署目标仍含 iOS 17–25，用
 编译期 #if compiler(>=6.2)（旧 SDK 不编译玻璃分支）+ 运行时
 #available(iOS 26, *) 双路，旧系统回退 .ultraThinMaterial
-等价外观，功能与布局不因回退而变。本轮只覆盖 #128 新表面；
-其余页面（制作 / 密码盘 / 设置正文）的玻璃化为紧随其后的
-独立批次，不在本轮扩改。既有底栏透镜 dock 是既有玻璃实现，
-不动。
+等价外观，功能与布局不因回退而变。#128 先覆盖壁纸页新表面；
+其余页面（制作 / 密码盘 / 设置正文 / 清理页 / 配对区）已由
+run #129 补齐——**全 App 已落地**（明细见文末 #129 登记）。
+既有底栏透镜 dock 是既有玻璃实现，不动。
+**例外（run #131 补注）**：壁纸页底部 sheet 区经 Sage
+2026-11-02 决定不使用液态玻璃，保持纯色平面——该区的
+表面口径以文末 #131 登记为准，本附则的默认口径不再
+覆盖这一块；其余页面与共用玻璃辅助不受影响。
 
 本轮落点（共用辅助在 TendiesView.swift 顶部：View.glassSurface
 （tint / interactive 可选）+ GlassGroup 容器）：
@@ -1731,3 +1735,222 @@ glass / glassProminent 样式；部署目标仍含 iOS 17–25，用
   卡片本体是壁纸缩略图，不玻璃化。
 - 设置页日志卡不在本轮清单（属设置正文，随后续独立批次
   一起玻璃化），本轮维持入口卡同款卡面。
+
+## 改动登记 · 全 App 液态玻璃补齐（run #129，2026-11-02，standing 要求收尾轮）
+
+Sage standing 要求「软件 UI 必须都适配 iOS 26 的液态玻璃」的
+收尾批次：把 #128 未覆盖的页面表面全部补齐。全程复用 #128
+在 TendiesView.swift 顶部建立的共用辅助（View.glassSurface /
+GlassGroup）与双路模式（#if compiler(>=6.2) + #available
+(iOS 26, *)，旧系统 .ultraThinMaterial / bordered 系样式
+回退，最低系统 17.0 不变）。**只换表面材质：布局、文案、
+顺序、间距、行为与全部逻辑零改动。**
+
+### 共用辅助新增（TendiesView.swift 玻璃区）
+
+- `View.glassProminentButton(tint:)`：主行动按钮双路——
+  iOS 26 用系统 .glassProminent，旧系统保持 .borderedProminent。
+- `View.glassButton(tint:)`：次级按钮双路——iOS 26 用系统
+  .glass，旧系统保持 .bordered。
+  本轮各页按钮一律经这两个辅助换样式，标签与修饰
+  （font / controlSize / disabled / tint）原样保留。
+
+### 逐页落点
+
+1. **设置页（SettingsView.swift）**：卡片 VStack 整体入
+   GlassGroup；作者/配对两张入口行卡面（原 secondarySystem-
+   Background + 阴影）→ glassSurface（圆角 20，interactive）；
+   #128 搬来的两张日志卡（刷入日志 / 活动日志，logCard）
+   同换 glassSurface（圆角 20）。页面背景与结构不动。
+   作者页（AuthorView.swift）「抖音主页」主行动按钮 →
+   glassProminentButton()。
+2. **配对区（ContentView.swift PairingTab / VPNStatusRow，
+   自设置页 sheet 打开）**：头行版本 chip → glassSurface
+   (Capsule，蓝 tint)；本机配对 PIN 面板（原橙色淡底）→
+   glassSurface（圆角 14，橙 tint）；VPNStatusRow 内置回环
+   说明面板（绿）/ LocalDevVPN 说明面板（橙）→ glassSurface
+   （圆角 10，对应 tint）。按钮换双路：配对本机 →
+   glassProminentButton()；打开设置 App → glassProminent-
+   Button（橙）；复制 PIN → glassButton（橙）；取消配对 →
+   glassButton（红）；文稿配对文件「使用」、VPNStatusRow 的
+   关闭/开启内置回环与刷新按钮 → glassButton()。
+   PairingTab 其余 Form Section 为系统行表面，iOS 26 下由
+   系统自动呈液态玻璃，未强行套壳。
+3. **密码盘页（ContentView.swift PasscodeThemeTab /
+   ApplyThemeSection / ThemeCreatorSection）**：两处刷入
+   flashButton（正常态 + 失败重试态）→ glassProminentButton
+   （重试带橙 tint）；文稿主题「载入」→ glassProminent-
+   Button()；次级按钮（在主题制作中编辑 / 导出 .passthm /
+   清空全部 / 移除·卸载主题）→ glassButton（破坏性带红
+   tint）。刷入日志卡位于系统 Form Section 内（系统表面，
+   iOS 26 自动玻璃），其内层 CompactLogView 自绘表面已
+   随第 5 项统一玻璃化。PasscodeTargetSection 为系统 Form
+   行，未动；KeypadPreviewView 是锁屏预览工作区本体（自绘
+   深色磨砂即预览内容，与制作页画布同口径），未动。
+   passthm 刷入与 Passcode 逻辑零改动。
+4. **制作页（KeyframeEditorView.swift，MakerView 为页签壳）**：
+   内容 VStack 入 GlassGroup；素材选择标签 pickerLabel →
+   glassSurface（圆角 14，interactive）；时间轴卡
+   timelineCard、导出卡 exportCard → glassSurface（圆角
+   18）；「打关键帧」与「生成并加入壁纸库」按钮 →
+   glassProminentButton()。画布 canvasSection、时间轴轨道
+   与一切编辑/导出逻辑未动。
+5. **共用日志组件（ContentView.swift CompactLogView）**：
+   复制胶囊钮 → glassSurface(Capsule，interactive)；日志
+   文本框（原 tertiarySystemBackground + 描边）→
+   glassSurface（圆角 10）。该组件为设置页日志卡内层、
+   密码盘刷入日志、配对页活动日志共用，一处改动三页一致。
+6. **清理页（TendiesView.swift DevicePosterCleanupView）**：
+   底部操作栏入 GlassGroup，栏面（原 .bar 材质）→
+   glassSurface(Rectangle)；「清理所选」按钮 →
+   glassProminentButton（红 tint）。列表本体为系统 List
+   行（iOS 26 系统自动玻璃），未强行套壳；检测/删除逻辑
+   零改动。
+
+### 未动与已知残留
+
+- TendiesEngine.swift、rust 树、受保护文件、CI workflow
+  一概未动；#128 已玻璃化的壁纸页 / 全屏选择页 / 预览页 /
+  底栏 dock 未重做。
+- 上游 sheet（CreditsSheet / PairingGuideSheet /
+  DonateView 等）不在本轮清单，其 bordered 按钮维持系统
+  样式原样。
+- 既有问题仅记录不扩修：AuthorView 页面背景写死
+  Color.white（不跟随深色模式）；设置页背景为
+  systemBackground 纯色，玻璃在其上折射内容有限——均属
+  版式层问题，不在本轮「只换表面」范围。
+- 本地核查：五文件 swiftc -parse 全过；推送前远程 head
+  = 5d09bb2，六份将改文件远程 blob 与本地逐字节一致、
+  无分叉。真机玻璃质感未验证，等 Sage 装机验。
+
+## 改动登记 · 扇形/展开页四项真机反馈修复（run #130，2026-11-02，Sage 录屏定点修）
+
+在本地 marker commit 1862f3c（#129，未推送）之上的一轮定点
+修复，**本轮只本地提交、不推送**（推送待 Sage 发话）。动
+TendiesView.swift（扇形区 fanZone/fanCard、页面根部）与
+ImportedWallpapersView.swift（全屏选择页）两文件；AppViewModel
+未改（批量删除复用其既有 deleteTendie）。卡片尺寸 150×200、
+基础旋转档位 [-8,-4,0,4,8]、交叠量 -62 等定稿参数未动。
+
+### 1. 扇形长按菜单脱锚（症状 → 改法）
+
+症状（Sage 录屏）：长按扇形卡（「云朵」）弹出「详情/删除」
+时，扇形在菜单背后仍在滑动/移位，菜单与被按卡片脱锚、看着
+像浮空。原实现：contextMenu 挂在 rotationEffect 之后、横滑
+ScrollView 内的 Button 上——变换后的视图做 contextMenu 预览
+锚点本就不稳，ScrollView 惯性也不被长按打断。
+改法：扇形卡改手势实现（去 Button+contextMenu）：onTapGesture
+点按选中、onLongPressGesture(0.45s) 只设页面状态 fanMenuTarget；
+fanZone 的 ScrollView 加 .scrollDisabled(fanMenuTarget != nil)
+在菜单呈现期间冻结惯性；菜单改由页面根部 confirmationDialog
+（presenting: fanMenuTarget，标题=壁纸名）稳定呈现同一组动作
+「详情 / 删除（destructive，走 vm.deleteTendie）/ 取消」。
+长按触发附一次轻触觉。视觉与其余行为不变。
+展开页格子同标处理：ImportedWallpapersView 的 cell 同样去
+contextMenu，改 onTapGesture 勾选 + onLongPressGesture 设
+menuTarget、ScrollView .scrollDisabled(menuTarget != nil)、
+页面根 confirmationDialog 呈现同一组动作。
+
+### 2. 扇形滑动 Q 弹（症状 → 改法）
+
+症状：扇形横滑是「死的」，无苹果信息式弹性与交互反馈。
+改法（只加联动与弹簧，不动定稿几何参数）：fanZone 的
+ScrollView 加 .scrollTargetBehavior(.viewAligned)、HStack 加
+.scrollTargetLayout()，停下时弹簧式吸附到整卡；fanCard 加
+.scrollTransition(.interactive)：以 t=min(1,|phase.value|)
+插值——中心卡 scale 1.05 且 rotationEffect 叠加 -base*(1-t)
+把基础旋转抵消回正，越往两侧 scale 回到 1.0、旋转回到基础
+档位；点按选中加选中态 scaleEffect 1.04 + spring(response
+0.3, dampingFraction 0.55) 回弹与一次轻触觉（UIImpactFeedback-
+Generator .light，沿用 App 内既有口径；展开页格子点按/长按
+同附）。
+
+### 3. 展开页格子大小不一致 + 头部副行重叠（症状 → 改法）
+
+症状（Sage 录屏）：网格格子高度参差（像瀑布流）；顶部
+「共 N 张 · 已选 M 张…」副行文字与第一行格子重叠糊在一起。
+根因：旧 cell 用 .aspectRatio(0.72, .fit)，格高由内容反推
+（有图时按图片原始像素、无图时占位视图无固有尺寸），
+LazyVGrid 行高因此不齐且首行测量与副行挤压。
+改法：cell 改固定帧——列宽仍由 GridItem(.flexible()) 定，
+格高固定 172pt（v8 设计稿量级），TendieThumbnailView 以
+frame(maxWidth/maxHeight: .infinity) 填满、超出由 clipShape
+裁切（图片为 resizable .fill，天然填充裁切），名称行与勾选
+徽标位置统一；头部副行维持 VStack 普通流式布局（副行在
+ScrollView 内、网格 padding(.top, 14)），固定格高后任何
+滚动位置不再重叠。底栏与系统 dock 的关系维持 #128 现状。
+
+### 4. 展开页底部栏新增「删除」（需求 → 改法）
+
+底部栏布局改：左「已选 N 张」、右依次「删除」「完成」。
+「删除」用 #129 共用 glassButton(tint: .red) 红色玻璃次级
+样式（role: .destructive），已选 0 张时 disabled + opacity
+0.45。点按先弹 confirmationDialog「删除所选壁纸」：破坏性
+按钮「删除 N 张」，message 说明「将把所选 N 张壁纸从本机
+库中移除，本地文件一并删除」；确认后 deleteSelected() 逐项
+调用 vm.deleteTendie(item:)——与长按单删完全相同的路径
+（删本地文件 + 移除条目 + saveTendieItems），删后条目消失、
+选择集自动剔除，计数与壁纸页扇形（共用同一 vm.tendieItems）
+同步刷新。
+
+### 未动与未验证
+
+- TendiesEngine.swift、rust 树、受保护文件、CI workflow、
+  #129 玻璃改动一概未动；文案除新增删除确认外未动。
+- 本地核查：两文件 swiftc -parse（Swift 6.1，本机回退分支
+  编译器）全过；玻璃分支（#if compiler(>=6.2)）本机编不动
+  属既有常态，本轮新增代码未用 6.2 门控 API（scrollTransition /
+  scrollTargetBehavior / confirmationDialog 均为 iOS 17 基线
+  API），仍待推送后 CI 真 Xcode 26 编译为准。
+- 未验证项（归 Sage 真机）：长按菜单呈现时扇形是否完全
+  冻结、confirmationDialog 的观感是否合意；Q 弹的实际手感
+  （viewAligned 吸附点、scrollTransition 中心回正幅度）；
+  格子 172 固定高在真机三列宽下的裁切观感；批量删除全链路。
+
+## 改动登记 · 壁纸页底部 sheet 去液态玻璃（run #131，2026-11-02，Sage 真机反馈定的例外）
+
+在本地 commit 9cb0a53（#130，未推送）之上的一轮定点回退，
+**本轮只本地提交、不推送**（推送待 Sage 发话）。Sage 看了
+#128 真机效果后点名：壁纸页底部 sheet 这一块不要液态玻璃，
+改回纯色平面。只动 TendiesView.swift 的 sheet 区表面处理；
+布局、尺寸、文案、行为、状态判定与 #128/#130 完全一致。
+
+### 改法（glassSurface / GlassGroup / glassProminent → 实色）
+
+- sheet 面板（bottomSheet）：去掉 GlassGroup 包裹与面板
+  glassSurface，改实色背景 #F7F7FA（新增静态色 sheetBackground，
+  圆角 28 不变）+ 轻柔投影（black 0.05 / radius 15 / y -4）。
+- 胶囊状态条（statusCapsule）：glassSurface(Capsule) 改
+  Color.white 实色胶囊填充，原有轻投影保留。
+- 刷入主按钮（flashActionButton）：原 iOS 26 .glassProminent
+  与旧系统自绘回退双路合并为单一实色实现——纯蓝 #0071E3
+  （新增静态色 flashBlue）实色胶囊、高 52、白字，禁用时
+  同色 0.45 透明度，投影改蓝 0.28 / radius 11 / y 5；
+  legacyFlashButton 随之删除。
+- 刷入中进度卡（flashButton 的 running 分支）：glassSurface
+  改纯白面（圆角 20）+ 轻投影。
+- 导入壁纸宽条（importTile）、双列瓷砖共用实现（sheetTile）、
+  清除壁纸宽条（cleanupTile）：glassSurface(圆角 20,
+  interactive) 一律改纯白面（圆角 20）+ 轻投影（black 0.04 /
+  radius 8 / y 2）。
+- 错误横幅（页面顶部 vm.errorMessage 横幅）：glassSurface
+  （红 tint）改实色浅红面 Color.red.opacity(0.08)（圆角 14）。
+
+### 不动
+
+- 共用玻璃辅助定义（glassSurface / GlassGroup /
+  glassProminentButton / glassButton）原样保留，其他页面
+  （#129 覆盖的设置 / 配对 / 密码盘 / 制作 / 清理页）继续用。
+- 页头展开圆钮的 glassSurface 玻璃面保留；全屏选择页
+  （ImportedWallpapersView）底栏玻璃与红色 glassButton
+  删除钮保留；#33 预览页、底栏透镜 dock 不动。
+- TendiesEngine.swift、rust 树、受保护文件、CI workflow
+  一概未动。
+
+### 未验证
+
+- 本地核查：TendiesView.swift swiftc -parse（Swift 6.1，
+  本机回退分支编译器）通过；本轮改动未引入新的 6.2 门控
+  API，最终仍以推送后 CI 真 Xcode 26 编译为准。
+- 未验证项（归 Sage 真机）：sheet 区纯色平面与页面其余
+  玻璃表面（展开钮、选择页）并存时的整体观感。

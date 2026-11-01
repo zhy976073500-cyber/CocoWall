@@ -19,6 +19,8 @@ import NetworkExtension
 // 玻璃 API 只存在于新 SDK：编译期以 #if compiler(>=6.2)
 // 分流（旧 SDK 根本不编译玻璃分支），运行时再以
 // #available(iOS 26, *) 把关。
+// 例外（run #131）：壁纸页底部 sheet 区经 Sage 定不用液态
+// 玻璃，保持纯色平面（见 SPEC #131 登记）。
 
 extension View {
     /// 玻璃表面：26+ 原生玻璃（可带 tint / 可 interactive），
@@ -70,6 +72,40 @@ struct GlassGroup<Content: View>: View {
         }
         #else
         content()
+        #endif
+    }
+}
+
+extension View {
+    /// 主行动按钮双路（run #129 补入共用辅助）：iOS 26 用系统
+    /// glassProminent 样式，旧系统保持 borderedProminent；
+    /// 只换按钮表面，标签、布局与行为不变。tint 为 nil 时
+    /// 与不加 tint 等价（系统强调色）。
+    @ViewBuilder
+    func glassProminentButton(tint: Color? = nil) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            self.buttonStyle(.glassProminent).tint(tint)
+        } else {
+            self.buttonStyle(.borderedProminent).tint(tint)
+        }
+        #else
+        self.buttonStyle(.borderedProminent).tint(tint)
+        #endif
+    }
+
+    /// 次级按钮双路（run #129）：iOS 26 用系统 glass 样式，
+    /// 旧系统保持 bordered；同上只换表面。
+    @ViewBuilder
+    func glassButton(tint: Color? = nil) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            self.buttonStyle(.glass).tint(tint)
+        } else {
+            self.buttonStyle(.bordered).tint(tint)
+        }
+        #else
+        self.buttonStyle(.bordered).tint(tint)
         #endif
     }
 }
@@ -159,6 +195,9 @@ struct TendiesView: View {
     @State private var selectedDetailItem: TendieItem? = nil
     @State private var isNeoSpringing = false
     @State private var showImportedPage = false
+    /// 扇形卡长按菜单的目标项（run #130）：非 nil 时扇形滚动
+    /// 冻结、页面根部弹 confirmationDialog 呈现「详情/删除」。
+    @State private var fanMenuTarget: TendieItem? = nil
 
     private var selectedCount: Int {
         vm.tendieItems.filter { $0.isSelected }.count
@@ -263,7 +302,8 @@ struct TendiesView: View {
                             }
                         }
                         .padding(12)
-                        .glassSurface(RoundedRectangle(cornerRadius: 14, style: .continuous), tint: Color.red.opacity(0.10))
+                        // run #131：错误横幅改实色浅红面，不用液态玻璃。
+                        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                         .padding(.horizontal, 20)
                         .padding(.top, 8)
                     }
@@ -291,6 +331,28 @@ struct TendiesView: View {
             }
             .sheet(item: $selectedDetailItem) { item in
                 TendieDetailSheet(item: item)
+            }
+            // 扇形长按菜单（run #130）：不用 contextMenu——它挂在
+            // rotationEffect 后的卡片上、且横滑 ScrollView 惯性不被
+            // 打断，真机录屏里菜单浮空脱锚、卡片滑走。改长按手势
+            // 设 fanMenuTarget（扇形随之 scrollDisabled 冻结）后，
+            // 在此以 confirmationDialog 稳定呈现同一组动作。
+            .confirmationDialog(
+                fanMenuTarget?.name ?? "",
+                isPresented: Binding(
+                    get: { fanMenuTarget != nil },
+                    set: { if !$0 { fanMenuTarget = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: fanMenuTarget
+            ) { item in
+                Button("详情") {
+                    selectedDetailItem = item
+                }
+                Button("删除", role: .destructive) {
+                    vm.deleteTendie(item: item)
+                }
+                Button("取消", role: .cancel) {}
             }
             .sheet(isPresented: $vm.showDevicePosterSheet) {
                 DevicePosterCleanupView()
@@ -377,66 +439,82 @@ struct TendiesView: View {
                     }
                     .padding(.horizontal, 24)
                     .padding(.vertical, 28)
+                    .scrollTargetLayout()
                 }
+                // 停下时弹簧式吸附到整卡（run #130，苹果信息式 Q 弹）。
+                .scrollTargetBehavior(.viewAligned)
+                // 长按菜单呈现期间冻结扇形（run #130），惯性不再
+                // 带着卡片在菜单背后滑走。
+                .scrollDisabled(fanMenuTarget != nil)
             }
         }
     }
 
     private func fanCard(item: TendieItem, index: Int, count: Int) -> some View {
         let rotations: [Double] = [-8, -4, 0, 4, 8]
+        let base = rotations[index % rotations.count]
         let center = Double(count - 1) / 2.0
-        return Button {
-            toggleSelection(itemID: item.id)
-        } label: {
-            ZStack(alignment: .bottomLeading) {
-                TendieThumbnailView(item: item)
-                    .frame(width: 150, height: 200)
-                LinearGradient(colors: [.clear, .black.opacity(0.38)],
-                               startPoint: .center, endPoint: .bottom)
-                Text(item.name)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .padding(.leading, 10)
-                    .padding(.bottom, 9)
-                    .padding(.trailing, item.isSelected ? 34 : 10)
-                if item.isSelected {
-                    ZStack {
-                        Circle().fill(Color.blue)
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                    .frame(width: 21, height: 21)
-                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                    .padding(8)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        return ZStack(alignment: .bottomLeading) {
+            TendieThumbnailView(item: item)
+                .frame(width: 150, height: 200)
+            LinearGradient(colors: [.clear, .black.opacity(0.38)],
+                           startPoint: .center, endPoint: .bottom)
+            Text(item.name)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .padding(.leading, 10)
+                .padding(.bottom, 9)
+                .padding(.trailing, item.isSelected ? 34 : 10)
+            if item.isSelected {
+                ZStack {
+                    Circle().fill(Color.blue)
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
                 }
+                .frame(width: 21, height: 21)
+                .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                .padding(8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             }
-            .frame(width: 150, height: 200)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay {
-                if item.isSelected {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.blue, lineWidth: 3)
-                }
-            }
-            .shadow(color: .black.opacity(0.18), radius: 12, x: 0, y: 6)
         }
-        .buttonStyle(.plain)
-        .rotationEffect(.degrees(rotations[index % rotations.count]))
+        .frame(width: 150, height: 200)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            if item.isSelected {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.blue, lineWidth: 3)
+            }
+        }
+        .shadow(color: .black.opacity(0.18), radius: 12, x: 0, y: 6)
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        // 选中态弹簧缩放回弹（run #130）。
+        .scaleEffect(item.isSelected ? 1.04 : 1.0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.55), value: item.isSelected)
+        // 点按选中（run #130：手势实现取代原 Button+contextMenu，
+        // 附一次轻触觉，沿用 App 内 UIImpactFeedbackGenerator 口径）。
+        .onTapGesture {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            toggleSelection(itemID: item.id)
+        }
+        // 长按出菜单（run #130）：只设目标项；菜单由页面根部的
+        // confirmationDialog 呈现，扇形同时冻结，不再脱锚。
+        .onLongPressGesture(minimumDuration: 0.45) {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            fanMenuTarget = item
+        }
+        .rotationEffect(.degrees(base))
         .zIndex(-abs(Double(index) - center))
-        .contextMenu {
-            Button {
-                selectedDetailItem = item
-            } label: {
-                Label("详情", systemImage: "info.circle")
-            }
-            Button(role: .destructive) {
-                vm.deleteTendie(item: item)
-            } label: {
-                Label("删除", systemImage: "trash")
-            }
+        // 滚动联动弹性（run #130）：随与视口中心的距离插值——
+        // 中心卡放大至 1.05 且基础旋转被抵消回正，越往两侧越
+        // 缩回 1.0、旋转回到基础档位；卡片尺寸/基础旋转/交叠
+        // 量这些定稿参数未动。
+        .scrollTransition(.interactive) { content, phase in
+            let t = min(1.0, abs(phase.value))
+            return content
+                .scaleEffect(1.05 - 0.05 * t)
+                .rotationEffect(.degrees(-base * (1 - t)))
         }
         .task {
             // 已存预览缺失或解码失败时，从包内重新提取（与旧列表行同口径）。
@@ -469,41 +547,50 @@ struct TendiesView: View {
     }
 
     // MARK: - 底部 sheet 区
+    //
+    // run #131：本区经 Sage 定不用液态玻璃——回到 #128 设计稿
+    // （wallpaper-page-v5）的纯色平面：sheet 底 #F7F7FA 实色、
+    // 内部瓷砖/宽条纯白面 + 轻柔阴影、状态条白色实色胶囊、
+    // 刷入主按钮纯蓝实色胶囊。布局/文案/行为与 #128/#130 一致。
+
+    /// sheet 面板底色（设计稿 #F7F7FA）。
+    private static let sheetBackground = Color(red: 247.0 / 255, green: 247.0 / 255, blue: 250.0 / 255)
+    /// 刷入主按钮蓝（设计稿 #0071E3）。
+    private static let flashBlue = Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255)
 
     private var bottomSheet: some View {
-        GlassGroup {
-            VStack(spacing: 12) {
-                statusCapsule
+        VStack(spacing: 12) {
+            statusCapsule
 
-                // run #127 纪律沿用：启停失败原文红字显示在状态条下方。
-                if let loopbackError = loopback.lastError {
-                    Text(loopbackError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                flashButton
-                importTile
-                microcopy
-
-                HStack(spacing: 10) {
-                    moreWallpapersTile
-                    loopbackTile
-                }
-
-                cleanupTile
-
-                if !vm.devicePosterStatus.isEmpty {
-                    Text(vm.devicePosterStatus)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            // run #127 纪律沿用：启停失败原文红字显示在状态条下方。
+            if let loopbackError = loopback.lastError {
+                Text(loopbackError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(16)
-            .glassSurface(RoundedRectangle(cornerRadius: 28, style: .continuous))
+
+            flashButton
+            importTile
+            microcopy
+
+            HStack(spacing: 10) {
+                moreWallpapersTile
+                loopbackTile
+            }
+
+            cleanupTile
+
+            if !vm.devicePosterStatus.isEmpty {
+                Text(vm.devicePosterStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
+        .padding(16)
+        .background(Self.sheetBackground, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .shadow(color: .black.opacity(0.05), radius: 15, x: 0, y: -4)
         .padding(.horizontal, 12)
     }
 
@@ -531,7 +618,7 @@ struct TendiesView: View {
         .minimumScaleFactor(0.8)
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .glassSurface(Capsule())
+        .background(Color.white, in: Capsule())
         .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
     }
 
@@ -563,44 +650,17 @@ struct TendiesView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
-            .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
         } else {
             flashActionButton
         }
     }
 
-    /// 刷入主按钮双路（run #128 液态玻璃）：iOS 26 用系统
-    /// glassProminent 样式（蓝色主行动）；旧系统回退自绘蓝
-    /// 胶囊，文案 / 禁用口径 / 行为完全一致。
-    @ViewBuilder
+    /// 刷入主按钮（run #131 起不用液态玻璃）：纯蓝（#0071E3）
+    /// 实色胶囊，文案 / 禁用口径 / 行为与 #128 一致；原
+    /// glassProminent 双路与自绘回退就此合并为这一份实现。
     private var flashActionButton: some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            Button {
-                Task {
-                    await vm.flashSelectedTendies()
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "sparkles")
-                    Text("刷入 \(selectedCount) 张壁纸")
-                }
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.glassProminent)
-            .tint(.blue)
-            .controlSize(.large)
-            .disabled(selectedCount == 0)
-        } else {
-            legacyFlashButton
-        }
-        #else
-        legacyFlashButton
-        #endif
-    }
-
-    private var legacyFlashButton: some View {
         Button {
             Task {
                 await vm.flashSelectedTendies()
@@ -614,8 +674,8 @@ struct TendiesView: View {
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
             .frame(height: 52)
-            .background(selectedCount == 0 ? Color.blue.opacity(0.45) : Color.blue, in: Capsule())
-            .shadow(color: .blue.opacity(0.25), radius: 10, x: 0, y: 4)
+            .background(selectedCount == 0 ? Self.flashBlue.opacity(0.45) : Self.flashBlue, in: Capsule())
+            .shadow(color: Self.flashBlue.opacity(0.28), radius: 11, x: 0, y: 5)
         }
         .buttonStyle(.plain)
         .disabled(selectedCount == 0)
@@ -646,7 +706,8 @@ struct TendiesView: View {
                 Spacer()
             }
             .padding(12)
-            .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: true)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -696,7 +757,8 @@ struct TendiesView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(13)
-            .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: true)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -773,7 +835,8 @@ struct TendiesView: View {
                 Spacer()
             }
             .padding(12)
-            .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: true)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1141,38 +1204,41 @@ struct DevicePosterCleanupView: View {
             }
             .safeAreaInset(edge: .bottom) {
                 if !vm.devicePosters.isEmpty {
-                    VStack(spacing: 8) {
-                        if !vm.devicePosterStatus.isEmpty {
-                            Text(vm.devicePosterStatus)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        Button(role: .destructive) {
-                            showCleanupConfirm = true
-                        } label: {
-                            HStack(spacing: 8) {
-                                Spacer()
-                                if vm.isCleaningDevicePosters {
-                                    ProgressView()
-                                    Text("正在清理…")
-                                } else {
-                                    Image(systemName: "trash")
-                                    Text("清理所选（\(selectedItems.count)）")
-                                }
-                                Spacer()
+                    // run #129：底栏与清理按钮玻璃化（清理逻辑不变）——
+                    // 栏面走 glassSurface、主按钮走 glassProminent 双路。
+                    GlassGroup {
+                        VStack(spacing: 8) {
+                            if !vm.devicePosterStatus.isEmpty {
+                                Text(vm.devicePosterStatus)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
                             }
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 48)
+                            Button(role: .destructive) {
+                                showCleanupConfirm = true
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Spacer()
+                                    if vm.isCleaningDevicePosters {
+                                        ProgressView()
+                                        Text("正在清理…")
+                                    } else {
+                                        Image(systemName: "trash")
+                                        Text("清理所选（\(selectedItems.count)）")
+                                    }
+                                    Spacer()
+                                }
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 48)
+                            }
+                            .glassProminentButton(tint: .red)
+                            .disabled(selectedItems.isEmpty || vm.isCleaningDevicePosters || vm.isScanningDevicePosters)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
-                        .disabled(selectedItems.isEmpty || vm.isCleaningDevicePosters || vm.isScanningDevicePosters)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .glassSurface(Rectangle())
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(.bar)
                 }
             }
             .confirmationDialog(

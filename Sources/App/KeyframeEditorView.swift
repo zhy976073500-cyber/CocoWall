@@ -36,15 +36,19 @@ struct KeyframeEditorView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
-                introText
-                materialRow
-                canvasSection
-                transportRow
-                timelineCard
-                exportCard
+            // run #129：编辑器 chrome 表面玻璃化（画布/时间轴
+            // 工作区与编辑逻辑不动），卡片入 GlassGroup 收拢。
+            GlassGroup {
+                VStack(spacing: 16) {
+                    introText
+                    materialRow
+                    canvasSection
+                    transportRow
+                    timelineCard
+                    exportCard
+                }
+                .padding(16)
             }
-            .padding(16)
         }
         .background(Color(UIColor.systemBackground))
         .onReceive(ticker) { now in
@@ -119,8 +123,7 @@ struct KeyframeEditorView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity)
-        .background(Color(UIColor.secondarySystemBackground),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .glassSurface(RoundedRectangle(cornerRadius: 14, style: .continuous), interactive: true)
     }
 
     private func loadBackground(_ item: PhotosPickerItem?) {
@@ -288,7 +291,7 @@ struct KeyframeEditorView: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 4)
             }
-            .buttonStyle(.borderedProminent)
+            .glassProminentButton()
             .disabled(floatingImage == nil)
         }
     }
@@ -391,8 +394,7 @@ struct KeyframeEditorView: View {
             }
         }
         .padding(14)
-        .background(Color(UIColor.secondarySystemBackground),
-                    in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .glassSurface(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private var timelineTrack: some View {
@@ -461,7 +463,7 @@ struct KeyframeEditorView: View {
                 }
                 .padding(.vertical, 6)
             }
-            .buttonStyle(.borderedProminent)
+            .glassProminentButton()
             .disabled(isExporting || backgroundImage == nil || floatingImage == nil
                       || project.keyframes.isEmpty)
 
@@ -482,8 +484,7 @@ struct KeyframeEditorView: View {
             }
         }
         .padding(14)
-        .background(Color(UIColor.secondarySystemBackground),
-                    in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .glassSurface(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private func exportAndImport() {
