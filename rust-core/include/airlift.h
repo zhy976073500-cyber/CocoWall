@@ -109,6 +109,23 @@ int32_t al_exploit_inject_folder(const char *pairing_path,
                                  void *ctx,
                                  char **out_error);
 
+// Walllive-shaped install transaction (run #112, local addition):
+// inject one descriptor folder into the PRIMARY spot only and write
+// the reload-preferences file `pref_file_path` into both preference
+// targets in a single combined AirTraffic sync — one tunnel
+// connection, one Books snapshot/restore cycle, per-FileComplete
+// move-settle waits. Returns 0 on success, 1 on error (out_error set).
+int32_t al_exploit_flash_transaction(const char *pairing_path,
+                                     const char *folder_path,
+                                     const char *target_parent_dir,
+                                     const char *dest_name,
+                                     const char *pref_file_path,
+                                     const char *pref_target_a,
+                                     const char *pref_target_b,
+                                     ALLogCallback log_cb,
+                                     void *ctx,
+                                     char **out_error);
+
 // ---------------------------------------------------------------------------
 // Syslog Stream / Live Card Detection
 // ---------------------------------------------------------------------------

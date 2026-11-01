@@ -654,3 +654,119 @@ ATC 搬移链与删除审计、poster_refresh 的信号三分类与
 （ATC 同步落位，delete 链已有同款机制），属下一版
 议题，本版不夹带。cargo check 主机目标通过仅证编译
 （airlift_ffi 既有 3 条 dead_code 警告不变）。
+
+## 改动登记 · 克隆 Walllive 安装事务序列（run #112，2026-11-01）
+
+真机裁决现状（Sage 2026-11-01，#111）：信号已通——归档
+NSNumber aux 的 sendSignal 拿到干净回执（signal.reply
+data=none）→ old_process.gone → refresh_confirmed=true、
+1081ms、免注销。但 Sage 目视壁纸仍未进系统选择器；手动
+注销（整栈重启）后则能出现（Zenitsu 实证）。即：descriptor
+落盘可读、杀进程可达，差的是 PosterBoard 被杀重生后不列
+新 descriptor。本版不再动协议参数，转而克隆 Walllive 成功
+安装（2026-11-01 00:46，descriptor ECC3168C，其日志
+WallpaperImport-D01634B1….txt）与我方 #111 刷入之间的
+**事务形态**差异——五项逐项状态如下。
+
+### 五项差异逐项克隆状态
+
+1. **单事务只装主落点 —— 已克隆。** 他单事务只装
+   com.apple.WallpaperKit.CollectionsPoster（comparison
+   mode=primary_only、mirror_deferred=1、install.result
+   paths=1）；我方原为双落点背靠背各走完整周期。现
+   TendiesEngine.flashTendies 只走主落点事务，镜像落点
+   （com.apple.Posters.CollectionsPosterApp /
+   MercuryPosterApp）跳过并打日志
+   `comparison mode=primary_only mirror_deferred=1 target=…`。
+   镜像后续如何补装由主线另行决定，本版不实现。
+2. **偏好合并写 —— 已克隆。** 他 preferences.combined
+   targets=2、staging_sessions=1、sync_sessions=1，一次
+   同步 4 个资产（FileComplete 1/4..4/4、asset.confirmed
+   index 0..3），同事务内、Books 还原之前；其归档内第二
+   条链接名为同目录下的 link_1（WallLive 二进制字符串
+   实证：.../link、.../payload_0、.../link_1、
+   .../payload_1）。现新增 build_archive_two_links 按此
+   形状建包（同 p0/p1/p2 目录内 link + link_1、payload_0/
+   payload_1 同内容），事务第二阶段一次暂存、一次同步
+   写完两个偏好目标（容器 Preferences +
+   /var/mobile/Library/Preferences）。我方原为注入后另起
+   两次独立 batch 写（各一次快照/还原）。
+3. **单 Books 快照/还原周期 + 还原后立刻 refresh ——
+   前半已克隆、后半未克隆（结构不可达）。** 新 FFI
+   al_exploit_flash_transaction 在一条隧道连接内完成：
+   快照一次 → 主落点注入 → 合并偏好 → 还原一次，且还原
+   后回读校验（新增 afc.books.restore.end verified= 日志，
+   对齐他的 books.restore.end verified=true；失败时也先
+   还原再报错，不留暂存 Books.plist）。但他的 refresh
+   骑同一连接（connection=reused after_restore=true）：
+   al_poster_refresh 从配对文件自建隧道，现有 FFI 面没有
+   可跨调用交接的持久会话句柄，Swift 侧仍在事务结束后
+   以新连接调用 refresh（AppViewModel 调用点未动）——
+   维持 connection=new，明说未克隆。
+4. **atc.move.settle 等待 —— 已克隆（观测机制为推断）。**
+   他每次 FileComplete 后有 atc.move.settle confirmed
+   （约 300ms、fallback 5000ms）。新增 wait_move_settle：
+   每次 FileComplete 后经 AFC 轮询目标路径（100ms 间隔、
+   5000ms 上限）直至可见，打同名日志
+   `atc.move.settle confirmed=true/false duration_ms=…
+   fallback_ms=5000`，超时不致命、继续流程。他内部的确认
+   通道从日志不可见，本版克隆的是「等待本身」；若 AFC
+   不解析中间 symlink，最坏表现为每次多等 5s 并记
+   confirmed=false，真机日志可判。
+5. **审计 control 标记 —— 未克隆（所指未明，只记录）。**
+   他的装前/删除审计在 extensions 枚举后有一项
+   `*.audit.control present=true`（日志与 WallLive 二进制
+   格式串均实证存在）。字符串层面核查：二进制内两处裸
+   "control" 均为无关框架的 ObjC 属性名；审计代码所在
+   posterboard_delete.rs / posterboard_configuration.rs
+   附近字符串未给出该检查指向的文件/目录名。故无法确定
+   它是数据仓根部还是 Extensions 层的某个条目。该检查
+   属其只读审计路径（preflight/delete audit），不在安装
+   写入序列内，本版不臆造、不纳入。
+
+### 改动清单
+
+- rust-core/src/exploit.rs（纯新增，既有函数零改动）：
+  wait_move_settle、stage_via_conduit、write_books_plist、
+  restore_books_state、run_atc_asset_session、
+  flash_transaction_phases、exploit_flash_transaction、
+  build_archive_two_links、FFI 包装 flash_transaction。
+- rust-core/src/lib.rs：新增导出 al_exploit_flash_transaction。
+- rust-core/include/airlift.h：新增上述声明。
+- Sources/App/TendiesEngine.swift（受保护编排文件，最小
+  改动逐项登记）：偏好 plist 暂存前移到描述符循环之前
+  （内容逐字不变）；主落点改走 injectPrimaryTransaction
+  （新增私有辅助，调用新 FFI）；镜像落点改为跳过 + 打
+  mirror_deferred 日志；删除循环后独立偏好阶段（两次
+  writeDirectoryTree 调用）。writeDirectoryTree 与
+  injectDescriptorFolder 保留原样（暂无调用方，零风险）。
+  已知行为差：全部 item 解包/定位失败时旧流程仍会写
+  一次偏好、新流程不写（无成功注入时该写入无意义）；
+  多描述符时偏好随每笔事务重复写（内容幂等，与他
+  per-wallpaper 事务同形）。
+
+### 未动清单
+
+信号代码全部（#111 归档 aux、回执三分类、验活、
+already_stopped 复读）、poster_store 检测全链、
+exploit_inject_folder / exploit_write_dir /
+exploit_write_batch / exploit_run 既有实现、
+AppViewModel 的 refresh 调用点与未确认提示逻辑、
+UI 文案（仍显示应用成功）、受保护文件其余部分、
+.github/workflows。
+
+### 未验证项（诚实标注）
+
+唯一裁决项：真机刷一张 → **不注销** → 系统选择器里
+出现新壁纸。日志应出现的新形态关键行：
+install.transaction.begin descriptors=1 targets=2 →
+FileComplete [1/2]/[2/2] 各随一条 atc.move.settle →
+preferences.combined.begin → FileComplete [1/4]..[4/4]
+（各随 settle 与 preferences.asset.confirmed index
+0..3）→ afc.books.restore.end verified=true →
+install.result paths=1 mirror_deferred=1 → 随后既有
+poster_refresh 链 signal.reply + old_process.gone +
+refresh_confirmed=true。move.settle 的 AFC 轮询在真机
+是否解析中间 symlink、耗时几何，看首轮日志的
+confirmed 与 duration_ms。cargo check 主机目标通过
+（airlift_ffi 既有 3 条 dead_code 警告不变）。

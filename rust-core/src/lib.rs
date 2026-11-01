@@ -170,6 +170,45 @@ pub unsafe extern "C" fn al_exploit_inject_folder(
     }
 }
 
+/// Walllive-shaped install transaction (run #112, local addition in
+/// exploit.rs): inject one descriptor folder into the primary spot
+/// only, then write the reload-preferences file to both targets in a
+/// single combined AirTraffic sync — one tunnel connection, one Books
+/// snapshot/restore cycle, per-FileComplete move-settle waits.
+///
+/// # Safety
+/// All pointer arguments must be null or valid for their documented use.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn al_exploit_flash_transaction(
+    pairing_path: *const c_char,
+    folder_path: *const c_char,
+    target_parent_dir: *const c_char,
+    dest_name: *const c_char,
+    pref_file_path: *const c_char,
+    pref_target_a: *const c_char,
+    pref_target_b: *const c_char,
+    log_cb: exploit::ALLogCallback,
+    ctx: *mut c_void,
+    out_error: *mut *mut c_char,
+) -> i32 {
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        exploit::flash_transaction(
+            pairing_path, folder_path, target_parent_dir, dest_name,
+            pref_file_path, pref_target_a, pref_target_b, log_cb, ctx, out_error,
+        )
+    }));
+    match res {
+        Ok(rc) => rc,
+        Err(e) => {
+            if !out_error.is_null() {
+                *out_error = ffi_util::cstr(format!("Rust panic in al_exploit_flash_transaction: {e:?}"));
+            }
+            1
+        }
+    }
+}
+
 /// Free any `*mut c_char` returned by this library.
 ///
 /// # Safety

@@ -213,6 +213,33 @@ Third revision of the same addition, later the same day (run
   #110) while a string-argument call on the same channel
   worked — the message shape, not the transport, was refused.
 
+Fourth local source change, 2026-11-01 (run #112, registered in
+SPEC.md in the Walllive-transaction section):
+
+- `src/exploit.rs` — pure additions only, no existing function
+  changed: a Walllive-shaped install transaction
+  (`exploit_flash_transaction` + `flash_transaction` FFI wrapper)
+  that, inside one tunnel connection and one Books
+  snapshot/restore cycle, injects one descriptor folder into the
+  PRIMARY store spot only (mirror spot deferred), then writes the
+  reload-preferences file to both preference targets in a single
+  combined staging + AirTraffic session, then restores Books
+  (with a read-back verify the older per-operation paths never
+  did). New helpers: `wait_move_settle` (per-FileComplete AFC
+  destination poll, Walllive's atc.move.settle wait),
+  `stage_via_conduit`, `write_books_plist`,
+  `restore_books_state`, `run_atc_asset_session`,
+  `flash_transaction_phases`, and `build_archive_two_links`
+  (archive with two symlinks in the same p0/p1/p2 directory —
+  `link` and `link_1`, the shape Walllive's combined-preferences
+  sync uses). The subsequent poster_refresh stays a separate
+  FFI call: this surface has no persistent session handle, so
+  Walllive's connection=reused refresh is not cloned.
+- `src/lib.rs` — pure addition only: the
+  `al_exploit_flash_transaction` export.
+- `include/airlift.h` — pure addition only: the
+  `al_exploit_flash_transaction` declaration.
+
 Apart from the additions registered above, everything else in this
 tree remains a verbatim copy of upstream.
 The other adaptations live outside this directory:

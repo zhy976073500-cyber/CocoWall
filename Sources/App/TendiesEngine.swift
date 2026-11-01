@@ -270,6 +270,47 @@ public final class TendiesEngine {
 
         let totalItems = Double(items.count)
 
+        // Reload-preferences payload, staged once up front. As of run
+        // #112 it is written inside each descriptor's install
+        // transaction (Walllive shape: primary spot + combined
+        // preferences in one Books snapshot/restore cycle), not in a
+        // separate phase after the loop.
+        let stagePrefDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tendie_pref_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: stagePrefDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: stagePrefDir)
+        }
+
+        let prefPlistURL = stagePrefDir.appendingPathComponent("com.apple.PosterBoard.unprotectedUserDefaults.plist")
+        let prefDict: [String: Any] = [
+            "PBF_RESET_FILE_PROTECTIONS": true,
+            "PBF_LOCALE_DID_CHANGE": true,
+            "PersistedPosterContainerBundleIdentifiers": [
+                "com.apple.Posters.CollectionsPosterApp",
+                "com.apple.WallpaperKit.CollectionsPoster",
+                "com.apple.MercuryPoster",
+                "com.apple.Posters.MercuryPosterApp",
+                "com.apple.PhotosUIPrivate.PhotosPosterProvider"
+            ],
+            "CompletedPosterBundleIdentifierMigrations": [
+                "com.apple.Posters.UnityPosterApp.ExtragalacticPoster",
+                "com.apple.Posters.WeatherPosterApp.WeatherPoster",
+                "com.apple.Posters.UnityPosterApp.Unity2025Poster",
+                "com.apple.Posters.UnityPosterApp.UnityPosterExtension",
+                "com.apple.Posters.UnityPosterApp.RhizomePoster",
+                "com.apple.Posters.KaleidoscopePosterApp.KaleidoscopePoster"
+            ]
+        ]
+        let plistData = try PropertyListSerialization.data(fromPropertyList: prefDict, format: .binary, options: 0)
+        try plistData.write(to: prefPlistURL)
+
+        // Preference targets: PosterBoard container, then the mobile
+        // global preferences the system daemon looks up (Walllive's
+        // primary + global pair, written combined by the transaction).
+        let targetPrefDir = "\(normalizedContainer)/Library/Preferences"
+        let mobilePrefDir = "/var/mobile/Library/Preferences"
+
         for (itemIndex, item) in items.enumerated() {
             log("\n📦 [\(itemIndex + 1)/\(items.count)] Processing '\(item.name)'…")
 
@@ -302,17 +343,25 @@ public final class TendiesEngine {
                 // Update plist identifiers for templates/videos without suggestionMetadata
                 updatePlistIdentifiers(in: descItem.url, randomizedID: randomizedID)
 
-                // 1. Primary destination: matches descriptor extension bundle ID
+                // 1. Primary destination: matches descriptor extension bundle ID.
+                //    Run #112: installed via the Walllive-shaped transaction —
+                //    primary spot only + combined reload-preferences write in
+                //    a single Books snapshot/restore cycle (see Rust core).
                 let primaryParentDir = "\(normalizedContainer)/Library/Application Support/PRBPosterExtensionDataStore/\(structVersion)/Extensions/\(descItem.ext)/descriptors"
-                try await injectDescriptorFolder(
+                try await injectPrimaryTransaction(
                     folderURL: descItem.url,
                     targetParentDir: primaryParentDir,
                     destName: targetUUID,
+                    prefFileURL: prefPlistURL,
+                    prefTargetA: targetPrefDir,
+                    prefTargetB: mobilePrefDir,
                     pairingPath: pairingPath,
                     log: log
                 )
 
-                // 2. On iOS 18+, also dual-inject to modern .Posters.<Name>App container if applicable
+                // 2. Mirror destination (modern .Posters.<Name>App container):
+                //    deferred this transaction, mirroring Walllive's
+                //    primary_only install shape (install.result paths=1).
                 var modernExt: String? = nil
                 if descItem.ext == "com.apple.WallpaperKit.CollectionsPoster" {
                     modernExt = "com.apple.Posters.CollectionsPosterApp"
@@ -321,69 +370,16 @@ public final class TendiesEngine {
                 }
 
                 if let modernExt = modernExt, majorVer >= 18 {
-                    let modernParentDir = "\(normalizedContainer)/Library/Application Support/PRBPosterExtensionDataStore/\(structVersion)/Extensions/\(modernExt)/descriptors"
-                    try? await injectDescriptorFolder(
-                        folderURL: descItem.url,
-                        targetParentDir: modernParentDir,
-                        destName: targetUUID,
-                        pairingPath: pairingPath,
-                        log: log
-                    )
+                    log("    airlift: comparison mode=primary_only mirror_deferred=1 target=\(modernExt)")
                 }
             }
 
             progress(Double(itemIndex + 1) / (totalItems + 1))
         }
 
-        // Always force PosterBoard cache refresh and file protections reset
-        log("\n🔄 Forcing PosterBoard cache refresh and file protections reset…")
-        let stagePrefDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("tendie_pref_\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: stagePrefDir, withIntermediateDirectories: true)
-        defer {
-            try? FileManager.default.removeItem(at: stagePrefDir)
-        }
-
-        let prefPlistURL = stagePrefDir.appendingPathComponent("com.apple.PosterBoard.unprotectedUserDefaults.plist")
-        let prefDict: [String: Any] = [
-            "PBF_RESET_FILE_PROTECTIONS": true,
-            "PBF_LOCALE_DID_CHANGE": true,
-            "PersistedPosterContainerBundleIdentifiers": [
-                "com.apple.Posters.CollectionsPosterApp",
-                "com.apple.WallpaperKit.CollectionsPoster",
-                "com.apple.MercuryPoster",
-                "com.apple.Posters.MercuryPosterApp",
-                "com.apple.PhotosUIPrivate.PhotosPosterProvider"
-            ],
-            "CompletedPosterBundleIdentifierMigrations": [
-                "com.apple.Posters.UnityPosterApp.ExtragalacticPoster",
-                "com.apple.Posters.WeatherPosterApp.WeatherPoster",
-                "com.apple.Posters.UnityPosterApp.Unity2025Poster",
-                "com.apple.Posters.UnityPosterApp.UnityPosterExtension",
-                "com.apple.Posters.UnityPosterApp.RhizomePoster",
-                "com.apple.Posters.KaleidoscopePosterApp.KaleidoscopePoster"
-            ]
-        ]
-        let plistData = try PropertyListSerialization.data(fromPropertyList: prefDict, format: .binary, options: 0)
-        try plistData.write(to: prefPlistURL)
-
-        let targetPrefDir = "\(normalizedContainer)/Library/Preferences"
-        try await writeDirectoryTree(
-            sourceBaseDir: stagePrefDir,
-            targetBaseDir: targetPrefDir,
-            pairingPath: pairingPath,
-            log: log
-        )
-
-        // Also write to mobile global preferences for system daemon lookup
-        let mobilePrefDir = "/var/mobile/Library/Preferences"
-        try? await writeDirectoryTree(
-            sourceBaseDir: stagePrefDir,
-            targetBaseDir: mobilePrefDir,
-            pairingPath: pairingPath,
-            log: log
-        )
-        log("✅ PosterBoard preferences staged for reload")
+        // Run #112: the reload preferences are no longer a separate
+        // phase — each descriptor's install transaction writes them
+        // combined (both targets, one sync) before its Books restore.
 
         progress(1.0)
         log("\n🎉 All wallpapers injected successfully! Open Lock Screen settings or long-press lockscreen to choose your new wallpaper.")
@@ -563,6 +559,76 @@ public final class TendiesEngine {
                                     nil,
                                     &outError
                                 )
+                            }
+                        }
+                    }
+                }
+                if let p = outError {
+                    errDesc = String(cString: p)
+                    al_string_free(p)
+                }
+                cont.resume(returning: rc == 0)
+            }
+        }
+
+        if !ok {
+            throw NSError(
+                domain: "TendiesEngine",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to inject descriptor: \(errDesc ?? "exploit error")"]
+            )
+        }
+    }
+
+    // MARK: - Primary Transaction Injector (Walllive shape, run #112)
+
+    /// One Walllive-shaped install transaction in the Rust core:
+    /// primary-spot descriptor inject + combined reload-preferences
+    /// write (both targets, one sync) inside a single Books
+    /// snapshot/restore cycle. The mirror spot is deferred by design.
+    private func injectPrimaryTransaction(
+        folderURL: URL,
+        targetParentDir: String,
+        destName: String,
+        prefFileURL: URL,
+        prefTargetA: String,
+        prefTargetB: String,
+        pairingPath: String,
+        log: @escaping (String) -> Void
+    ) async throws {
+        log("  📦 Injecting '\(destName)' into \(targetParentDir)…")
+        var errDesc: String? = nil
+        let ok: Bool = await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var outError: UnsafeMutablePointer<CChar>? = nil
+                let rc = pairingPath.withCString { pairC in
+                    folderURL.path.withCString { folderC in
+                        targetParentDir.withCString { parentC in
+                            destName.withCString { destC in
+                                prefFileURL.path.withCString { prefC in
+                                    prefTargetA.withCString { aC in
+                                        prefTargetB.withCString { bC in
+                                            al_exploit_flash_transaction(
+                                                pairC,
+                                                folderC,
+                                                parentC,
+                                                destC,
+                                                prefC,
+                                                aC,
+                                                bC,
+                                                { _, msg in
+                                                    guard let msg = msg else { return }
+                                                    let line = String(cString: msg)
+                                                    DispatchQueue.main.async {
+                                                        AppViewModel.shared?.tendiesFlashLog.append("    " + line)
+                                                    }
+                                                },
+                                                nil,
+                                                &outError
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
