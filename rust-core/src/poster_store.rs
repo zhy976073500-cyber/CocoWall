@@ -27,11 +27,24 @@
 //! <source>/p0/p1/p2/link — an AFC rename to the Media root is refused
 //! (InvalidArg, hardware log run #108; the flash flow never renames
 //! its link either, its root-level airlift-link is landed by the ATC
-//! sync itself), so the archive's symlink target is computed for the
-//! staged depth instead: six ../ to climb from the link's directory
-//! to /var, then the container tail. If that relative target does not
-//! traverse, an absolute-target archive is staged and tried in the
-//! same session before the failure is reported.
+//! sync itself). Which symlink target the archive may carry is
+//! settled by the run #110 stage.diag log: archives whose target
+//! escapes the staging directory (six ../ to /var, or the absolute
+//! path) never extracted AT ALL — every level of the scratch tree,
+//! payload included, read back Afc(ObjectNotFound), both variants,
+//! multiple rounds — while the flash geometry (`../../../<tail>`,
+//! resolving inside the staging directory) extracts on this device
+//! every time (every flash + run #108's staging). The conduit
+//! evidently refuses or rolls back an archive whose symlink target
+//! leaves the extraction root. The session therefore plants the
+//! flash geometry first and keeps the #109 targets as fallbacks.
+//! One trap in the flash geometry at staged depth: its target is
+//! calibrated for the link's post-sync position at the Media root,
+//! so from <source>/p0/p1/p2 it resolves into the archive's own
+//! mirrored tail tree, not the real store. A variant therefore only
+//! counts as traversable when listing through the link returns a
+//! NON-EMPTY Extensions listing — an empty listing is the mirror
+//! (the real store always holds the system poster extensions).
 //!
 //!   1. Open an RSD tunnel (same idevice_ffi tunnel_provider primitives
 //!      and host strategy as poster_refresh::connect_rsd: last working
@@ -476,18 +489,23 @@ async fn plant_store_link(
 
     upload_stage_archive(adapter, handshake, &source, &archive, logger).await?;
 
+    // Verification mirrors exploit's staging check exactly: scratch
+    // dir, link, and payload must all read back through AFC.
     let staged_link = format!("{source}/p0/p1/p2/link");
     let stage_ok = afc.get_file_info(&source).await.is_ok()
-        && afc.get_file_info(&staged_link).await.is_ok();
+        && afc.get_file_info(&staged_link).await.is_ok()
+        && afc.get_file_info(format!("{source}/payload")).await.is_ok();
     if !stage_ok {
-        // DIAGNOSTIC (run #110): the #109 archives verify-failed on
-        // device for both target variants while the #108 archive
-        // (target ../../../<tail>, resolving inside the staging dir)
-        // passed this same check. AFC get_file_info is lstat-like (it
-        // reports a symlink's own st_ifmt/st_link_target), so the
-        // target string can only matter if the conduit extractor
-        // dropped the entry. Enumerate the extracted tree level by
-        // level so the next device log shows exactly what landed.
+        // DIAGNOSTIC (introduced run #110, retained): the #109
+        // archives verify-failed on device for both target variants
+        // while the #108 archive (target ../../../<tail>, resolving
+        // inside the staging dir) passed this same check, and the
+        // #110 diag log then showed the whole scratch tree missing —
+        // the extractor drops such archives wholesale. AFC
+        // get_file_info is lstat-like (it reports a symlink's own
+        // st_ifmt/st_link_target), so the target string can only
+        // matter through the extractor. Enumerate the extracted tree
+        // level by level so the device log shows exactly what landed.
         for level in [
             source.clone(),
             format!("{source}/p0"),
@@ -585,17 +603,27 @@ async fn open_store_session(
     // is used in place at <source>/p0/p1/p2/link — an AFC rename to
     // the Media root is refused too (InvalidArg, hardware log run
     // #108), and the flash flow never renames either (its root-level
-    // link is landed by the ATC sync) — so the archive's symlink
-    // target is computed for the staged depth: the link's directory
-    // is Media/<source>/p0/p1/p2, six ../ climb to /var, then the
-    // container tail follows. If the relative target does not
-    // traverse, an absolute-target archive is tried in this same
-    // session before the failure is reported.
+    // link is landed by the ATC sync).
+    //
+    // Variant order (run #111, per the run #110 stage.diag verdict —
+    // see module doc): the flash geometry first, because it is the
+    // only target shape proven to extract at all on this device; the
+    // #109 targets follow as fallbacks. A variant is accepted only
+    // when listing through the planted link returns a non-empty
+    // Extensions listing: the flash geometry resolves into the
+    // archive's own mirrored tail tree at staged depth, whose
+    // Extensions level is empty, while the real store always lists
+    // the system poster extensions — an empty listing is the mirror,
+    // never the store, and must not be enumerated as one.
     let target = extensions_abs(container_path, struct_version);
     let rel_tail = target
         .strip_prefix("/var/")
         .unwrap_or_else(|| target.trim_start_matches('/'));
-    let variants: [(&str, String); 2] = [
+    let variants: [(&str, String); 3] = [
+        (
+            "exploit-geometry",
+            format!("../../../{}", target.trim_start_matches('/')),
+        ),
         ("relative-depth", format!("../../../../../../{rel_tail}")),
         ("absolute", target.clone()),
     ];
@@ -613,12 +641,35 @@ async fn open_store_session(
         )
         .await
         {
-            Ok(link_and_source) => {
-                logger.log(format!(
-                    "airlift: airlift.poster_store.link.traversable=true variant={variant}"
-                ));
-                planted = Some(link_and_source);
-                break;
+            Ok((link_path, source)) => {
+                let probe = afc.list_dir(link_path.clone()).await.map(|entries| {
+                    visible_entries(entries).len()
+                });
+                match probe {
+                    Ok(n) if n > 0 => {
+                        logger.log(format!(
+                            "airlift: airlift.poster_store.link.traversable=true variant={variant} extensions={n}"
+                        ));
+                        planted = Some((link_path, source));
+                        break;
+                    }
+                    Ok(_) => {
+                        let msg = "staged link lists an empty Extensions tree (the archive's mirrored tail), not the data store".to_string();
+                        logger.log(format!(
+                            "airlift: airlift.poster_store.link.traversable=false variant={variant} error={msg}"
+                        ));
+                        failures.push(format!("[{variant}] {msg}"));
+                        let _ = afc.remove_all(&source).await;
+                    }
+                    Err(e) => {
+                        let msg = format!("AFC cannot list through the staging symlink: {e:?}");
+                        logger.log(format!(
+                            "airlift: airlift.poster_store.link.traversable=false variant={variant} error={msg}"
+                        ));
+                        failures.push(format!("[{variant}] {msg}"));
+                        let _ = afc.remove_all(&source).await;
+                    }
+                }
             }
             Err(msg) => {
                 logger.log(format!(

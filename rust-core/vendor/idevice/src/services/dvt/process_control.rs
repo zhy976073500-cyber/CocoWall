@@ -319,6 +319,29 @@ impl<'a, R: ReadWrite> ProcessControlClient<'a, R> {
     /// later. Hence this form awaits the reply and returns its
     /// payload so the caller can log what the service actually said.
     ///
+    /// AUX ENCODING (second revision, 2026-11-01, run #111): the
+    /// arguments are NSKeyedArchiver-archived NSNumbers carried in
+    /// type-0x02 buffer aux entries — NOT raw integer primitives.
+    /// pymobiledevice3 master (doronz88/pymobiledevice3 @ 5234545)
+    /// is explicit about the distinction:
+    /// `pymobiledevice3/services/dvt/instruments/process_control.py`
+    /// declares `send_signal_to_pid_(self, sig: int, pid: int)` with
+    /// plain `int` annotations, while the neighbouring
+    /// `request_disable_memory_limits_for_pid_(self, pid: PInt32)`
+    /// opts into the raw 32-bit primitive (wire type 3) via the
+    /// `PInt32` wrapper. In `pymobiledevice3/dtx/message_aux.py`,
+    /// `MessageAux.build` translates every argument that is not a
+    /// primitive wrapper into an NSKeyedArchiver-encoded blob
+    /// (`PBuf(archiver.archive(arg))`), so a plain `int` travels as
+    /// an archived NSNumber. This method's previous form sent
+    /// `AuxValue::U32` raw primitives (wire type 3) for both values;
+    /// on hardware the service rejected that message shape twice —
+    /// an UnexpectedResponse reply (run #108) and an immediate
+    /// server-side connection close / BrokenPipe (run #110) — while
+    /// a string-argument call on the same channel worked. The
+    /// in-tree precedent for archived numeric aux is
+    /// `energy_monitor::archive_pids` (`AuxValue::archived_value`).
+    ///
     /// # Arguments
     /// * `pid` - Process ID to signal
     /// * `signal` - POSIX signal number (e.g. 9 for SIGKILL)
@@ -337,7 +360,10 @@ impl<'a, R: ReadWrite> ProcessControlClient<'a, R> {
             .channel
             .call_method_with_reply(
                 Some(Value::String("sendSignal:toPid:".into())),
-                Some(vec![AuxValue::U32(signal), AuxValue::U32(pid as u32)]),
+                Some(vec![
+                    AuxValue::archived_value(Value::Integer((signal as i64).into())),
+                    AuxValue::archived_value(Value::Integer((pid as i64).into())),
+                ]),
             )
             .await?;
 

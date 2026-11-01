@@ -16,9 +16,17 @@
 //!   3. Via the deviceinfo channel, list running processes and lock onto the
 //!      PosterBoard daemon's pid (process name "PosterBoard"), verifying
 //!      identity with execname_for_pid. If the list reads fine but holds
-//!      no PosterBoard entry, the daemon is already stopped and the
-//!      refresh counts as confirmed (Walllive's already_stopped branch);
-//!      a failed list read is still an error.
+//!      no PosterBoard entry, the list is re-read once after a short
+//!      delay before concluding anything (run #111): a single snapshot
+//!      can catch the daemon mid-restart — e.g. torn down by the sync
+//!      that just ran and already relaunched by the time it is read
+//!      again — and run #109's already_stopped confirmation was
+//!      followed by the wallpaper NOT appearing until a manual
+//!      respring, so one snapshot is no longer trusted on its own.
+//!      If the second list also holds no PosterBoard, the daemon is
+//!      already stopped and the refresh counts as confirmed
+//!      (Walllive's already_stopped branch); a failed first list read
+//!      is still an error.
 //!   4. Via the processcontrol channel, deliver SIGKILL to that pid
 //!      (ProcessControlClient::send_signal -> channel method
 //!      sendSignal:toPid:, reply awaited and logged as signal.reply).
@@ -358,17 +366,42 @@ async fn exploit_poster_refresh(pairing_path: String, logger: &PRLogger) -> Refr
                 format!("runningProcesses failed: {e:?}"),
             )
         })?;
-        let candidate = processes
-            .iter()
-            .find(|p| p.name == POSTERBOARD_PROCESS || p.real_app_name == POSTERBOARD_PROCESS)
-            .map(|p| p.pid);
-        let Some(pid) = candidate.filter(|p| *p != 0) else {
-            // The process list WAS read successfully and PosterBoard is
-            // simply not in it: the daemon is not running, so there is
-            // nothing to restart — when it next launches it reads the
-            // store fresh. Walllive treats this as a confirmed refresh
+        let find_posterboard = |list: &[idevice::dvt::device_info::RunningProcess]| {
+            list.iter()
+                .find(|p| p.name == POSTERBOARD_PROCESS || p.real_app_name == POSTERBOARD_PROCESS)
+                .map(|p| p.pid)
+                .filter(|p| *p != 0)
+        };
+        let mut candidate = find_posterboard(&processes);
+        if candidate.is_none() {
+            // One snapshot is not trusted for an absence claim (see
+            // module doc, step 3): wait briefly and read the list a
+            // second time. If the daemon shows up now, it was only
+            // mid-restart and the normal signal path below handles
+            // it. A failed re-read keeps the first list's verdict —
+            // the absence conclusion then rests on the successful
+            // first read plus this logged notice.
+            logger.log("airlift: airlift.poster_refresh.already_stopped.recheck attempt=1");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            match info.running_processes().await {
+                Ok(list2) => {
+                    candidate = find_posterboard(&list2);
+                }
+                Err(e) => {
+                    logger.log(format!(
+                        "airlift: airlift.poster_refresh.already_stopped.recheck failed error={e:?}"
+                    ));
+                }
+            }
+        }
+        let Some(pid) = candidate else {
+            // The process list WAS read successfully (twice — see the
+            // recheck above) and PosterBoard is simply not in it: the
+            // daemon is not running, so there is nothing to restart —
+            // when it next launches it reads the store fresh. Walllive
+            // treats this as a confirmed refresh
             // (airlift.poster_refresh.already_stopped), not a failure.
-            // (A failed running_processes() read above still errors.)
+            // (A failed first running_processes() read still errors.)
             logger.log("airlift: airlift.poster_refresh.already_stopped confirmed=true");
             logger.log(format!(
                 "airlift: airlift.poster_refresh.end refresh_confirmed=true duration_ms={}",

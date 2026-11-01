@@ -531,3 +531,126 @@ build_delete_archive 镜像出的同名目录树（故 lstat 型校验通
 
 未验证项：诊断结论待 Sage 真机跑 #110 检测后看 stage.diag
 日志行定案；确证机制后再出修复版。
+
+## 改动登记 · 信号 aux 归档编码 + already_stopped 复读 + 检测暂存对齐 exploit（run #111，2026-11-01）
+
+真机新事实（Sage 2026-11-01 14:44–14:48，#110）：
+
+(1) 检测 stage.diag 定案方向：两变体多轮重复，暂存目录
+每一级 list 均为 Afc(ObjectNotFound)——整个 cocowall-src
+目录在 AFC 视角不存在，不是 symlink 单条被丢；同机注入
+侧暂存校验（exploit 路径）每次必过。
+
+(2) 刷 Zenitsu-DS 的 poster_refresh：identity 验证过
+pid=20512，signal.begin 后当场 BrokenPipe（服务端掐断
+连接）→ killFailed。结合 #108 同调用回 UnexpectedResponse，
+信号消息形态被服务端拒已两度坐实；identity 与信号的差异
+只在 aux 数值编码。
+
+(3) #110 刷入的壁纸在 Sage 手动注销后出现——注入数据
+完好、系统可读，唯一缺步是 PosterBoard 实时重读。信号
+修复由此成为唯一主线，aux 整数类型为既定裁决变量。
+
+### 改动一（主线）：send_signal 的 aux 改为归档 NSNumber
+
+先查 pymobiledevice3 源码定型（doronz88/pymobiledevice3
+master @ 5234545，2026-11-01 联网回读）：
+
+- `pymobiledevice3/services/dvt/instruments/process_control.py`
+  第 53–54 行：`@dtx_method("sendSignal:toPid:")` 的
+  `send_signal_to_pid_(self, sig: int, pid: int)` 参数为裸
+  `int`；同文件第 57 行的
+  `request_disable_memory_limits_for_pid_(self, pid: PInt32)`
+  则显式用 PInt32（原始 32 位 primitive，wire type 3）——
+  两者区别是作者有意为之。
+- `pymobiledevice3/dtx/message_aux.py` 的
+  `MessageAux.build`：非 primitive 参数一律译为
+  NSKeyedArchiver 编码的 blob（`PBuf(archiver.archive(arg))`）。
+  故 sendSignal 的 sig/pid 在 pymobiledevice3 中的确切
+  形态 = 各自一个归档 NSNumber，装在 type-0x02 buffer
+  aux 条目里；不存在「裸 int 即 U64 primitive」的写法
+  （裸 int 不走 primitive 通道）。primitive 常量对照在
+  `pymobiledevice3/dtx/primitives.py`：Int32 = type 3
+  （i32）、Int64 = type 6（i64）。
+
+据此改 vendored `process_control.rs` 的 `send_signal`
+一处：aux 由 `[U32 signal, U32 pid]` 改为
+`[archived_value(Integer signal), archived_value(Integer pid)]`
+（`AuxValue::archived_value`，仓内先例
+`energy_monitor::archive_pids`）。selector、参数序
+(signal, pid)、带回执调用（call_method_with_reply）、
+poster_refresh 的回执三分类与验活段全部不动。方法注释
+已补记出处与两度被拒的真机证据。
+
+### 改动二（连带核查）：already_stopped 判定加一次复读
+
+起因：#109 poster_refresh 遇 already_stopped 返回
+confirmed，事后壁纸并未在选择器出现（直到手动注销才
+有，见事实 (3)）。代码核查结论：already_stopped 的判定
+依据是 identity 阶段唯一一次 running_processes 快照——
+若 PosterBoard 恰在该瞬间处于被系统拉起/终止的中间态
+（如被刚跑完的同步牵连重启），单次快照会把「正在重启」
+误读为「已停止」，其后它带着旧缓存回来，confirmed 即
+落空。改法（只动 poster_refresh.rs identity 阶段）：
+首次名单无 PosterBoard 时，打
+`already_stopped.recheck attempt=1`，隔 500ms 复读一次
+名单；复读找到 pid 则走正常信号路径；复读失败保留首读
+结论并打日志；两次都无才按 already_stopped confirmed
+返回。验活主体逻辑（杀后新连接轮询等）未动。
+
+### 改动三（次线）：poster_store 暂存与 exploit 逐项对齐
+
+逐行对照结论（poster_store vs exploit.rs，两版远端原文
+ac16bfc/b9c7676 与本地 exploit）：conduit 回执读法
+（4 字节头 + body 全读后才 drop）、MediaSubdir 键值
+格式、会话关闭时机、connect_service_rsd 实现、AFC 校验
+客户端（RSD handshake AfcClient）——全部与 exploit 已
+验证路径一致，逐一证伪；#108→#109 抽 helper 无参数
+丢失。唯一功能差异只剩暂存包内 symlink 的目标字符串：
+exploit 与 #108 恒为 `../../../<tail>`（在暂存目录内
+自洽解析），#109 两变体都逃出提取根。结合事实 (1)
+（整目录各级 ObjectNotFound、payload 普通文件亦不在），
+机制定案为：conduit 提取对「symlink 目标逃出提取根」
+的归档整体不落盘（拒绝或回滚），非单条丢弃。
+
+改法（只动 poster_store.rs）：
+
+- 暂存校验对齐 exploit 三件验：scratch 目录 + link +
+  payload 三者 AFC 回读通过才算落地（原为两件）。
+- 变体顺序改为 exploit 几何优先：(1) `exploit-geometry`
+  = `../../../<tail>`（唯一已证能提取落地的目标形）；
+  (2) `relative-depth`、(3) `absolute` 两变体保留为后备，
+  顺序与目标字符串不变。
+- 穿通验收加非空判定：列得出 Extensions 且条目非空才
+  记 `link.traversable=true variant=… extensions=N`。
+  exploit 几何在暂存深度解析进包内镜像目录树，其
+  Extensions 层为空——空列表是镜像、不是数据仓，不得
+  据此枚举（真实数据仓恒有系统扩展，Walllive 审计计数
+  22）。空穿通记 traversable=false 并继续下一变体、
+  清理该暂存目录。
+- stage.diag 日志保留（已证明有用）；模块头文档同步
+  更正机制定案。
+
+### 未动清单
+
+exploit.rs（只读对照）、注入全链、delete_operation 的
+ATC 搬移链与删除审计、poster_refresh 的信号三分类与
+验活主体、#95 不自动注销、Swift 侧、lib.rs、airlift.h、
+受保护文件、.github/workflows。
+
+### 未验证项（诚实标注）
+
+(1) 归档 NSNumber 形态的 sendSignal 是否被服务端接受
+并真正杀掉 PosterBoard——看真机 `signal.reply` 行 +
+`old_process.gone` / `refresh_confirmed=true`，且壁纸
+不经手动注销即出现在选择器。这是本版裁决项。
+(2) already_stopped 复读是否捕获到 #109 式的中间态——
+看真机日志有无 recheck 后转入 signal.begin 的实例。
+(3) 检测：exploit-geometry 变体应首次出现暂存落地
+（stage.diag 不再整树 ObjectNotFound / link.staged），
+但其穿通按设计会被判镜像空列表而拒绝——即本版检测
+预期仍报 stageFailed，但失败点从「整目录不可见」推进
+到「穿通几何」：真正的仓内穿通需把链接落到 Media 根
+（ATC 同步落位，delete 链已有同款机制），属下一版
+议题，本版不夹带。cargo check 主机目标通过仅证编译
+（airlift_ffi 既有 3 条 dead_code 警告不变）。

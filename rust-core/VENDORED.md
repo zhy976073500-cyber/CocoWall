@@ -67,7 +67,28 @@ store detect/cleanup feature, registered in SPEC.md):
   mechanism. plant_store_link's verification-failure branch
   now logs a level-by-level enumeration of the extracted
   staging tree (stage.diag lines) before cleanup; behavior
-  otherwise unchanged.) Deletion does NOT erase through AFC: each
+  otherwise unchanged.) (Third revision, run #111: the #110
+  diag log settled it — for BOTH escaping-target variants the
+  entire scratch tree (root, p0/p1/p2, payload) read back
+  Afc(ObjectNotFound) across repeated rounds, while the flash
+  staging with the ../../../ geometry extracts on the same
+  device every time; line-by-line comparison against
+  exploit.rs showed the upload wire steps (MediaSubdir init,
+  archive write, 4-byte + body response read, drop, RSD
+  connect_service, AFC verification client) were already
+  identical, the ONLY functional delta being the archive's
+  symlink target string, so the conduit evidently refuses or
+  rolls back archives whose symlink target leaves the
+  extraction root. Staging verification now matches exploit's
+  three-object check (dir + link + payload), and the variant
+  order is: `exploit-geometry` (../../../<tail>) first, the
+  #109 `relative-depth` and `absolute` targets retained as
+  fallbacks. Acceptance additionally requires listing through
+  the planted link to return a NON-EMPTY Extensions listing:
+  at staged depth the flash geometry resolves into the
+  archive's own mirrored tail tree (empty at the Extensions
+  level), which must not be enumerated as the store. The
+  stage.diag logging is retained.) Deletion does NOT erase through AFC: each
   descriptor is moved out of the store by an AirTraffic/Books sync
   whose two books (staging link + the descriptor, identified by its
   Airlock-escaping relative path) make the on-device ATAirlock daemon
@@ -81,7 +102,14 @@ store detect/cleanup feature, registered in SPEC.md):
   in the identity stage, a successfully read process list with no
   PosterBoard entry now returns confirmed with an
   `already_stopped` log line (Walllive parity) instead of a
-  pidNotFound failure. No other line changed.
+  pidNotFound failure. No other line changed. (Run #111: the
+  absence verdict now requires a second process-list read 500ms
+  after the first — logged as `already_stopped.recheck
+  attempt=1` — because run #109's single-snapshot
+  already_stopped confirmation was followed by the wallpaper
+  not appearing until a manual respring; if the re-read finds
+  PosterBoard, the normal signal path proceeds. The kill-path
+  verification logic is unchanged.)
 - `src/lib.rs` — pure additions only: `pub mod poster_store;` and the
   new FFI exports `al_poster_store_list` / `al_poster_store_delete`
   (with catch_unwind wrappers). No existing line changed.
@@ -159,6 +187,31 @@ receipt-classification section):
   verification as if delivered; only channel/connection-level
   errors (the message never left) still map to killFailed with
   the original error. Verification alone decides the outcome.
+
+Third revision of the same addition, later the same day (run
+#111; registered in SPEC.md in the aux-encoding section):
+
+- The aux ENCODING of `send_signal` changed: from raw integer
+  primitives `[U32 signal, U32 pid]` (wire type 3) to
+  NSKeyedArchiver-archived NSNumbers in type-0x02 buffer aux
+  entries, via the in-tree `AuxValue::archived_value`
+  (precedent: `energy_monitor::archive_pids`). Selector,
+  argument order (signal, pid), and the awaited-reply call are
+  unchanged. Basis, from pymobiledevice3 master
+  (doronz88/pymobiledevice3 @ 5234545, read 2026-11-01):
+  `services/dvt/instruments/process_control.py` declares
+  `send_signal_to_pid_(self, sig: int, pid: int)` with plain
+  `int` annotations, pointedly NOT the `PInt32` primitive
+  wrapper it uses for `request_disable_memory_limits_for_pid_`
+  in the same file; and `dtx/message_aux.py`'s
+  `MessageAux.build` translates every non-primitive argument
+  into an NSKeyedArchiver-encoded blob — so pymobiledevice3
+  sends both values as archived NSNumbers. Hardware motive:
+  with the U32-primitive shape the service twice rejected the
+  message itself (UnexpectedResponse reply, run #108;
+  server-side BrokenPipe the moment the signal was sent, run
+  #110) while a string-argument call on the same channel
+  worked — the message shape, not the transport, was refused.
 
 Apart from the additions registered above, everything else in this
 tree remains a verbatim copy of upstream.
