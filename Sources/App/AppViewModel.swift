@@ -85,6 +85,13 @@ final class AppViewModel: ObservableObject {
     @Published var isScanningDevicePosters: Bool = false
     @Published var isCleaningDevicePosters: Bool = false
     @Published var devicePosterStatus: String = ""
+    /// Quarantine recovery (run #115): folders previous cleanups
+    /// moved into the device Media quarantine, merged with the
+    /// locally persisted delete receipts for provenance.
+    @Published var quarantineEntries: [QuarantineDisplayItem] = []
+    @Published var isLoadingQuarantine: Bool = false
+    @Published var isRestoringQuarantine: Bool = false
+    @Published var quarantineStatus: String = ""
     @Published var showDevicePosterSheet: Bool = false
 
     // MARK: - AirCard UI States & Properties
@@ -1105,7 +1112,19 @@ final class AppViewModel: ObservableObject {
             var message = "清理完成：成功 \(r.deleted) 条"
             if r.failed > 0 { message += "，失败 \(r.failed) 条" }
             message += "。"
+            // Run #115: persist a recovery receipt per deleted item
+            // (quarantine folder -> provider + UUID), so the
+            // quarantine section below can offer a reliable restore.
+            PosterStoreReceipts.record(r.results.compactMap { item in
+                guard item.ok, !item.quarantine.isEmpty else { return nil }
+                return PosterStoreReceipts.Receipt(
+                    quarantine: item.quarantine,
+                    extensionId: item.extension,
+                    uuid: item.uuid
+                )
+            })
             await detectDevicePosters(clearStatus: false)
+            await loadQuarantine()
             devicePosterStatus = message
             isCleaningDevicePosters = false
             // Removal only takes effect once PosterBoard re-reads its
@@ -1129,6 +1148,111 @@ final class AppViewModel: ObservableObject {
         case .failure(let err):
             isCleaningDevicePosters = false
             devicePosterStatus = "清理失败：\(err.localizedDescription)"
+        }
+    }
+
+    /// 隔离区列表（run #115 恢复）：lists the quarantine folders
+    /// previous cleanups left in the device Media root, merged with
+    /// the persisted delete receipts (receipt provenance wins over
+    /// the scan's content guesses).
+    func loadQuarantine() async {
+        guard !isLoadingQuarantine else { return }
+        guard let ctx = await posterStoreContext() else { return }
+
+        isLoadingQuarantine = true
+        let result: Result<[PosterStoreHelper.QuarantineItem], PosterStoreError> = await withCheckedContinuation { cont in
+            PosterStoreHelper.listQuarantine(
+                pairingPath: ctx.pairingPath,
+                log: { [weak self] line in
+                    DispatchQueue.main.async {
+                        self?.tendiesFlashLog.append(line)
+                    }
+                }
+            ) { result in
+                cont.resume(returning: result)
+            }
+        }
+        isLoadingQuarantine = false
+        switch result {
+        case .success(let items):
+            let receipts = PosterStoreReceipts.load()
+            quarantineEntries = items.map { item in
+                let receipt = receipts[item.quarantine]
+                let extensionId = receipt?.extensionId ?? item.providerGuess
+                let uuid = receipt?.uuid ?? item.uuid
+                let name = !item.packageName.isEmpty
+                    ? item.packageName
+                    : (uuid.isEmpty ? item.quarantine : String(uuid.prefix(8)))
+                return QuarantineDisplayItem(
+                    quarantine: item.quarantine,
+                    uuid: uuid,
+                    extensionId: extensionId,
+                    name: name,
+                    providerKnown: !extensionId.isEmpty
+                )
+            }
+        case .failure(let err):
+            quarantineStatus = "隔离区读取失败：\(err.localizedDescription)"
+        }
+    }
+
+    /// 恢复一条隔离区壁纸（run #115）：moves the descriptor back
+    /// into the store, re-detects, then tries the no-respring
+    /// refresh so it takes effect.
+    func restoreQuarantineEntry(_ entry: QuarantineDisplayItem) async {
+        guard !isRestoringQuarantine, entry.providerKnown else { return }
+        guard let ctx = await posterStoreContext() else { return }
+
+        isRestoringQuarantine = true
+        quarantineStatus = ""
+        let version = posterStoreStructVersion
+        let target = (quarantine: entry.quarantine, extensionId: entry.extensionId, uuid: entry.uuid)
+        let result: Result<PosterStoreHelper.RestoreResponse, PosterStoreError> = await withCheckedContinuation { cont in
+            PosterStoreHelper.restoreQuarantine(
+                pairingPath: ctx.pairingPath,
+                containerPath: ctx.container,
+                structVersion: version,
+                targets: [target],
+                log: { [weak self] line in
+                    DispatchQueue.main.async {
+                        self?.tendiesFlashLog.append(line)
+                    }
+                }
+            ) { result in
+                cont.resume(returning: result)
+            }
+        }
+
+        switch result {
+        case .success(let r):
+            if r.restored > 0 {
+                PosterStoreReceipts.remove(quarantine: entry.quarantine)
+                quarantineStatus = "已恢复「\(entry.name)」，正在刷新…"
+                await detectDevicePosters(clearStatus: false)
+                await loadQuarantine()
+                isRestoringQuarantine = false
+                PosterRefreshHelper.attemptRefresh(
+                    pairingPath: ctx.pairingPath,
+                    log: { [weak self] line in
+                        DispatchQueue.main.async {
+                            self?.tendiesFlashLog.append(line)
+                        }
+                    }
+                ) { [weak self] confirmed, _ in
+                    guard let self else { return }
+                    if confirmed {
+                        self.quarantineStatus = "已恢复「\(entry.name)」并刷新生效。"
+                    } else {
+                        self.quarantineStatus = "已恢复「\(entry.name)」；自动刷新未确认，可手动注销一次生效。"
+                    }
+                }
+            } else {
+                isRestoringQuarantine = false
+                quarantineStatus = "恢复失败，请查看日志。"
+            }
+        case .failure(let err):
+            isRestoringQuarantine = false
+            quarantineStatus = "恢复失败：\(err.localizedDescription)"
         }
     }
 

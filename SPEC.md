@@ -1131,3 +1131,18 @@ TendiesEngine（C 的修复方向待定案后单独处理）、工作流文件�
   或 skipped=true），Phase 2 总时长从 ~12700ms 明显回落；
   index=0/2 维持 ~103ms confirmed=true；合并偏好结论与壁纸
   进选择器不受影响。
+
+### CI 修复补记（run #121，2026-11-01）
+
+#115 首推（run 41295394323）CI 构建失败（Build 步 exit 65、无日志可读），
+经 #116–#120 五轮 bisect 收窄（#117 证 Rust 侧单独绿；TendiesView、
+新 FFI 链接相继洗清；#116 一步因 #114 版 VM 与 #115 helper 的
+deleteImported 签名天然不兼容而被污染，不作证据），最终用本地 Swift
+工具链 typecheck 定案：PosterStoreHelper 是 public enum，#115 把
+DeleteResponse 由 private 改为 internal 后又让 public 方法
+deleteImported 的 completion 暴露该类型，连同 listQuarantine
+（QuarantineItem）、restoreQuarantine（RestoreResponse）共三处
+「public method cannot use internal type」编译错误。修复：三个结构体
+及其成员（含嵌套 ItemResult）改为 public，与同文件 DevicePosterItem
+的既有写法一致；其余 #115 代码逐字未动。本地 swiftc -typecheck
+（Swift 6.1 + airlift.h modulemap）修复后零错误。

@@ -62,46 +62,46 @@ public enum PosterStoreHelper {
         let items: [DevicePosterItem]
     }
 
-    struct DeleteResponse: Codable {
-        struct ItemResult: Codable {
-            let `extension`: String
-            let uuid: String
-            let ok: Bool
+    public struct DeleteResponse: Codable {
+        public struct ItemResult: Codable {
+            public let `extension`: String
+            public let uuid: String
+            public let ok: Bool
             /// Media quarantine folder the descriptor was moved into
             /// (run #115: decoded so the caller can persist a recovery
             /// receipt; the Rust payload has carried it all along).
-            let quarantine: String
+            public let quarantine: String
         }
-        let deleted: Int
-        let failed: Int
-        let results: [ItemResult]
+        public let deleted: Int
+        public let failed: Int
+        public let results: [ItemResult]
     }
 
     /// One airlift-quarantine-* folder found in the device Media
     /// root (run #115 recovery). Provenance fields are best-effort
     /// content reads; the delete receipts outrank them.
-    struct QuarantineItem: Codable {
-        let quarantine: String
-        let uuid: String
-        let descriptorIdentifier: String
-        let packageName: String
-        let providerGuess: String
+    public struct QuarantineItem: Codable {
+        public let quarantine: String
+        public let uuid: String
+        public let descriptorIdentifier: String
+        public let packageName: String
+        public let providerGuess: String
     }
 
     private struct QuarantineListResponse: Codable {
         let items: [QuarantineItem]
     }
 
-    struct RestoreResponse: Codable {
-        struct ItemResult: Codable {
-            let `extension`: String
-            let uuid: String
-            let quarantine: String
-            let ok: Bool
+    public struct RestoreResponse: Codable {
+        public struct ItemResult: Codable {
+            public let `extension`: String
+            public let uuid: String
+            public let quarantine: String
+            public let ok: Bool
         }
-        let restored: Int
-        let failed: Int
-        let results: [ItemResult]
+        public let restored: Int
+        public let failed: Int
+        public let results: [ItemResult]
     }
 
     /// Lists the descriptors actually present in the device data store.
@@ -210,7 +210,13 @@ public enum PosterStoreHelper {
             var outJSON: UnsafeMutablePointer<CChar>?
             var outStatus: UnsafeMutablePointer<CChar>?
             var outError: UnsafeMutablePointer<CChar>?
-            let rc: Int32 = 1 // BISECT PROBE (#119): FFI call stubbed out
+            let rc = pairingPath.withCString { pC in
+                al_poster_store_quarantine_list(
+                    pC,
+                    posterStoreLogThunk, ctx,
+                    &outJSON, &outStatus, &outError
+                )
+            }
             Unmanaged<LogBox>.fromOpaque(ctx).release()
 
             let json = outJSON.map { String(cString: $0) }
@@ -252,7 +258,17 @@ public enum PosterStoreHelper {
             var outJSON: UnsafeMutablePointer<CChar>?
             var outStatus: UnsafeMutablePointer<CChar>?
             var outError: UnsafeMutablePointer<CChar>?
-            let rc: Int32 = 1 // BISECT PROBE (#119): FFI call stubbed out
+            let rc = pairingPath.withCString { pC in
+                containerPath.withCString { cC in
+                    targetsCSV.withCString { tC in
+                        al_poster_store_restore(
+                            pC, cC, Int64(structVersion), tC,
+                            posterStoreLogThunk, ctx,
+                            &outJSON, &outStatus, &outError
+                        )
+                    }
+                }
+            }
             Unmanaged<LogBox>.fromOpaque(ctx).release()
 
             let json = outJSON.map { String(cString: $0) }
