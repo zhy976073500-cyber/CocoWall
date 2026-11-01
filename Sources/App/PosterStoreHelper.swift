@@ -210,13 +210,7 @@ public enum PosterStoreHelper {
             var outJSON: UnsafeMutablePointer<CChar>?
             var outStatus: UnsafeMutablePointer<CChar>?
             var outError: UnsafeMutablePointer<CChar>?
-            let rc = pairingPath.withCString { pC in
-                al_poster_store_quarantine_list(
-                    pC,
-                    posterStoreLogThunk, ctx,
-                    &outJSON, &outStatus, &outError
-                )
-            }
+            let rc: Int32 = 1 // BISECT PROBE (#119): FFI call stubbed out
             Unmanaged<LogBox>.fromOpaque(ctx).release()
 
             let json = outJSON.map { String(cString: $0) }
@@ -258,17 +252,7 @@ public enum PosterStoreHelper {
             var outJSON: UnsafeMutablePointer<CChar>?
             var outStatus: UnsafeMutablePointer<CChar>?
             var outError: UnsafeMutablePointer<CChar>?
-            let rc = pairingPath.withCString { pC in
-                containerPath.withCString { cC in
-                    targetsCSV.withCString { tC in
-                        al_poster_store_restore(
-                            pC, cC, Int64(structVersion), tC,
-                            posterStoreLogThunk, ctx,
-                            &outJSON, &outStatus, &outError
-                        )
-                    }
-                }
-            }
+            let rc: Int32 = 1 // BISECT PROBE (#119): FFI call stubbed out
             Unmanaged<LogBox>.fromOpaque(ctx).release()
 
             let json = outJSON.map { String(cString: $0) }
