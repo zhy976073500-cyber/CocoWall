@@ -427,3 +427,74 @@ symlink 在 RSD AFC 上的实际行为（rename 为标准 AFC 操作码、
 预期保留链接本体）；若 rename 被拒，日志会带原始错误，
 次优路线是按链接落点深度重算相对目标的根级条目包。
 cargo check 主机目标通过仅证编译。
+
+## 改动登记 · 信号回执分类处理 + 检测链接留暂存深度双变体（2026-11-01，#108 真机日志双定点修）
+
+背景一（信号）：#108 写入日志刷新段 `identity.verified
+pid=18279 → signal.begin →
+poster_refresh.end status=killFailed error=sendSignal 9 to
+pid 18279 failed: UnexpectedResponse("unexpected
+response")`。带回执改造生效的证据：服务端**回了东西**——
+消息已被处理，不再是单向静默丢弃。但 idevice 的 DTX 回执
+解析把该回执归类为 UnexpectedResponse，#108 代码据此直接
+判 killFailed 并**跳过了验活**，地面真相从未查。若该回执
+只是 void 形确认，信号很可能已经生效。
+
+改动一（`rust-core/src/poster_refresh.rs` 信号段一处语义；
+vendored `send_signal` 本体不动，其错误变体
+`IdeviceError::UnexpectedResponse` 本就在类型里）：带回执
+调用的结果分三类——(a) 正常回执 payload：照旧打
+`signal.reply data=…` 并继续；(b) **UnexpectedResponse 类**
+（回执到达但形状不合解析预期）：打
+`signal.reply unexpected_response=true (dispatch confirmed
+by response; deferring to verification)`，按已送达处理、
+照常进入新连接验活裁决，不判 killFailed；(c) 通道/连接级
+硬错误（消息根本没发出去）：维持 killFailed 带原文。验活
+段一字未动，最终结论只由验活给：pid 消失 = confirmed；
+6s 仍在 = verifyTimeout。aux 整数类型（现 U32）不在本版
+动——那是验活判 verifyTimeout 之后才轮到的下一变量。
+
+背景二（检测植链）：#108 清理日志
+`poster_store.stage uploaded=true source=cocowall-src-…`
+（conduit 植链成功）→ `list.end status=stageFailed
+error=AFC rename of staged symlink to Media root failed:
+Afc(InvalidArg)`。注入流程从不 AFC rename 链接——根级
+airlift-link 是 ATC 同步落位的，rename 硬挪是多余变量；
+且 #108 登记里预告的次优路线正是本版采用的路线。
+
+改动二（全部在 `rust-core/src/poster_store.rs`）：
+
+- `build_delete_archive` 参数化：新增 `link_target: &str`
+  入参，包内 symlink 目标由调用方给。删除流程
+  （delete_operation）传根级几何 `../../../<tail>`，与
+  改前逐字一致、行为不变；注入侧 exploit::build_archive
+  未动。
+- `open_store_session` 删去 rename 一步，链接留在暂存目录
+  `<source>/p0/p1/p2/link` 处使用，试两个目标变体：
+  (1) `relative-depth`：链接目录位于
+  Media/<source>/p0/p1/p2，自该处 6 级 ../ 到 /var，再接
+  目标 tail（去掉 /var/ 前缀）；穿通成功打
+  `link.traversable=true variant=relative-depth`。(2) 若
+  相对穿通失败（原始错误入日志），同会话内自动重建暂存
+  包重试 `absolute` 变体：链接目标写 Extensions 绝对路径，
+  成功打 `variant=absolute`。两变体都败才报 stageFailed，
+  错误文本附两段原始错误。
+- conduit 上传段抽成 `upload_stage_archive` helper，单次
+  植链抽成 `plant_store_link` helper（建包 → 上传 → 验在
+  → list_dir 穿通校验；失败自清暂存目录）。`close()` 相应
+  简化：无根级链接可删，只 `remove_all` 暂存目录（链接在
+  其内），`link.removed` 日志形状不变。
+- 枚举/删除审计/提交审计仍全部经 open_store_session，
+  一并受益；delete_operation 的 ATC 搬移链未动。
+
+未动：注入全链、验活段（新连接轮询 + 重连一次 + 状态码
+诚实化）、already_stopped、不自动注销、删页签、获取更多
+入口、Swift 侧、受保护文件、.github/workflows。
+
+未验证项（诚实标注）：(1) UnexpectedResponse 回执下信号
+是否真已生效——看本版验活裁决：old_process.gone /
+refresh_confirmed=true 即闭环；若仍 verifyTimeout，下一
+变量为 aux 整数类型。(2) 深度相对链接在 RSD AFC 上的
+实际穿通行为，以及相对失败时绝对变体的表现——看
+variant= 日志行落在哪一支。cargo check 主机目标通过仅
+证编译。

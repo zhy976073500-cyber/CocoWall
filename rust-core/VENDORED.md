@@ -48,7 +48,17 @@ store detect/cleanup feature, registered in SPEC.md):
   whose symlink entry streaming_zip_conduit extracts into a scratch
   Media subdir, then an AFC rename moves the extracted symlink to
   the Media root, the geometry its ../../../ target is calibrated
-  for. Deletion does NOT erase through AFC: each
+  for. (Revised again later the same day, run #108 hardware log:
+  the rename step is refused too (InvalidArg) and the flash flow
+  never renames — its root-level link is landed by the ATC sync —
+  so the link now stays at its staged depth inside the scratch
+  subdir and the archive's symlink target is computed for that
+  depth: six ../ to /var plus the container tail (variant
+  `relative-depth`); if that does not traverse, an archive with
+  the plain absolute target is staged and tried in the same
+  session (variant `absolute`). The archive builder's link target
+  is a parameter; the delete flow passes the original
+  root-calibrated target unchanged.) Deletion does NOT erase through AFC: each
   descriptor is moved out of the store by an AirTraffic/Books sync
   whose two books (staging link + the descriptor, identified by its
   Airlock-escaping relative path) make the on-device ATAirlock daemon
@@ -120,6 +130,26 @@ hardware log; registered in SPEC.md in the signal-reply section):
   proceeds to fresh-connection verification (the ground truth)
   instead of failing the kill outright; a transport-level error
   still maps to killFailed with the original error.
+
+Second revision of the same addition, later the same day (run
+#108 hardware log; registered in SPEC.md in the
+receipt-classification section):
+
+- The vendored `send_signal` body is unchanged. What the #108
+  hardware log showed is a classification problem one layer up:
+  the service DID reply (the message was dispatched and handled),
+  but the DTX reply parser classified the payload as
+  `IdeviceError::UnexpectedResponse`, and `poster_refresh.rs`
+  mapped ANY send error to killFailed and skipped verification —
+  the pid's fate was never checked.
+- `src/poster_refresh.rs` now splits the awaited-reply result
+  three ways: a parsed reply payload proceeds as before; an
+  `UnexpectedResponse` error logs `signal.reply
+  unexpected_response=true (dispatch confirmed by response;
+  deferring to verification)` and proceeds to fresh-connection
+  verification as if delivered; only channel/connection-level
+  errors (the message never left) still map to killFailed with
+  the original error. Verification alone decides the outcome.
 
 Apart from the additions registered above, everything else in this
 tree remains a verbatim copy of upstream.
