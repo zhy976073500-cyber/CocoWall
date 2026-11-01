@@ -1954,3 +1954,60 @@ ScrollView 内、网格 padding(.top, 14)），固定格高后任何
   API，最终仍以推送后 CI 真 Xcode 26 编译为准。
 - 未验证项（归 Sage 真机）：sheet 区纯色平面与页面其余
   玻璃表面（展开钮、选择页）并存时的整体观感。
+
+## 改动登记 · 扇形几何改造 + 展开页固定比例格（run #132，2026-11-02，Sage 定稿试作）
+
+在远程 head 23f477d（#129–#131 合并包）之上的一轮定点改版，
+Sage 03:43 发话「来一版试试看」批准出包。动 TendiesView.swift
+（扇形区 fanZone/fanCard）与 ImportedWallpapersView.swift
+（全屏选择页 cell）两文件；sheet、选择页底栏与批量删除、
+长按新菜单、其他页面一概未动。
+
+### A. 扇形几何改造（症状 → 改法）
+
+症状（Sage 真机截图）：扇形绕卡中心旋转 + 交叠 -62，整堆
+卡像被打乱的扑克——每张大半个画面被邻卡盖住，卡名伸进
+邻卡区域被压掉一半，扇面没有秩序。
+改法（主线出稿 wallpaper-page-fan2.png，Sage 点头试作）：
+- 旋转支点从卡中心挪到卡片底边再往下约 15% 卡高处
+  （rotationEffect anchor = UnitPoint(0.5, 1.15)）：卡片像
+  从底部捏住的一把牌，上张下收。静态基础旋转与
+  scrollTransition 的回正插值（-base*(1-t)）共用同一支点，
+  中心卡角度仍插值到 0。
+- 交叠量 -62 → -34：150pt 宽卡每张露出约 116pt（三分之二
+  强），画面与卡名可读。卡尺寸 150×200、角度阶梯 ±8/±4
+  不变。
+- Q 弹保留并微调：scrollTransition 中心放大 1.05 → 1.06，
+  新增 offset(y: -6*(1-t)) 中心卡轻微上浮；viewAligned
+  吸附、点选弹簧（1.04 + spring 0.3/0.55）+ 轻触觉不变。
+- 卡名防压：名称 Text 加 frame(maxWidth: 110) + 尾部截断，
+  只占每张卡的可见条，不再伸进被邻卡盖住的区域。
+- 缩略图口径审计：扇形卡走共用 TendieThumbnailView（内部
+  即 resizable + aspectRatio(.fill)），fanCard 侧原已有
+  frame(150, 200) + 圆角 clipShape，本轮补显式 .clipped()，
+  与 B 同为填充裁剪口径。
+
+### B. 展开页固定比例格（症状 → 改法）
+
+症状（Sage 真机截图）：#130 定格高 172 后，格内缩略图仍
+按原生比例 aspect-fit 式显示——横图上下留白、竖图撑满，
+视觉上仍参差。Sage 原话：「把多出来的比例直接裁剪掉。」
+改法：弃固定高，改固定比例格——cell 以
+aspectRatio(3.0/4.0, .fit) 定框：三列灵活列宽决定宽、高
+随之（竖 3:4，宽:高，高大于宽；**此比例为 Sage
+2026-11-02 所定「暂时」规格**，后续可再调）。缩略图
+（TendieThumbnailView 的 resizable + scaledToFill 口径）
+以 frame(maxWidth/maxHeight: .infinity) + .clipped() 填满
+整格、多余部分居中裁掉；占位图同框撑满。名字/勾选徽章
+位置不变；cell 内已无 aspectRatio(.fit)/scaledToFit 残留。
+
+### 未动与未验证
+
+- AppViewModel、TendiesEngine.swift、rust 树、受保护文件、
+  CI workflow 一概未动；工作区其余既存脏改动未带入本轮。
+- 本地核查：两文件 swiftc -parse（Swift 6.1）通过；本轮
+  新增代码未用 6.2 门控 API，最终以推送后 CI 真 Xcode 26
+  编译为准。
+- 未验证项（归 Sage 真机）：底部支点扇开的实际观感与
+  viewAligned 吸附落点、上浮幅度；3:4 格在真机三列宽下
+  的裁切观感（人物类竖图裁左右、横图裁上下的取舍）。

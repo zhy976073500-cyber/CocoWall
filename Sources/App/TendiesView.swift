@@ -432,7 +432,10 @@ struct TendiesView: View {
                 .padding(.vertical, 30)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: -62) {
+                    // 交叠量（run #132）：-62 → -34，150pt 宽卡每张
+                    // 露出约 116pt（三分之二强），画面与卡名不再
+                    // 被邻卡大面积盖住。
+                    HStack(spacing: -34) {
                         ForEach(Array(vm.tendieItems.enumerated()), id: \.element.id) { idx, item in
                             fanCard(item: item, index: idx, count: vm.tendieItems.count)
                         }
@@ -457,12 +460,17 @@ struct TendiesView: View {
         return ZStack(alignment: .bottomLeading) {
             TendieThumbnailView(item: item)
                 .frame(width: 150, height: 200)
+                .clipped()
             LinearGradient(colors: [.clear, .black.opacity(0.38)],
                            startPoint: .center, endPoint: .bottom)
+            // 卡名防压（run #132）：最大宽收进每张卡的可见条
+            // （约 110pt），尾部截断，不再伸进被邻卡盖住的区域。
             Text(item.name)
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 110, alignment: .leading)
                 .padding(.leading, 10)
                 .padding(.bottom, 9)
                 .padding(.trailing, item.isSelected ? 34 : 10)
@@ -504,17 +512,21 @@ struct TendiesView: View {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             fanMenuTarget = item
         }
-        .rotationEffect(.degrees(base))
+        // 旋转支点（run #132）：挪到卡片底边再往下约 15% 卡高
+        // 处，卡片像从底部捏住的一把牌——上张下收。静态基础
+        // 旋转与 scrollTransition 的回正插值共用同一支点。
+        .rotationEffect(.degrees(base), anchor: UnitPoint(x: 0.5, y: 1.15))
         .zIndex(-abs(Double(index) - center))
-        // 滚动联动弹性（run #130）：随与视口中心的距离插值——
-        // 中心卡放大至 1.05 且基础旋转被抵消回正，越往两侧越
-        // 缩回 1.0、旋转回到基础档位；卡片尺寸/基础旋转/交叠
-        // 量这些定稿参数未动。
+        // 滚动联动弹性（run #130 建立，run #132 微调）：随与
+        // 视口中心的距离插值——中心卡放大至 1.06、轻微上浮
+        // 6pt 且基础旋转被抵消回正，越往两侧越缩回 1.0、落回
+        // 原位、旋转回到基础档位；回正绕同一底部支点（#132）。
         .scrollTransition(.interactive) { content, phase in
             let t = min(1.0, abs(phase.value))
             return content
-                .scaleEffect(1.05 - 0.05 * t)
-                .rotationEffect(.degrees(-base * (1 - t)))
+                .scaleEffect(1.06 - 0.06 * t)
+                .offset(y: -6 * (1 - t))
+                .rotationEffect(.degrees(-base * (1 - t)), anchor: UnitPoint(x: 0.5, y: 1.15))
         }
         .task {
             // 已存预览缺失或解码失败时，从包内重新提取（与旧列表行同口径）。

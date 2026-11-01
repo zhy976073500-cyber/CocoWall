@@ -185,13 +185,16 @@ struct ImportedWallpapersView: View {
     }
 
     private func cell(_ item: TendieItem) -> some View {
-        // 格子固定尺寸（run #130）：旧实现用 aspectRatio(.fit)
-        // 让格高由内容（图片原始像素/占位视图）反推，三列高度
-        // 参差且首行与头部副行挤压；改列宽由 GridItem 定、格高
-        // 固定 172（v8 稿量级），缩略图填满裁切、名称行位置统一。
+        // 格子固定比例（run #132，取代 run #130 的固定高 172）：
+        // Sage 真机反馈格内图仍按原生比例留白、视觉参差——改
+        // 全格统一竖 3:4（宽:高，Sage 2026-11-02 所定「暂时」
+        // 规格）：列宽由 GridItem 定、高由比例随之；缩略图
+        // （TendieThumbnailView 为 resizable + scaledToFill 口径）
+        // 填满整格、多余部分居中裁掉，占位图同框撑满。
         ZStack(alignment: .bottomLeading) {
             TendieThumbnailView(item: item)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
             LinearGradient(colors: [.clear, .black.opacity(0.38)],
                            startPoint: .center, endPoint: .bottom)
             Text(item.name)
@@ -221,7 +224,7 @@ struct ImportedWallpapersView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 172)
+        .aspectRatio(3.0 / 4.0, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             if item.isSelected {
