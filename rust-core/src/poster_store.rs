@@ -5,82 +5,85 @@
 //! LOCAL ADDITION — not part of the vendored AirCard-iOS upstream core.
 //! Registered in rust-core/VENDORED.md and SPEC.md (2026-11-01).
 //!
-//! Why this channel: the flash flow reaches the PosterBoard data store
-//! only through ATC sync (Books dataclass), which is write-only from the
-//! host's point of view — it cannot list or delete what is already in the
-//! store. The store itself is a plain directory tree inside the
-//! PosterBoard PluginKit container:
+//! LIST / AUDIT transport — DVT deviceinfo directory listing.
+//! The store is a plain directory tree inside the PosterBoard
+//! PluginKit container:
 //!
 //!   <container>/Library/Application Support/
 //!     PRBPosterExtensionDataStore/<version>/Extensions/
 //!       <extension-id>/descriptors/<UUID>/…
 //!
-//! AFC (com.apple.afc.shim.remote over the RSD tunnel) is jailed to
-//! /var/mobile/Media, but it follows symlinks planted inside the jail —
-//! that is exactly how the flash staging works (a symlink in Media
-//! pointing at the store's descriptors directory, created by the staged
-//! zip). The AFC MakeLink operation itself is refused by the RSD AFC
-//! service (OpNotSupported, hardware log run #107), so this module
-//! plants its link the flash way instead: a StreamingZip archive whose
-//! symlink entry streaming_zip_conduit extracts into a scratch Media
-//! subdir. The extracted link is used in place, at
-//! <source>/p0/p1/p2/link — an AFC rename to the Media root is refused
-//! (InvalidArg, hardware log run #108; the flash flow never renames
-//! its link either, its root-level airlift-link is landed by the ATC
-//! sync itself). Which symlink target the archive may carry is
-//! settled by the run #110 stage.diag log: archives whose target
-//! escapes the staging directory (six ../ to /var, or the absolute
-//! path) never extracted AT ALL — every level of the scratch tree,
-//! payload included, read back Afc(ObjectNotFound), both variants,
-//! multiple rounds — while the flash geometry (`../../../<tail>`,
-//! resolving inside the staging directory) extracts on this device
-//! every time (every flash + run #108's staging). The conduit
-//! evidently refuses or rolls back an archive whose symlink target
-//! leaves the extraction root. The session therefore plants the
-//! flash geometry first and keeps the #109 targets as fallbacks.
-//! One trap in the flash geometry at staged depth: its target is
-//! calibrated for the link's post-sync position at the Media root,
-//! so from <source>/p0/p1/p2 it resolves into the archive's own
-//! mirrored tail tree, not the real store. A variant therefore only
-//! counts as traversable when listing through the link returns a
-//! NON-EMPTY Extensions listing — an empty listing is the mirror
-//! (the real store always holds the system poster extensions).
+//! AFC is jailed to /var/mobile/Media, so the first design tried to
+//! reach the store through a symlink planted in Media by a staged
+//! StreamingZip archive. Three target variants all failed on device
+//! (runs #108–#111), and the failure modes unify into one mechanism:
+//!   * The conduit extractor drops an archive WHOLESALE when its
+//!     symlink's relative target lexically escapes the extraction
+//!     root (run #110 stage.diag: every level of the scratch tree,
+//!     payload included, read back Afc(ObjectNotFound)). The
+//!     relative-depth (six ../) and absolute targets both escape,
+//!     so nothing landed at all.
+//!   * The flash geometry (`../../../<tail>`) does NOT escape — at
+//!     staged depth (Media/<src>/p0/p1/p2) it resolves back INSIDE
+//!     the staging directory, which is exactly why it extracts. But
+//!     the archive mirrors the target tail as real directories
+//!     inside the package, so resolution lands in that mirrored,
+//!     empty Extensions tree — never the real store. That geometry
+//!     only points at the real store AFTER the ATC sync relocates
+//!     the link to the Media root (its calibrated position, three
+//!     ../ to /), and a bare list session performs no sync.
+//!   "Package-internal consistency" and "escape to the real store"
+//!   are mutually exclusive for one relative target at staged depth.
+//!   No fourth link-string variant can fix this; the transport
+//!   itself was wrong.
 //!
-//!   1. Open an RSD tunnel (same idevice_ffi tunnel_provider primitives
-//!      and host strategy as poster_refresh::connect_rsd: last working
-//!      route first, then the known loopback-VPN gateway defaults;
-//!      RemoteXPC with raw RPPairing fallback per host).
-//!   2. Connect the AFC service from the RSD handshake.
-//!   3. Plant a temporary symlink inside a scratch Media subdir
-//!      (`cocowall-src-<token>/p0/p1/p2/link`) pointing at the store's
-//!      Extensions directory (StreamingZip staging, as above; no
-//!      rename — the link is used at its staged depth).
-//!   4a. LIST: enumerate extension dirs, then each `descriptors/` dir;
-//!      per descriptor read the small identifier text file and walk
-//!      versions/<v>/contents/ for the `<name>.wallpaper` package name
-//!      (readable-name priority: package name > identifier > UUID).
-//!   4b. DELETE: descriptors are NOT erased through the link. Each one
-//!      is moved out of the store by an AirTraffic/Books sync (the
-//!      Walllive-verified airlift.delete mechanism): a two-book sync
-//!      (staging link + the descriptor, identified by its
-//!      Airlock-escaping relative path) whose FileComplete destinations
-//!      make the on-device ATAirlock daemon download the descriptor
-//!      into Media as an airlift-quarantine-<token> copy. A fresh-
-//!      connection commit audit must re-confirm every deleted path
-//!      absent before it counts as deleted.
-//!   5. Remove the staging directory (the temporary symlink lives
-//!      inside it; best effort, always).
+//! The working implementation — recovered from the Walllive 1.1.1
+//! binary (module `posterboard_clear_audit`, types
+//! `DvtDirectorySession` / `CachedDirectorySession`, functions
+//! `audit_on_tunnel_many` / `audit_hierarchy` / `children`) — never
+//! stages anything for listing. It opens a DVT RemoteServer session
+//! on the same RSD tunnel (com.apple.instruments.dtservicehub,
+//! advertised in the RSD handshake) and calls
+//! `directoryListingForPath:` on the
+//! com.apple.instruments.server.services.deviceinfo channel with
+//! the store's ABSOLUTE path, walking Extensions → <extension>/
+//! descriptors → <UUID> level by level. The instruments server is
+//! not jailed to Media, so absolute paths resolve to the real store
+//! directly. The vendored idevice crate already carries this exact
+//! call (`DeviceInfoClient::directory_listing`), and the same
+//! channel already works on the target device (poster_refresh lists
+//! processes through it). One retry on a completely fresh tunnel +
+//! service is attempted when a listing pass fails mid-way (Walllive
+//! parity: `airlift.clear.audit.retry attempt=2 fresh_service=true
+//! query_only=true`). Package names are recovered by listing
+//! versions/<v>/contents/ for the `<name>.wallpaper` entry; the
+//! identifier text file cannot be read over this channel, so the
+//! JSON `identifier` field is left empty (name priority: package
+//! name > UUID prefix).
 //!
-//! Results come back as JSON in an out parameter, with a machine-readable
-//! status string like the other FFIs. Failures are reported, never
-//! disguised: if AFC refuses the link or the traversal, the status says
-//! so and no list is fabricated.
+//! DELETE: descriptors are NOT erased in place. Each one is moved
+//! out of the store by an AirTraffic/Books sync (the Walllive-
+//! verified airlift.delete mechanism): a two-book sync (staging
+//! link + the descriptor, identified by its Airlock-escaping
+//! relative path) whose FileComplete destinations make the
+//! on-device ATAirlock daemon download the descriptor into Media
+//! as an airlift-quarantine-<token> copy. Presence before the move
+//! and absence after it are audited over DVT (above), the commit
+//! audit on a FRESH connection; a target only counts as deleted
+//! when its path re-audits absent.
+//!
+//! Results come back as JSON in an out parameter, with a machine-
+//! readable status string like the other FFIs. Failures are
+//! reported, never disguised: if the DVT service refuses a listing,
+//! the status says so and no list is fabricated.
 
 use std::ffi::{c_char, c_void, CString};
 use std::time::{Duration, Instant};
 
 use idevice::afc::opcode::AfcFopenMode;
 use idevice::afc::AfcClient;
+use idevice::dvt::device_info::DeviceInfoClient;
+use idevice::dvt::remote_server::RemoteServerClient;
 use idevice::remote_pairing::RpPairingFile;
 use idevice::services::lockdown::LockdownClient;
 use idevice::services::rsd::RsdHandshake;
@@ -146,37 +149,10 @@ impl StoreStatus {
 type StoreResult<T> = Result<T, (StoreStatus, String)>;
 
 const RSD_PORT: u16 = 49152;
-/// AFC's advertised name in the RSD handshake is the shim name.
-/// "com.apple.afc" is the *lockdown* service name (the one exploit
-/// passes to start_service on its Lockdown route); checking the RSD
-/// handshake for it always misses and falsely reports
-/// serviceUnavailable — hardware log 2026-11-01 (poster_store.list,
-/// run #106 build). The vendored AfcClient's RSD impl uses this same
-/// shim name (idevice afc/mod.rs), and exploit's RSD route connects
-/// via handshake.connect::<AfcClient>() with no other name involved.
-const AFC_SERVICE: &str = "com.apple.afc.shim.remote";
 
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
-
-/// Random-enough token for the temporary symlink name (uniqueness is all
-/// that matters; the link lives for one call and is removed afterwards).
-fn random_token() -> String {
-    let mut seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0x9e3779b97f4a7c15)
-        ^ ((std::process::id() as u128) << 64);
-    let mut out = String::with_capacity(24);
-    for _ in 0..12 {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        out.push_str(&format!("{:02x}", (seed & 0xff) as u8));
-    }
-    out
-}
 
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -387,346 +363,88 @@ async fn connect_rsd(
 }
 
 // ---------------------------------------------------------------------------
-// AFC session with the staging symlink planted
+// DVT audit session (Walllive-proven list/audit transport — see module
+// doc). No staging archive, no symlink: directoryListingForPath: on
+// the deviceinfo channel takes absolute paths.
 // ---------------------------------------------------------------------------
 
-struct StoreSession {
-    afc: AfcClient,
-    /// Path of the planted symlink, at its staged depth inside the
-    /// scratch subdir (<source_name>/p0/p1/p2/link).
-    link_name: String,
-    /// Scratch Media subdir the staging archive was extracted into;
-    /// the symlink lives inside it, so removing the subdir on close
-    /// removes both.
-    source_name: String,
-}
+const DVT_SERVICE: &str = "com.apple.instruments.dtservicehub";
 
-/// Upload one staging archive through streaming_zip_conduit, which
-/// extracts it into the Media subdir `source` on receipt.
-async fn upload_stage_archive(
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
-    source: &str,
-    archive: &[u8],
+/// Open an RSD tunnel and a DVT RemoteServer on it, checking the
+/// handshake advertises the dtservicehub (the audit's only service —
+/// module doc). Returns the adapter + handshake alongside the server
+/// so the caller keeps them alive while it creates a DeviceInfoClient
+/// borrowing the server.
+async fn connect_device_info(
+    pairing_bytes: &[u8],
     logger: &PSLogger,
-) -> Result<(), String> {
-    let mut zip_stream = connect_service_rsd(
-        adapter,
-        handshake,
-        "com.apple.streaming_zip_conduit",
-        logger,
-    )
-    .await?;
-    {
-        let mut zip_init_dict = plist::Dictionary::new();
-        zip_init_dict.insert(
-            "MediaSubdir".to_string(),
-            plist::Value::String(source.to_string()),
-        );
-        let mut init_buf = Vec::new();
-        plist::to_writer_binary(&mut init_buf, &plist::Value::Dictionary(zip_init_dict))
-            .map_err(|e| format!("encode MediaSubdir: {e}"))?;
-        let init_len_bytes = (init_buf.len() as u32).to_be_bytes();
-        zip_stream
-            .write_all(&init_len_bytes)
-            .await
-            .map_err(|e| format!("write MediaSubdir length: {e}"))?;
-        zip_stream
-            .write_all(&init_buf)
-            .await
-            .map_err(|e| format!("write MediaSubdir body: {e}"))?;
-        zip_stream
-            .flush()
-            .await
-            .map_err(|e| format!("flush: {e}"))?;
-        zip_stream
-            .write_all(archive)
-            .await
-            .map_err(|e| format!("write archive bytes: {e}"))?;
-        zip_stream
-            .flush()
-            .await
-            .map_err(|e| format!("flush: {e}"))?;
-        let mut resp_len_buf = [0u8; 4];
-        zip_stream
-            .read_exact(&mut resp_len_buf)
-            .await
-            .map_err(|e| format!("read zip response length: {e}"))?;
-        let resp_len = u32::from_be_bytes(resp_len_buf) as usize;
-        let mut resp_body = vec![0u8; resp_len];
-        zip_stream
-            .read_exact(&mut resp_body)
-            .await
-            .map_err(|e| format!("read zip response body: {e}"))?;
-    }
-    drop(zip_stream);
+) -> StoreResult<(
+    AdapterHandle,
+    RsdHandshake,
+    RemoteServerClient<Box<dyn ReadWrite>>,
+)> {
+    let (mut adapter, mut handshake) = connect_rsd(pairing_bytes, logger).await?;
+
+    let advertised = handshake.services.contains_key(DVT_SERVICE);
     logger.log(format!(
-        "airlift: airlift.poster_store.stage uploaded=true source={source}"
-    ));
-    Ok(())
-}
-
-/// One staging attempt for the store session: build the archive with
-/// the given symlink target, upload it into a fresh scratch subdir,
-/// verify the extracted link is present, and verify AFC can list
-/// through it. Returns the link path and scratch subdir name. On any
-/// failure the scratch subdir is removed and the error comes back as
-/// a plain message; the caller decides whether another target
-/// variant is worth trying.
-async fn plant_store_link(
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
-    afc: &mut AfcClient,
-    target: &str,
-    link_target: &str,
-    logger: &PSLogger,
-) -> Result<(String, String), String> {
-    let token = random_token();
-    let source = format!("cocowall-src-{token}");
-
-    let archive = build_delete_archive(target, link_target)
-        .map_err(|e| format!("build staging archive: {e}"))?;
-
-    upload_stage_archive(adapter, handshake, &source, &archive, logger).await?;
-
-    // Verification mirrors exploit's staging check exactly: scratch
-    // dir, link, and payload must all read back through AFC.
-    let staged_link = format!("{source}/p0/p1/p2/link");
-    let stage_ok = afc.get_file_info(&source).await.is_ok()
-        && afc.get_file_info(&staged_link).await.is_ok()
-        && afc.get_file_info(format!("{source}/payload")).await.is_ok();
-    if !stage_ok {
-        // DIAGNOSTIC (introduced run #110, retained): the #109
-        // archives verify-failed on device for both target variants
-        // while the #108 archive (target ../../../<tail>, resolving
-        // inside the staging dir) passed this same check, and the
-        // #110 diag log then showed the whole scratch tree missing —
-        // the extractor drops such archives wholesale. AFC
-        // get_file_info is lstat-like (it reports a symlink's own
-        // st_ifmt/st_link_target), so the target string can only
-        // matter through the extractor. Enumerate the extracted tree
-        // level by level so the device log shows exactly what landed.
-        for level in [
-            source.clone(),
-            format!("{source}/p0"),
-            format!("{source}/p0/p1"),
-            format!("{source}/p0/p1/p2"),
-        ] {
-            match afc.list_dir(level.clone()).await {
-                Ok(entries) => logger.log(format!(
-                    "airlift: airlift.poster_store.stage.diag list path={level} entries=[{}]",
-                    entries.join(",")
-                )),
-                Err(e) => logger.log(format!(
-                    "airlift: airlift.poster_store.stage.diag list path={level} error={e:?}"
-                )),
-            }
-        }
-        match afc.get_file_info(&staged_link).await {
-            Ok(info) => logger.log(format!(
-                "airlift: airlift.poster_store.stage.diag link_info ifmt={} link_target={:?}",
-                info.st_ifmt, info.st_link_target
-            )),
-            Err(e) => logger.log(format!(
-                "airlift: airlift.poster_store.stage.diag link_info error={e:?}"
-            )),
-        }
-        match afc.get_file_info(format!("{source}/payload")).await {
-            Ok(info) => logger.log(format!(
-                "airlift: airlift.poster_store.stage.diag payload_info ifmt={}",
-                info.st_ifmt
-            )),
-            Err(e) => logger.log(format!(
-                "airlift: airlift.poster_store.stage.diag payload_info error={e:?}"
-            )),
-        }
-        let _ = afc.remove_all(&source).await;
-        return Err(
-            "stage verification failed: extracted symlink not present in Media".to_string(),
-        );
-    }
-    logger.log(format!(
-        "airlift: airlift.poster_store.link.staged name={staged_link} target={link_target}"
-    ));
-
-    // Verify the link resolves before trusting any listing through it.
-    if let Err(e) = afc.list_dir(staged_link.clone()).await {
-        let _ = afc.remove_all(&source).await;
-        return Err(format!("AFC cannot list through the staging symlink: {e:?}"));
-    }
-
-    Ok((staged_link, source))
-}
-
-async fn open_store_session(
-    pairing_path: &str,
-    container_path: &str,
-    struct_version: i64,
-    logger: &PSLogger,
-) -> StoreResult<StoreSession> {
-    let pairing_bytes = std::fs::read(pairing_path).map_err(|e| {
-        (
-            StoreStatus::ConnectFailed,
-            format!("Failed to read pairing file at {pairing_path}: {e}"),
-        )
-    })?;
-
-    let (mut adapter, mut handshake) = connect_rsd(&pairing_bytes, logger).await?;
-
-    let advertised = handshake.services.contains_key(AFC_SERVICE);
-    logger.log(format!(
-        "airlift: airlift.poster_store.service advertised={advertised} service={AFC_SERVICE}"
+        "airlift: airlift.poster_store.service advertised={advertised} service={DVT_SERVICE}"
     ));
     if !advertised {
         return Err((
             StoreStatus::ServiceUnavailable,
-            format!("{AFC_SERVICE} not advertised by RSD handshake"),
+            format!("{DVT_SERVICE} not advertised by RSD handshake"),
         ));
     }
 
-    let mut afc = handshake
-        .connect::<AfcClient>(&mut adapter)
+    let server = handshake
+        .connect::<RemoteServerClient<Box<dyn ReadWrite>>>(&mut adapter)
         .await
         .map_err(|e| {
             (
                 StoreStatus::ServiceUnavailable,
-                format!("AFC connect failed: {e:?}"),
+                format!("dtservicehub connect failed: {e:?}"),
             )
         })?;
-    logger.log("airlift: airlift.poster_store.afc connected=true");
+    logger.log(
+        "airlift: airlift.poster_store.audit.session query_only=true transport=dvt-deviceinfo",
+    );
+    Ok((adapter, handshake, server))
+}
 
-    // Plant the staging symlink pointing at the store's Extensions
-    // directory, the flash way (module doc): AFC MakeLink is refused
-    // by the RSD AFC service (OpNotSupported, hardware log run #107),
-    // but streaming_zip_conduit extracts a StreamingZip archive into
-    // Media preserving its symlink entry as a real symlink. The link
-    // is used in place at <source>/p0/p1/p2/link — an AFC rename to
-    // the Media root is refused too (InvalidArg, hardware log run
-    // #108), and the flash flow never renames either (its root-level
-    // link is landed by the ATC sync).
-    //
-    // Variant order (run #111, per the run #110 stage.diag verdict —
-    // see module doc): the flash geometry first, because it is the
-    // only target shape proven to extract at all on this device; the
-    // #109 targets follow as fallbacks. A variant is accepted only
-    // when listing through the planted link returns a non-empty
-    // Extensions listing: the flash geometry resolves into the
-    // archive's own mirrored tail tree at staged depth, whose
-    // Extensions level is empty, while the real store always lists
-    // the system poster extensions — an empty listing is the mirror,
-    // never the store, and must not be enumerated as one.
-    let target = extensions_abs(container_path, struct_version);
-    let rel_tail = target
-        .strip_prefix("/var/")
-        .unwrap_or_else(|| target.trim_start_matches('/'));
-    let variants: [(&str, String); 3] = [
+/// Create the deviceinfo client on an open RemoteServer.
+async fn device_info_client<'a>(
+    server: &'a mut RemoteServerClient<Box<dyn ReadWrite>>,
+) -> StoreResult<DeviceInfoClient<'a, Box<dyn ReadWrite>>> {
+    DeviceInfoClient::new(server).await.map_err(|e| {
         (
-            "exploit-geometry",
-            format!("../../../{}", target.trim_start_matches('/')),
-        ),
-        ("relative-depth", format!("../../../../../../{rel_tail}")),
-        ("absolute", target.clone()),
-    ];
-
-    let mut failures: Vec<String> = Vec::new();
-    let mut planted: Option<(String, String)> = None;
-    for (variant, link_target) in &variants {
-        match plant_store_link(
-            &mut adapter,
-            &mut handshake,
-            &mut afc,
-            &target,
-            link_target,
-            logger,
+            StoreStatus::ServiceUnavailable,
+            format!("deviceinfo channel failed: {e:?}"),
         )
-        .await
-        {
-            Ok((link_path, source)) => {
-                let probe = afc.list_dir(link_path.clone()).await.map(|entries| {
-                    visible_entries(entries).len()
-                });
-                match probe {
-                    Ok(n) if n > 0 => {
-                        logger.log(format!(
-                            "airlift: airlift.poster_store.link.traversable=true variant={variant} extensions={n}"
-                        ));
-                        planted = Some((link_path, source));
-                        break;
-                    }
-                    Ok(_) => {
-                        let msg = "staged link lists an empty Extensions tree (the archive's mirrored tail), not the data store".to_string();
-                        logger.log(format!(
-                            "airlift: airlift.poster_store.link.traversable=false variant={variant} error={msg}"
-                        ));
-                        failures.push(format!("[{variant}] {msg}"));
-                        let _ = afc.remove_all(&source).await;
-                    }
-                    Err(e) => {
-                        let msg = format!("AFC cannot list through the staging symlink: {e:?}");
-                        logger.log(format!(
-                            "airlift: airlift.poster_store.link.traversable=false variant={variant} error={msg}"
-                        ));
-                        failures.push(format!("[{variant}] {msg}"));
-                        let _ = afc.remove_all(&source).await;
-                    }
-                }
-            }
-            Err(msg) => {
-                logger.log(format!(
-                    "airlift: airlift.poster_store.link.traversable=false variant={variant} error={msg}"
-                ));
-                failures.push(format!("[{variant}] {msg}"));
-            }
-        }
-    }
-    let Some((link_name, source)) = planted else {
-        return Err((
-            StoreStatus::StageFailed,
-            format!(
-                "staging symlink did not traverse (target {target}): {}",
-                failures.join("; ")
-            ),
-        ));
-    };
-
-    Ok(StoreSession {
-        afc,
-        link_name,
-        source_name: source,
     })
 }
 
-impl StoreSession {
-    async fn close(mut self, logger: &PSLogger) {
-        // The symlink lives inside the staging subdir (no root-level
-        // link exists in this design), so removing the subdir removes
-        // both.
-        match self.afc.remove_all(&self.source_name).await {
-            Ok(()) => logger.log("airlift: airlift.poster_store.link.removed=true"),
-            Err(e) => logger.log(format!(
-                "airlift: airlift.poster_store.link.removed=false error={e:?}"
-            )),
-        }
-    }
-}
-
-async fn read_small_file(afc: &mut AfcClient, path: &str) -> Option<String> {
-    let mut fd = afc.open(path.to_string(), AfcFopenMode::RdOnly).await.ok()?;
-    let bytes = fd.read_entire().await.ok()?;
-    let _ = fd.close().await;
-    if bytes.is_empty() || bytes.len() > 4096 {
-        return None;
-    }
-    String::from_utf8(bytes)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-fn visible_entries(mut names: Vec<String>) -> Vec<String> {
-    names.retain(|n| n != "." && n != ".." && !n.is_empty());
-    names.sort();
-    names
+/// One directoryListingForPath: call, entries normalized to bare
+/// child names (the reply carries entry names already; normalize
+/// defensively against trailing slashes / full paths), sorted.
+async fn dvt_list_dir(
+    info: &mut DeviceInfoClient<'_, Box<dyn ReadWrite>>,
+    path: &str,
+) -> Result<Vec<String>, String> {
+    let raw = info
+        .directory_listing(path)
+        .await
+        .map_err(|e| format!("directoryListingForPath {path}: {e:?}"))?;
+    let mut out: Vec<String> = raw
+        .into_iter()
+        .map(|n| {
+            let n = n.trim_end_matches('/');
+            n.rsplit('/').next().unwrap_or(n).to_string()
+        })
+        .filter(|n| !n.is_empty() && n != "." && n != "..")
+        .collect();
+    out.sort();
+    out.dedup();
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -742,13 +460,45 @@ async fn store_list(
     let started = Instant::now();
     logger.log("airlift: airlift.poster_store.list.begin");
 
-    let mut session = open_store_session(&pairing_path, &container_path, struct_version, logger).await?;
-    let link = session.link_name.clone();
+    let pairing_bytes = std::fs::read(&pairing_path).map_err(|e| {
+        (
+            StoreStatus::ConnectFailed,
+            format!("Failed to read pairing file at {pairing_path}: {e}"),
+        )
+    })?;
 
-    let result = enumerate_descriptors(&mut session.afc, &link, logger).await;
-    session.close(logger).await;
+    let target = extensions_abs(&container_path, struct_version);
 
-    let items = result?;
+    // Walllive parity: a failed pass is retried once on a completely
+    // fresh tunnel + DVT service before the failure is reported.
+    let mut items: Option<Vec<DescriptorItem>> = None;
+    let mut last_error = String::new();
+    for attempt in 1..=2 {
+        match list_attempt(&pairing_bytes, &target, logger).await {
+            Ok(found) => {
+                items = Some(found);
+                break;
+            }
+            Err((status, message)) => {
+                // A tunnel/service that never came up is not retried:
+                // the fresh attempt would hit the same wall.
+                if matches!(
+                    status,
+                    StoreStatus::ConnectFailed | StoreStatus::ServiceUnavailable
+                ) {
+                    return Err((status, message));
+                }
+                last_error = message;
+                if attempt == 1 {
+                    logger.log(
+                        "airlift: airlift.poster_store.audit.retry attempt=2 max_attempts=2 fresh_service=true query_only=true",
+                    );
+                }
+            }
+        }
+    }
+    let items = items.ok_or((StoreStatus::ListFailed, last_error))?;
+
     let mut json = String::from("{\"items\":[");
     for (i, item) in items.iter().enumerate() {
         if i > 0 {
@@ -772,6 +522,17 @@ async fn store_list(
     Ok(json)
 }
 
+/// One full listing pass on a fresh DVT session.
+async fn list_attempt(
+    pairing_bytes: &[u8],
+    extensions_path: &str,
+    logger: &PSLogger,
+) -> StoreResult<Vec<DescriptorItem>> {
+    let (_adapter, _handshake, mut server) = connect_device_info(pairing_bytes, logger).await?;
+    let mut info = device_info_client(&mut server).await?;
+    enumerate_descriptors(&mut info, extensions_path, logger).await
+}
+
 struct DescriptorItem {
     extension: String,
     uuid: String,
@@ -781,16 +542,13 @@ struct DescriptorItem {
 }
 
 async fn enumerate_descriptors(
-    afc: &mut AfcClient,
-    link: &str,
+    info: &mut DeviceInfoClient<'_, Box<dyn ReadWrite>>,
+    extensions_path: &str,
     logger: &PSLogger,
 ) -> StoreResult<Vec<DescriptorItem>> {
-    let extensions = visible_entries(afc.list_dir(link.to_string()).await.map_err(|e| {
-        (
-            StoreStatus::ListFailed,
-            format!("listing Extensions through the staging symlink failed: {e:?}"),
-        )
-    })?);
+    let extensions = dvt_list_dir(info, extensions_path)
+        .await
+        .map_err(|e| (StoreStatus::ListFailed, e))?;
     logger.log(format!(
         "airlift: airlift.poster_store.extensions.found count={} names={}",
         extensions.len(),
@@ -799,12 +557,12 @@ async fn enumerate_descriptors(
 
     let mut items: Vec<DescriptorItem> = Vec::new();
     for ext in &extensions {
-        let desc_dir = format!("{link}/{ext}/descriptors");
-        let uuids = match afc.list_dir(desc_dir).await {
-            Ok(names) => visible_entries(names),
+        let desc_dir = format!("{extensions_path}/{ext}/descriptors");
+        let uuids = match dvt_list_dir(info, &desc_dir).await {
+            Ok(names) => names,
             Err(e) => {
                 logger.log(format!(
-                    "airlift: airlift.poster_store.descriptors.unreadable extension={ext} error={e:?}"
+                    "airlift: airlift.poster_store.descriptors.unreadable extension={ext} error={e}"
                 ));
                 continue;
             }
@@ -814,27 +572,22 @@ async fn enumerate_descriptors(
             uuids.len()
         ));
         for uuid in uuids {
-            let base = format!("{link}/{ext}/descriptors/{uuid}");
-            let identifier = read_small_file(
-                afc,
-                &format!("{base}/com.apple.posterkit.provider.descriptor.identifier"),
-            )
-            .await
-            .unwrap_or_default();
-
-            // Package name: versions/<v>/contents/<name>.wallpaper
+            let base = format!("{desc_dir}/{uuid}");
+            // Package name: versions/<v>/contents/<name>.wallpaper —
+            // the .wallpaper bundle is a directory, so it shows up
+            // in a plain listing (no file read needed; the
+            // identifier text file is NOT readable over DVT and the
+            // identifier field stays empty).
             let mut package_name = String::new();
-            if let Ok(versions) = afc.list_dir(format!("{base}/versions")).await {
-                for version in visible_entries(versions) {
+            if let Ok(versions) = dvt_list_dir(info, &format!("{base}/versions")).await {
+                for version in versions {
                     if let Ok(contents) =
-                        afc.list_dir(format!("{base}/versions/{version}/contents")).await
+                        dvt_list_dir(info, &format!("{base}/versions/{version}/contents")).await
                     {
-                        if let Some(pkg) = visible_entries(contents)
-                            .into_iter()
-                            .find(|n| n.ends_with(".wallpaper"))
+                        if let Some(pkg) =
+                            contents.into_iter().find(|n| n.ends_with(".wallpaper"))
                         {
-                            package_name =
-                                pkg.trim_end_matches(".wallpaper").to_string();
+                            package_name = pkg.trim_end_matches(".wallpaper").to_string();
                             break;
                         }
                     }
@@ -843,15 +596,13 @@ async fn enumerate_descriptors(
 
             let name = if !package_name.is_empty() {
                 package_name.clone()
-            } else if !identifier.is_empty() {
-                identifier.clone()
             } else {
                 uuid.chars().take(8).collect()
             };
             items.push(DescriptorItem {
                 extension: ext.clone(),
                 uuid,
-                identifier,
+                identifier: String::new(),
                 package_name,
                 name,
             });
@@ -1625,7 +1376,7 @@ async fn delete_operation(
     })
 }
 
-// --- Audit helper (runs on an open store session's AFC link) ---
+// --- Audit helper (DVT directoryListingForPath on absolute store paths) ---
 
 struct AuditOutcome {
     extensions_count: usize,
@@ -1634,21 +1385,18 @@ struct AuditOutcome {
 }
 
 async fn audit_target(
-    afc: &mut AfcClient,
-    link: &str,
+    info: &mut DeviceInfoClient<'_, Box<dyn ReadWrite>>,
+    store_root: &str,
     extension: &str,
     uuid: &str,
     logger: &PSLogger,
 ) -> AuditOutcome {
-    let extensions = afc
-        .list_dir(link.to_string())
+    let extensions_dir = format!("{store_root}/Extensions");
+    let extensions = dvt_list_dir(info, &extensions_dir)
         .await
-        .map(visible_entries)
         .unwrap_or_default();
-    let descriptors = afc
-        .list_dir(format!("{link}/{extension}/descriptors"))
+    let descriptors = dvt_list_dir(info, &format!("{extensions_dir}/{extension}/descriptors"))
         .await
-        .map(visible_entries)
         .unwrap_or_default();
     let present = descriptors.iter().any(|d| d == uuid);
     logger.log(format!(
@@ -1699,17 +1447,16 @@ async fn store_delete(
         struct_version
     );
 
-    // Phase A: pre-audit on one session — which targets are present?
+    // Phase A: pre-audit on one DVT session — which targets are present?
     let mut present: Vec<bool> = Vec::new();
     {
-        let mut session =
-            open_store_session(&pairing_path, &container_path, struct_version, logger).await?;
-        let link = session.link_name.clone();
+        let (_adapter, _handshake, mut server) =
+            connect_device_info(&pairing_bytes, logger).await?;
+        let mut info = device_info_client(&mut server).await?;
         for (ext, uuid) in &targets {
-            let audit = audit_target(&mut session.afc, &link, ext, uuid, logger).await;
+            let audit = audit_target(&mut info, &store_root, ext, uuid, logger).await;
             present.push(audit.present);
         }
-        session.close(logger).await;
     }
 
     // Phase B: one ATC move operation per present target.
@@ -1768,20 +1515,28 @@ async fn store_delete(
     // delete.commit.connection=fresh, delete.commit.audit paths=N).
     let mut commit_audit_done = false;
     let mut absent: Vec<bool> = vec![false; targets.len()];
-    match open_store_session(&pairing_path, &container_path, struct_version, logger).await {
-        Ok(mut session) => {
+    match connect_device_info(&pairing_bytes, logger).await {
+        Ok((_adapter, _handshake, mut server)) => {
             logger.log("airlift: airlift.delete.commit.connection=fresh after_restore=true");
-            let link = session.link_name.clone();
-            for (idx, (ext, uuid)) in targets.iter().enumerate() {
-                let audit = audit_target(&mut session.afc, &link, ext, uuid, logger).await;
-                absent[idx] = !audit.present;
+            match device_info_client(&mut server).await {
+                Ok(mut info) => {
+                    for (idx, (ext, uuid)) in targets.iter().enumerate() {
+                        let audit =
+                            audit_target(&mut info, &store_root, ext, uuid, logger).await;
+                        absent[idx] = !audit.present;
+                    }
+                    logger.log(format!(
+                        "airlift: airlift.delete.commit.audit batched=true paths={}",
+                        targets.len()
+                    ));
+                    commit_audit_done = true;
+                }
+                Err((_, msg)) => {
+                    logger.log(format!(
+                        "airlift: airlift.delete.commit.audit unavailable error={msg}"
+                    ));
+                }
             }
-            logger.log(format!(
-                "airlift: airlift.delete.commit.audit batched=true paths={}",
-                targets.len()
-            ));
-            session.close(logger).await;
-            commit_audit_done = true;
         }
         Err((_, msg)) => {
             logger.log(format!(

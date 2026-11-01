@@ -807,3 +807,129 @@ move.settle ×6 全 confirmed → preferences
 FileComplete [1/4]..[4/4] + asset.confirmed ×4 →
 restore verified → refresh_confirmed → 不注销进
 选择器。
+
+## 改动登记 · poster_store 列表/审计改走 DVT directoryListing（run #114，2026-11-01，Walllive 二进制定案）
+
+### 三变体分歧的统一解释（代码与路径几何逐项坐实）
+
+暂存几何：conduit 把归档提取到 Media/<src>/，链接位于
+<src>/p0/p1/p2/link，其所在目录深度为
+/var/mobile/Media/<src>/p0/p1/p2。
+
+- 变体1 exploit-geometry（目标 `../../../<tail>`）：从 p2
+  上溯三级恰回 <src> 目录内侧，再拼 tail 得到
+  /var/mobile/Media/<src>/var/mobile/Containers/… ——即包内
+  镜像树（build 侧把 tail 每一级都镜像成真实目录条目，
+  含最后一级 Extensions 空目录）。词法不逃出提取根 →
+  整包落盘、校验通过；AFC 跟随链接解析优先命中这棵镜像
+  树 → `link.traversable=false`（空 Extensions）。这不是
+  深度算错：该几何的标定位置是 ATC 同步把链接落位到
+  Media 根之后（见下），在暂存深度它必然指向镜像。
+- 变体2 relative-depth（`../../../../../../<tail>`）：词法
+  终点是真仓，但上溯第 4 级即越过提取根 <src>（继续到
+  Media、mobile、var）→ conduit 整包不落盘 → stage.diag
+  每一级（含 payload）Afc(ObjectNotFound)。
+- 变体3 absolute（绝对目标）：绝对目标即提取根逃逸的
+  极端形式 → 同样整包不落盘。
+
+统一机制：同一相对目标下「包内自洽（可落盘）」与「穿出
+到真仓」互斥——落盘要求目标解析终点不越提取根，真仓
+要求终点越过提取根到达 /var/mobile/Containers。唯一被
+实证能跨越这条界线的是 ATC 同步落位：链接被 FileComplete
+搬到 Media 根成为 /var/mobile/Media/airlift-link-<token>
+（所在目录深度 3 级：var/mobile/Media），此时
+`../../../<tail>` 三级上溯恰到 / 再拼 tail = 真仓——注入
+侧与删除侧的链接都只在这个位置被使用。纯 list 会话不做
+同步，无落位步骤，故任何链接字符串变体都无解，方向应
+为换传输层。
+
+list 与 install 的逐项 diff（同为 conduit 暂存的部分）：
+MediaSubdir/提取落点相同、链接在包内深度相同（p0/p1/p2）、
+归档条目形状相同（META-INF + p0/p1/p2/link + tail 镜像
+目录 + payload，list 侧 build_delete_archive 有 payload
+条目，非缺失）；唯一差异是 install 在暂存后还有 ATC 同步
+把链接搬到 Media 根这一步，list 没有——分歧不在暂存包，
+在落位。
+
+AirCard 上游核查（research/repos/AirCard-iOS）：rust-core
+仅有 exploit/ffi_util/grappa/lib/logging/pairing，无任何
+列表/移除实现，也未调用 vendored idevice 的
+directory_listing；无可借鉴的上游读仓路径。
+
+### Walllive 对照（二进制取证，WallLive-1.1.1.ipa / IosWallpaperAppIntegrated）
+
+符号表完整保留（126,506 条）。Walllive 的同源 Rust crate
+为 airlift_ffi，清理实现在模块 posterboard_clear_audit
+（类型 DvtDirectorySession / CachedDirectorySession，
+函数 audit_on_tunnel_many / audit_on_tunnel /
+audit_hierarchy / children / audit_path_for /
+exact_children / verify_delete_absent），删除在
+posterboard_delete（DeleteSession::remove /
+NativeDeleteMove::relocate_link / relocate_descriptor）。
+children 函数体内的字符串引用坐实通道与选择子：
+`com.apple.instruments.server.services.deviceinfo` 通道
++ `directoryListingForPath:` 选择子；audit_on_tunnel_many
+闭包引用 com.apple.instruments.dtservicehub（RSD 握手
+advertised 检查）及其自有日志
+`airlift.clear.audit.session query_only=true batched=true`、
+`airlift.clear.audit.retry attempt=2 max_attempts=2
+fresh_service=true query_only=true`、
+`airlift.clear.inventory.complete`。
+
+逐项对照：
+
+| 项 | Walllive（跑通） | 我方三变体（失败） | 本版改法 |
+|---|---|---|---|
+| 列表传输 | DVT RemoteServer（dtservicehub） | AFC + conduit 暂存植链 | 改 DVT，与 Walllive 同 |
+| 路径形态 | 绝对路径逐级 list | 相对 symlink 目标三变体 | 绝对路径（extensions_abs）逐级 list |
+| 暂存包 | 列表无暂存（无归档、无 Books） | 每变体一份 StreamingZip | 列表零暂存 |
+| 穿通判定 | 目录 list 直接返回真仓条目；审计按级计数（extensions/providers/descriptors）+ present/absent 精确路径判定 | 非空 Extensions 启发式（被镜像空树击穿） | DVT list 即真仓，无需穿通判定 |
+| 失败重试 | fresh_service 全新服务重试 1 次（attempt=2） | 同会话内换变体 | 全新隧道+服务重试 1 次 |
+| 删除搬移 | ATC 两书同步搬移（relocate_link/descriptor）+ DVT 审计 | 同机制（本就按其日志克隆），审计走 AFC 链接 | 搬移不动；预审/提交审计改 DVT |
+| 删除暂存前缀 | wallpaper-delete-src- | airlift-src- | 不改（仅命名差异，无功能影响） |
+
+时序对照：无日志可对照——Sage 已确认 Walllive 只给导入
+日志、移除/清理无任何日志可导，此路关闭；以上结论全部
+来自二进制符号与字符串引用。
+
+### 改法（只动 rust-core/src/poster_store.rs）
+
+- 新增 connect_device_info：复用既有 connect_rsd，再查
+  dtservicehub advertised 并 connect::<RemoteServerClient>
+  （与 poster_refresh 同范式），DeviceInfoClient 由
+  device_info_client 小助手创建。
+- store_list 改为 list_attempt（DVT 枚举）+ 失败一次全新
+  会话重试；enumerate_descriptors 改以绝对路径逐级 DVT
+  list，包名取自 versions/<v>/contents/ 的 *.wallpaper
+  条目；identifier 文件 DVT 不可读，JSON identifier 留空
+  （字段保留，Swift 结构不变）。
+- audit_target 改 DVT 签名（DeviceInfoClient + store_root
+  绝对路径）；store_delete 的 Phase A 预审与 Phase C 新鲜
+  提交审计改走 connect_device_info 各开一条新连接。
+- 删除：open_store_session / plant_store_link /
+  upload_stage_archive / StoreSession / random_token /
+  read_small_file / visible_entries / AFC_SERVICE 常量 /
+  三变体数组。build_delete_archive 与 delete_operation
+  （ATC 搬移本体）逐字未动；#112/#113 事务与信号代码
+  未动；lib.rs / airlift.h / Swift 侧无改动（FFI 签名与
+  JSON 形状不变）。
+
+本地验证：cargo check 通过（仅既有 dead_code 警告；
+StageFailed 变体因暂存路径删除而成未构造变体，作状态
+契约保留）。路径几何手算表见上「统一解释」。结构自检：
+list_attempt/enumerate 路径内 archive/conduit 引用为 0
+（grep 断言）；build_delete_archive 函数原文与改前
+一致（锚点外未触碰）。
+
+未验证项（真机验收标准）：点「检测本机已导入的壁纸」
+→ 日志出现 service advertised=true
+（com.apple.instruments.dtservicehub）、
+audit.session query_only=true transport=dvt-deviceinfo、
+extensions.found 列出真实 provider（含
+com.apple.WallpaperKit.CollectionsPoster）、
+descriptors.found 列出此前刷入的全部 descriptor（含
+7400 包的 descriptor 及其余已装）；UI 列表与之一致。
+再选其中一条删除 → Phase B 搬移完成、Phase C 新鲜审计
+absent、复检 list 该条消失。本版为该功能第一次在 DVT
+传输上的真机验证，directoryListingForPath: 对数据仓
+绝对路径的返回内容（条目名形态）以真机日志为准。

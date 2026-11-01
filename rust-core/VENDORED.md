@@ -256,6 +256,29 @@ SPEC.md in the two-links dedupe section):
   (`../../../<tail>`) and `payload_0`/`payload_1` are exactly
   as shipped in run #112.
 
+Sixth local source change, 2026-11-01 (run #114, registered in
+SPEC.md in the poster_store DVT transport section):
+
+- `src/poster_store.rs` — the list/audit transport is replaced.
+  Enumeration and both delete audits (pre-audit and fresh commit
+  audit) no longer plant an AFC staging symlink: they open a DVT
+  RemoteServer on the same RSD tunnel and call
+  `directoryListingForPath:` (deviceinfo channel) with the
+  store's absolute path, via the vendored
+  `DeviceInfoClient::directory_listing` — the mechanism recovered
+  from the Walllive 1.1.1 binary (its
+  `posterboard_clear_audit` module, `DvtDirectorySession`). The
+  staging machinery (`open_store_session`, `plant_store_link`,
+  `upload_stage_archive`, the three symlink-target variants) is
+  removed. Consequences: the list flow builds no archive and
+  touches no Books state; the JSON `identifier` field is now
+  empty (the identifier file is not readable over DVT; package
+  names still come from listing versions/<v>/contents/). The
+  delete MOVE itself is unchanged — `delete_operation` and
+  `build_delete_archive` are byte-identical; only its audits
+  moved from the AFC link to DVT. No vendored file changed; the
+  #112/#113 transaction and signal code is untouched.
+
 Apart from the additions registered above, everything else in this
 tree remains a verbatim copy of upstream.
 The other adaptations live outside this directory:
