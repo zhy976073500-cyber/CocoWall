@@ -185,47 +185,63 @@ struct ImportedWallpapersView: View {
     }
 
     private func cell(_ item: TendieItem) -> some View {
-        // 格子固定比例（run #132，取代 run #130 的固定高 172）：
-        // Sage 真机反馈格内图仍按原生比例留白、视觉参差——改
-        // 全格统一竖 3:4（宽:高，Sage 2026-11-02 所定「暂时」
-        // 规格）：列宽由 GridItem 定、高由比例随之；缩略图
-        // （TendieThumbnailView 为 resizable + scaledToFill 口径）
-        // 填满整格、多余部分居中裁掉，占位图同框撑满。
-        ZStack(alignment: .bottomLeading) {
-            TendieThumbnailView(item: item)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-            LinearGradient(colors: [.clear, .black.opacity(0.38)],
-                           startPoint: .center, endPoint: .bottom)
-            Text(item.name)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .padding(.leading, 9)
-                .padding(.bottom, 8)
-                .padding(.trailing, 32)
-            Group {
-                if item.isSelected {
-                    ZStack {
-                        Circle().fill(Color.blue)
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                } else {
-                    Circle()
-                        .fill(Color.black.opacity(0.08))
-                        .overlay(Circle().stroke(Color.white.opacity(0.85), lineWidth: 2))
-                }
+        // 格子定尺寸（run #133，第三次修）：#130 固定高 172、
+        // #132 在 ZStack 外挂 aspectRatio 两轮都没约束住格子，
+        // Sage 截图实锤真机仍是瀑布流。根因：cell 为 ZStack，
+        // 内含无硬框的 TendieThumbnailView（Image resizable +
+        // aspectRatio(contentMode: .fill)、无自有尺寸）再套
+        // frame(maxWidth/maxHeight: .infinity) 贪婪框——
+        // LazyVGrid 测量时格子尺寸被图片原生比例反推（漫画
+        // 长图撑高、横图压扁），外层 aspectRatio 在高度未设
+        // 限的提案下让位于子视图的原生比例需求。同组件在
+        // 扇形页的硬框 frame(150×200) 里一直正常，差别就在
+        // 格子没有硬盒子。修法：无内容尺寸的盒子打底定尺
+        // 寸、内容全部走 overlay（overlay 永不影响底视图尺
+        // 寸）——底 = Color.clear + aspectRatio(3/4, .fit)
+        // （竖 3:4 仍为 Sage 2026-11-02 所定「暂时」规格），
+        // 格子尺寸只由它决定（三列列宽定宽、高 = 宽×4/3）；
+        // 缩略图、渐变、名字、勾选徽章全用 overlay 叠上，
+        // 视觉与 #132 一致（圆角 18、选中蓝描边、手势不变）。
+        Color.clear
+            .aspectRatio(3.0 / 4.0, contentMode: .fit)
+            .overlay {
+                TendieThumbnailView(item: item)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
             }
-            .frame(width: 21, height: 21)
-            .padding(7)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-        }
-        .frame(maxWidth: .infinity)
-        .aspectRatio(3.0 / 4.0, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                LinearGradient(colors: [.clear, .black.opacity(0.38)],
+                               startPoint: .center, endPoint: .bottom)
+            }
+            .overlay(alignment: .bottomLeading) {
+                Text(item.name)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .padding(.leading, 9)
+                    .padding(.bottom, 8)
+                    .padding(.trailing, 32)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                Group {
+                    if item.isSelected {
+                        ZStack {
+                            Circle().fill(Color.blue)
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
+                        .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    } else {
+                        Circle()
+                            .fill(Color.black.opacity(0.08))
+                            .overlay(Circle().stroke(Color.white.opacity(0.85), lineWidth: 2))
+                    }
+                }
+                .frame(width: 21, height: 21)
+                .padding(7)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             if item.isSelected {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)

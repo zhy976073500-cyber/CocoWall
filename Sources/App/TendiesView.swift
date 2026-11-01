@@ -454,8 +454,9 @@ struct TendiesView: View {
     }
 
     private func fanCard(item: TendieItem, index: Int, count: Int) -> some View {
-        let rotations: [Double] = [-8, -4, 0, 4, 8]
-        let base = rotations[index % rotations.count]
+        // zIndex 仍按与列表中点的距离排（近中点在上）；旋转、
+        // 缩放、上浮已改由滚动相位驱动（run #133-B，见下方
+        // scrollTransition），不再有 index 循环的静态角度。
         let center = Double(count - 1) / 2.0
         return ZStack(alignment: .bottomLeading) {
             TendieThumbnailView(item: item)
@@ -512,21 +513,27 @@ struct TendiesView: View {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             fanMenuTarget = item
         }
-        // 旋转支点（run #132）：挪到卡片底边再往下约 15% 卡高
-        // 处，卡片像从底部捏住的一把牌——上张下收。静态基础
-        // 旋转与 scrollTransition 的回正插值共用同一支点。
-        .rotationEffect(.degrees(base), anchor: UnitPoint(x: 0.5, y: 1.15))
         .zIndex(-abs(Double(index) - center))
-        // 滚动联动弹性（run #130 建立，run #132 微调）：随与
-        // 视口中心的距离插值——中心卡放大至 1.06、轻微上浮
-        // 6pt 且基础旋转被抵消回正，越往两侧越缩回 1.0、落回
-        // 原位、旋转回到基础档位；回正绕同一底部支点（#132）。
+        // 扇形几何（run #133-B 二次校正，取代 #130/#132 的
+        // 「index 静态 base 角度 + 回正抵消」）：旧实现保留了
+        // ±8/±4 的 index 循环角度阶梯，角度不由卡片在屏幕上
+        // 的位置决定，停稳时邻卡倾斜看运气，达不到定稿图
+        // （底部支点、邻卡明显张开约 ±11°、中心卡主导）的
+        // 对称扇开。现旋转/缩放/上浮全部改由 scrollTransition
+        // 相位驱动，卡片静止角度一律 0：角度 =
+        // 13°×clamp(phase.value, -1, 1)，中心卡回正、越往
+        // 两侧倾斜越大封顶 13°（停稳时邻卡 |phase|≈0.77
+        // 对应约 ±10°，与定稿图一致），绕底部支点
+        // anchor(0.5, 1.15)（run #132 定）上张下收；缩放
+        // 1+0.06×(1-|phase|)、上浮 -6×(1-|phase|) 同源
+        // 驱动，中心卡放大上浮主导，滚动时连续扇动。
         .scrollTransition(.interactive) { content, phase in
-            let t = min(1.0, abs(phase.value))
+            let v = min(1.0, max(-1.0, phase.value))
+            let a = abs(v)
             return content
-                .scaleEffect(1.06 - 0.06 * t)
-                .offset(y: -6 * (1 - t))
-                .rotationEffect(.degrees(-base * (1 - t)), anchor: UnitPoint(x: 0.5, y: 1.15))
+                .scaleEffect(1 + 0.06 * (1 - a))
+                .offset(y: -6 * (1 - a))
+                .rotationEffect(.degrees(13 * v), anchor: UnitPoint(x: 0.5, y: 1.15))
         }
         .task {
             // 已存预览缺失或解码失败时，从包内重新提取（与旧列表行同口径）。

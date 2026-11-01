@@ -2011,3 +2011,80 @@ aspectRatio(3.0/4.0, .fit) 定框：三列灵活列宽决定宽、高
 - 未验证项（归 Sage 真机）：底部支点扇开的实际观感与
   viewAligned 吸附落点、上浮幅度；3:4 格在真机三列宽下
   的裁切观感（人物类竖图裁左右、横图裁上下的取舍）。
+
+
+## 改动登记 · 展开页格子结构重做（run #133，2026-11-02，第三次修）
+
+只动 ImportedWallpapersView.swift 的 cell 一个函数，在远程
+head af91327（#132）之上。扇形页、TendieThumbnailView 本体、
+选择页底栏与批量删除、长按菜单、其他页面一概未动。
+
+### 症状 → 根因 → 改法
+
+症状：#132 交付后 Sage 真机截图（04:19）实锤展开页仍是
+瀑布流——漫画长图把格子撑到整屏高、Arch_3D 只占半行、
+行高参差。#130 固定高 172、#132 固定比例两轮都没约束住。
+
+根因：cell 是 ZStack，内含 TendieThumbnailView（内部
+Image 为 resizable + aspectRatio(contentMode: .fill)、
+无自有硬尺寸）再套 frame(maxWidth/maxHeight: .infinity)
+贪婪框。LazyVGrid 测量时，格子尺寸被图片的原生比例反推
+（长图要求高、横图要求扁），而外层后加的
+aspectRatio(3/4, .fit) 在高度未设限的布局提案下让位于
+子视图的原生比例需求——比例修饰符挂在贪婪 ZStack 外面，
+管不住里面的内容尺寸。同一个 TendieThumbnailView 在
+扇形页一直正常，因为那里有硬框 frame(150×200) 先把盒子
+定死；展开页缺的正是这个硬盒子。
+
+改法（主线定死结构，不再试错）：cell 改为「无内容尺寸
+的盒子打底 + overlay 叠内容」——overlay 永不影响底视图
+尺寸，格子尺寸从此只由盒子决定：
+- 底：Color.clear.aspectRatio(3.0/4.0, contentMode: .fit)，
+  三列列宽定宽、高 = 宽×4/3（竖 3:4 仍为 Sage
+  2026-11-02 所定「暂时」规格）。
+- 缩略图走 overlay { TendieThumbnailView(item:)
+  .frame(maxWidth/maxHeight: .infinity).clipped() }：
+  填满盒子、多余居中裁掉；占位分支由组件内部同口径处理、
+  同框撑满。该贪婪框位于 overlay 闭包内，不参与底尺寸
+  测量，与旧结构的区别正在于此。
+- 底部渐变、名字（.bottomLeading）、勾选徽章
+  （.bottomTrailing，21×21 + padding 7）各走一个带
+  alignment 的 overlay，视觉与 #132 一致；圆角 18 的
+  clipShape、选中蓝描边 overlay、contentShape 照旧，
+  点按/长按手势与 .task 挂在最外层链尾，#130 的手势 +
+  页面根 confirmationDialog 行为不变。
+- 自检：cell 函数体内不再有 ZStack 贪婪子视图（仅徽章
+  内部 21×21 的圆+勾 ZStack 保留，非布局参与者），不再
+  有直接套在 TendieThumbnailView 上参与布局的贪婪框。
+
+### B. 扇形几何二次校正（同轮追加，TendiesView.swift）
+
+症状：Sage 对照定稿图（底部支点、邻卡明显张开约 ±11°、
+中心卡主导）指出实机没达到。复盘确认是 #132 指令本身的
+问题：保留了 #130 的 index 循环静态角度阶梯 ±8/±4，且
+角度由 index 决定、不由卡片在屏幕上的位置决定——
+scrollTransition 只负责把静态角度回正，停稳时邻卡倾斜
+看它在列表里的序号运气，形不成对称扇开。
+
+改法：删掉 index 循环的静态 base 角度（卡片静止角度
+一律 0）；旋转/缩放/上浮全部改由 scrollTransition 的
+phase 驱动，锚点保持 UnitPoint(0.5, 1.15)：
+角度 = 13°×clamp(phase.value, -1, 1)，缩放 =
+1+0.06×(1-|phase|)，上浮 = -6×(1-|phase|)。中心卡
+回正、放大、上浮主导；越往两侧倾斜越大封顶 13°，停稳
+时邻卡 |phase|≈0.77 对应约 ±10°，与定稿图几何一致；
+滚动时整扇连续扇动。交叠 -34、卡尺寸 150×200、
+viewAligned 吸附、点选弹簧+触觉、长按冻结+根部菜单、
+卡名限宽 110、zIndex 按与列表中点距离排，全部不变。
+
+### 未动与未验证
+
+- TendieThumbnailView 本体未动（硬框场景工作正常）；
+  AppViewModel、引擎、rust 树、受保护文件、CI workflow
+  未动；工作区其余既存脏改动未带入本轮。
+- 本地核查：ImportedWallpapersView.swift swiftc -parse
+  （Swift 6.1）通过；最终以推送后 CI 真 Xcode 26 编译
+  为准。
+- 未验证项（归 Sage 真机）：格子是否全行等高对齐（本轮
+  核心验收点）、3:4 裁切观感、扇形停稳时邻卡张开角度与
+  定稿图的接近程度、长按菜单与滚动冻结回归。
