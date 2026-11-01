@@ -507,26 +507,20 @@ struct DevicePosterCleanupView: View {
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if vm.devicePosters.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "photo.stack")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.secondary)
+                        Text(vm.devicePosterStatus.isEmpty ? "设备数据仓里没有检测到已导入的壁纸。" : vm.devicePosterStatus)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List {
-                        if vm.devicePosters.isEmpty && vm.quarantineEntries.isEmpty {
-                            Section {
-                                VStack(spacing: 10) {
-                                    Image(systemName: "photo.stack")
-                                        .font(.system(size: 32))
-                                        .foregroundStyle(.secondary)
-                                    Text(vm.devicePosterStatus.isEmpty ? "设备数据仓里没有检测到已导入的壁纸。" : vm.devicePosterStatus)
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                        .multilineTextAlignment(.center)
-                                        .padding(.horizontal, 24)
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 24)
-                                .listRowSeparator(.hidden)
-                            }
-                        }
-                        if !vm.devicePosters.isEmpty {
                         Section {
                             ForEach(vm.devicePosters) { item in
                                 Button {
@@ -570,51 +564,6 @@ struct DevicePosterCleanupView: View {
                                 .textCase(nil)
                             }
                         }
-                        }
-                        // Run #115: quarantine recovery section —
-                        // folders previous cleanups moved out of the
-                        // store, restorable one by one.
-                        if !vm.quarantineEntries.isEmpty {
-                            Section {
-                                ForEach(vm.quarantineEntries) { entry in
-                                    HStack(spacing: 12) {
-                                        Image(systemName: "arrow.uturn.backward.circle")
-                                            .foregroundStyle(.secondary)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(entry.name)
-                                                .font(.subheadline.bold())
-                                                .foregroundStyle(.primary)
-                                                .lineLimit(1)
-                                            Text(entry.providerKnown
-                                                 ? "\(entry.extensionId) · \(String(entry.uuid.prefix(8)))"
-                                                 : "来源未知，暂不可恢复")
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer()
-                                        if vm.isRestoringQuarantine {
-                                            ProgressView()
-                                        } else {
-                                            Button("恢复") {
-                                                Task { await vm.restoreQuarantineEntry(entry) }
-                                            }
-                                            .font(.subheadline)
-                                            .disabled(!entry.providerKnown)
-                                        }
-                                    }
-                                }
-                            } header: {
-                                Text("隔离区（可恢复）共 \(vm.quarantineEntries.count) 条")
-                            } footer: {
-                                if !vm.quarantineStatus.isEmpty {
-                                    Text(vm.quarantineStatus)
-                                }
-                            }
-                        }
-                    }
-                    .onAppear {
-                        Task { await vm.loadQuarantine() }
                     }
                 }
             }
@@ -626,10 +575,7 @@ struct DevicePosterCleanupView: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
-                        Task {
-                            await vm.detectDevicePosters()
-                            await vm.loadQuarantine()
-                        }
+                        Task { await vm.detectDevicePosters() }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
@@ -682,7 +628,7 @@ struct DevicePosterCleanupView: View {
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("所选 \(selectedItems.count) 张壁纸将从设备 PosterBoard 数据仓移入隔离区，之后可在本页「隔离区」中恢复。")
+                Text("将从设备 PosterBoard 数据仓中删除所选 \(selectedItems.count) 张壁纸，此操作不可恢复。")
             }
         }
     }
