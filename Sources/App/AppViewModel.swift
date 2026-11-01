@@ -1155,7 +1155,7 @@ final class AppViewModel: ObservableObject {
         let end = fh.seekToEndOfFile()
         guard end > 22 else { return nil }
         let tailLen = min(UInt64(65_557), end)
-        fh.seek(toOffset: end - tailLen)
+        do { try fh.seek(toOffset: end - tailLen) } catch { return nil }
         let tail = fh.readData(ofLength: Int(tailLen))
         guard tail.count >= 22 else { return nil }
         let bytes = [UInt8](tail)
@@ -1178,7 +1178,7 @@ final class AppViewModel: ObservableObject {
         if remaining == 0xFFFF || cursor == 0xFFFF_FFFF { return nil }
         var names: [String] = []
         while remaining > 0 {
-            fh.seek(toOffset: cursor)
+            do { try fh.seek(toOffset: cursor) } catch { return nil }
             let head = fh.readData(ofLength: 46)
             guard head.count == 46 else { return nil }
             let h = [UInt8](head)

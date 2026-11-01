@@ -1262,3 +1262,13 @@ deleteImported 的 completion 暴露该类型，连同 listQuarantine
 及其成员（含嵌套 ItemResult）改为 public，与同文件 DevicePosterItem
 的既有写法一致；其余 #115 代码逐字未动。本地 swiftc -typecheck
 （Swift 6.1 + airlift.h modulemap）修复后零错误。
+
+### CI 修复补记（run #123，2026-11-01）
+
+#122 的 CI（run 41307619912）Build 步报 2 条 error：AppViewModel.swift
+新增 zip 中央目录解析函数中两处 `fh.seek(toOffset:)`（1158、1181 行）
+为 throwing API 而未标记 try。修复（本版 #123，仅动 AppViewModel.swift
+该函数）：两处 seek 改为 do/catch、失败即按解析失败返回 nil；同函数
+其余 FileHandle 调用（seekToEndOfFile/readData/closeFile）均非 throwing，
+已逐一审计。本地验证：swiftc -parse 全文件通过；函数原文抽出编译后
+对真实 zip 正确返回 .wallpaper 包名、坏路径返回空。
