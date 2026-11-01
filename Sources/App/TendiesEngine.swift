@@ -337,11 +337,14 @@ public final class TendiesEngine {
 
             for (descIndex, descItem) in descriptors.enumerated() {
                 let targetUUID = UUID().uuidString.uppercased()
-                let randomizedID = Int.random(in: 10000...99999)
                 log("  [\(descIndex + 1)/\(descriptors.count)] Descriptor \(targetUUID) for \(descItem.ext)…")
 
-                // Update plist identifiers for templates/videos without suggestionMetadata
-                updatePlistIdentifiers(in: descItem.url, randomizedID: randomizedID)
+                // Run #122: rewrite the descriptor's packaged
+                // identifier set to a fresh, self-consistent set —
+                // unconditionally (the old code skipped packages
+                // carrying suggestionMetadata, which are exactly the
+                // ones whose full identifier set can collide).
+                rewriteDescriptorIdentifiers(in: descItem.url, packageName: item.name, log: log)
 
                 // 1. Primary destination: matches descriptor extension bundle ID.
                 //    Run #112: installed via the Walllive-shaped transaction —
@@ -475,55 +478,284 @@ public final class TendiesEngine {
         }
     }
 
-    // MARK: - Plist Identifier Randomization (Matches Nugget implementation)
+    // MARK: - Descriptor Identifier Rewrite (run #122)
 
-    func updatePlistIdentifiers(in folderURL: URL, randomizedID: Int) {
-        // If suggestion metadata exists, the descriptor is pre-packaged with matching
-        // descriptorIdentifier and wallpaper identifiers (e.g. 7400.DYNAMIC <-> 7400).
-        // Randomizing only Wallpaper.plist desynchronizes PosterKit's suggestion lookup!
-        let suggestionMetadataURL = folderURL.appendingPathComponent("com.apple.posterkit.provider.identifierURL.suggestionMetadata.plist")
-        if FileManager.default.fileExists(atPath: suggestionMetadataURL.path) {
-            return
+    /// Rewrites the descriptor's packaged identifier set to a fresh,
+    /// self-consistent set before installation, and logs the mapping.
+    ///
+    /// Why: PosterBoard keys a collection by the identifiers INSIDE
+    /// the descriptor — not by the store folder's UUID, which is
+    /// already fresh per flash. Identifier landing points, enumerated
+    /// on the two sample packages in the repo (identifiers "9998"
+    /// without and "7400" with suggestion metadata):
+    ///   1. `com.apple.posterkit.provider.descriptor.identifier` —
+    ///      plain text file, content is exactly the base ("7400").
+    ///   2. `…identifierURL.suggestionMetadata.plist` (keyed archive,
+    ///      only on pre-packaged descriptors): the gallery item's
+    ///      `descriptorIdentifier` string is base + suffix
+    ///      ("7400.DYNAMIC"); its `identifier` string is a UUID.
+    ///   3. `versions/*/contents/<pkg>.wallpaper/Wallpaper.plist`:
+    ///      `identifier` (top level and under assets.lockAndHome.
+    ///      default) as INTEGERS, plus the `*AnimationFileName*`
+    ///      strings naming the .ca bundles ("7400.…_Background-…ca").
+    ///   4. `versions/*/contents/com.apple.posterkit.provider.
+    ///      contents.userInfo`: `wallpaperRepresentingIdentifier`
+    ///      (string, the base) and `wallpaperRepresentingFileName`
+    ///      (the .wallpaper directory name).
+    ///   5. Path components: the `<base>.….wallpaper` directory and
+    ///      the `<base>.…_*.ca` directories inside it carry the base
+    ///      as a name prefix and are referenced by 3/4.
+    /// Packages authored by the same pipeline ship the SAME set, so
+    /// a second install reads as the same collection and the system
+    /// chooser shows only the newest (run #114/#115 finding). The
+    /// pre-#122 code returned early whenever a suggestionMetadata
+    /// plist existed — exactly the packages carrying the full set —
+    /// and randomized only a subset of fields otherwise.
+    ///
+    /// Method: the fresh base has the SAME digit count as the old
+    /// one, so every derived string keeps its length. Plain plists
+    /// are rewritten structurally (string rule everywhere; the
+    /// integer rule only for values under an `identifier` key, the
+    /// two enumerated integer spots). Keyed archives ($archiver
+    /// plists, whose UID graph must not be round-tripped) are
+    /// rewritten by length-preserving byte replacement of the exact
+    /// identifier strings (UTF-8 and UTF-16BE forms). The
+    /// suggestionMetadata gallery UUID is re-rolled the same way.
+    /// Directory/file names carrying the old prefix are renamed to
+    /// match. Nothing else is touched: provider bundle ids, role
+    /// strings, class names and unrelated numbers are not the base.
+    ///
+    /// Guard (the old code's documented hazard, kept): a descriptor
+    /// whose identifier set has no numeric base is a system
+    /// extension package whose identifier is a required string
+    /// SYMBOL (Mercury "v6x.colorA", Unity2025, Kaleidoscope) —
+    /// rewriting it would break extension lookup. Such packages are
+    /// skipped with a log line; they are not CollectionsPoster
+    /// .tendies packages.
+    func rewriteDescriptorIdentifiers(in folderURL: URL, packageName: String, log: @escaping (String) -> Void) {
+        let fm = FileManager.default
+        let descIdURL = folderURL.appendingPathComponent("com.apple.posterkit.provider.descriptor.identifier")
+        let suggestionURL = folderURL.appendingPathComponent("com.apple.posterkit.provider.identifierURL.suggestionMetadata.plist")
+
+        func isNumericBase(_ s: String) -> Bool {
+            s.count >= 3 && s.allSatisfy { $0.isNumber }
+        }
+        func parsePlist(_ url: URL) -> (root: Any, format: PropertyListSerialization.PropertyListFormat)? {
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            var format = PropertyListSerialization.PropertyListFormat.xml
+            guard let root = try? PropertyListSerialization.propertyList(from: data, options: [], format: &format) else { return nil }
+            return (root, format)
+        }
+        func collectStrings(_ value: Any, into set: inout Set<String>) {
+            switch value {
+            case let s as String: set.insert(s)
+            case let d as [String: Any]: for v in d.values { collectStrings(v, into: &set) }
+            case let a as [Any]: for v in a { collectStrings(v, into: &set) }
+            default: break
+            }
         }
 
-        let fileManager = FileManager.default
-        guard let enumerator = fileManager.enumerator(
-            at: folderURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
-
-        while let fileURL = enumerator.nextObject() as? URL {
-            let fileName = fileURL.lastPathComponent
-
-            if fileName == "com.apple.posterkit.provider.descriptor.identifier" {
-                // IMPORTANT: ONLY randomize if the file content is a pure integer!
-                // For extensions like Mercury, Unity, Kaleidoscope, descriptor identifiers are
-                // required string symbols (e.g. "v6x.colorA", "Unity2025")!
-                // Overwriting them breaks extension lookup!
-                if let content = try? String(contentsOf: fileURL, encoding: .utf8),
-                   let _ = Int(content.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                    try? "\(randomizedID)".data(using: .utf8)?.write(to: fileURL)
-                }
-            } else if fileName == "com.apple.posterkit.provider.contents.userInfo" {
-                if let data = try? Data(contentsOf: fileURL),
-                   var plist = (try? PropertyListSerialization.propertyList(from: data, options: .mutableContainers, format: nil)) as? [String: Any],
-                   plist["wallpaperRepresentingIdentifier"] != nil {
-                    plist["wallpaperRepresentingIdentifier"] = randomizedID
-                    if let updated = try? PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0) {
-                        try? updated.write(to: fileURL)
+        // --- Discover the old identifier set -------------------------
+        var oldBase: String? = nil
+        if let raw = try? String(contentsOf: descIdURL, encoding: .utf8) {
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if isNumericBase(t) { oldBase = t }
+        }
+        // Versions subtree: Wallpaper.plist `identifier` (Int) and
+        // userInfo `wallpaperRepresentingIdentifier` as fallbacks.
+        var versionFiles: [URL] = []
+        if let en = fm.enumerator(at: folderURL, includingPropertiesForKeys: [.isRegularFileKey], options: []) {
+            while let u = en.nextObject() as? URL {
+                if u.path.contains("__MACOSX") { continue }
+                versionFiles.append(u)
+            }
+        }
+        if oldBase == nil {
+            for u in versionFiles where u.lastPathComponent == "Wallpaper.plist" {
+                if let (root, _) = parsePlist(u), let dict = root as? [String: Any] {
+                    if let n = dict["identifier"] as? NSNumber, isNumericBase("\(n.intValue)") {
+                        oldBase = "\(n.intValue)"; break
                     }
-                }
-            } else if fileName.hasSuffix("Wallpaper.plist") {
-                if let data = try? Data(contentsOf: fileURL),
-                   var plist = (try? PropertyListSerialization.propertyList(from: data, options: .mutableContainers, format: nil)) as? [String: Any] {
-                    plist["identifier"] = randomizedID
-                    if let updated = try? PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0) {
-                        try? updated.write(to: fileURL)
+                    if let s = dict["identifier"] as? String, isNumericBase(s) {
+                        oldBase = s; break
                     }
                 }
             }
         }
+        if oldBase == nil {
+            for u in versionFiles where u.lastPathComponent == "com.apple.posterkit.provider.contents.userInfo" {
+                if let (root, _) = parsePlist(u), let dict = root as? [String: Any],
+                   let s = dict["wallpaperRepresentingIdentifier"] as? String, isNumericBase(s) {
+                    oldBase = s; break
+                }
+            }
+        }
+        // Suggestion metadata: a "<digits>.<suffix>" string.
+        var suggestionStrings: Set<String> = []
+        if let (root, _) = parsePlist(suggestionURL) {
+            collectStrings(root, into: &suggestionStrings)
+            if oldBase == nil {
+                for s in suggestionStrings {
+                    if let dot = s.firstIndex(of: ".") {
+                        let head = String(s[s.startIndex..<dot])
+                        if isNumericBase(head) { oldBase = head; break }
+                    }
+                }
+            }
+        }
+
+        guard let old = oldBase, let oldInt = Int(old) else {
+            log("    airlift: airlift.identifiers.rewritten package=\(packageName) skipped=no_numeric_base")
+            return
+        }
+
+        // Fresh base, same digit count (keeps every derived string
+        // the same length for the keyed-archive byte replacement).
+        var newInt = oldInt
+        while newInt == oldInt {
+            if old.count <= 4 {
+                newInt = Int.random(in: 1000...9999)
+            } else {
+                newInt = Int.random(in: 10000...99999)
+            }
+        }
+        let new = "\(newInt)"
+
+        func mapString(_ s: String) -> String {
+            if s == old { return new }
+            if s.hasPrefix(old + ".") { return new + String(s.dropFirst(old.count)) }
+            return s
+        }
+        func isUUIDString(_ s: String) -> Bool {
+            s.count == 36 && UUID(uuidString: s) != nil
+        }
+
+        // Old identifier strings (for the log + byte replacement).
+        var oldSet: Set<String> = [old]
+        for u in versionFiles {
+            if let (root, _) = parsePlist(u) {
+                var strings = Set<String>()
+                collectStrings(root, into: &strings)
+                for s in strings where s == old || s.hasPrefix(old + ".") { oldSet.insert(s) }
+            }
+        }
+        for s in suggestionStrings where s == old || s.hasPrefix(old + ".") { oldSet.insert(s) }
+        // Suggestion gallery UUID(s): re-rolled, suggestion file only.
+        var uuidMap: [String: String] = [:]
+        for s in suggestionStrings where isUUIDString(s) {
+            uuidMap[s] = UUID().uuidString.uppercased()
+        }
+
+        // --- Apply ---------------------------------------------------
+        // 1. descriptor.identifier text file.
+        if let raw = try? String(contentsOf: descIdURL, encoding: .utf8) {
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let mapped = mapString(t)
+            if mapped != t {
+                try? mapped.data(using: .utf8)?.write(to: descIdURL)
+            }
+        }
+
+        // 2. Every other file: structural rewrite for plain plists,
+        //    length-preserving byte replacement for keyed archives.
+        func rewriteValue(_ value: Any, key: String?, changed: inout Bool) -> Any {
+            switch value {
+            case let s as String:
+                let m = mapString(s)
+                if m != s { changed = true }
+                return m
+            case let n as NSNumber:
+                if (key == "identifier" || key == "wallpaperRepresentingIdentifier"),
+                   n.doubleValue == Double(oldInt),
+                   n.doubleValue.truncatingRemainder(dividingBy: 1) == 0 {
+                    changed = true
+                    return NSNumber(value: newInt)
+                }
+                return value
+            case let d as [String: Any]:
+                var out = [String: Any](minimumCapacity: d.count)
+                for (k, v) in d { out[k] = rewriteValue(v, key: k, changed: &changed) }
+                return out
+            case let a as [Any]:
+                return a.map { rewriteValue($0, key: key, changed: &changed) }
+            default:
+                return value
+            }
+        }
+        func byteReplace(_ url: URL, extraPairs: [String: String]) {
+            guard var data = try? Data(contentsOf: url) else { return }
+            var pairs: [String: String] = [:]
+            for s in oldSet { pairs[s] = mapString(s) }
+            for (k, v) in extraPairs { pairs[k] = v }
+            var touched = false
+            for (oldS, newS) in pairs where oldS != newS && oldS.count == newS.count {
+                for encoding in [String.Encoding.utf8, .utf16BigEndian] {
+                    guard let oldBytes = oldS.data(using: encoding),
+                          let newBytes = newS.data(using: encoding),
+                          oldBytes.count == newBytes.count, !oldBytes.isEmpty else { continue }
+                    var replaced = Data()
+                    var rest = data
+                    var hit = false
+                    while let range = rest.range(of: oldBytes) {
+                        hit = true
+                        replaced.append(rest[..<range.lowerBound])
+                        replaced.append(newBytes)
+                        rest = rest[range.upperBound...]
+                    }
+                    if hit {
+                        replaced.append(rest)
+                        data = replaced
+                        touched = true
+                    }
+                }
+            }
+            if touched { try? data.write(to: url) }
+        }
+
+        for u in versionFiles where u != descIdURL {
+            // .DS_Store is Finder metadata that records the OLD
+            // directory names verbatim — the one place the old
+            // identifier would otherwise linger in the installed
+            // tree. It is meaningless to PosterBoard; drop it.
+            if u.lastPathComponent == ".DS_Store" {
+                try? fm.removeItem(at: u)
+                continue
+            }
+            guard let (root, format) = parsePlist(u) else { continue }
+            let isArchive = (root as? [String: Any])?["$archiver"] != nil
+            if isArchive {
+                byteReplace(u, extraPairs: u == suggestionURL ? uuidMap : [:])
+            } else {
+                var changed = false
+                let rewritten = rewriteValue(root, key: nil, changed: &changed)
+                if changed,
+                   let out = try? PropertyListSerialization.data(fromPropertyList: rewritten, format: format, options: 0) {
+                    try? out.write(to: u)
+                }
+            }
+        }
+
+        // 3. Rename path components carrying the old prefix,
+        //    deepest first so parents move after their children.
+        var renameCandidates: [URL] = []
+        if let en = fm.enumerator(at: folderURL, includingPropertiesForKeys: nil, options: []) {
+            while let u = en.nextObject() as? URL {
+                if u.path.contains("__MACOSX") { continue }
+                if u.lastPathComponent.hasPrefix(old + ".") {
+                    renameCandidates.append(u)
+                }
+            }
+        }
+        for u in renameCandidates.sorted(by: { $0.path.count > $1.path.count }) {
+            let newName = new + String(u.lastPathComponent.dropFirst(old.count))
+            let dest = u.deletingLastPathComponent().appendingPathComponent(newName)
+            try? fm.moveItem(at: u, to: dest)
+        }
+
+        let oldDesc = oldSet.sorted().joined(separator: ",")
+        let newDesc = oldSet.map { mapString($0) }.sorted().joined(separator: ",")
+        let uuidDesc = uuidMap.isEmpty ? "" : " suggestionUUID=\(uuidMap.keys.sorted().joined(separator: ","))->\(uuidMap.values.sorted().joined(separator: ","))"
+        log("    airlift: airlift.identifiers.rewritten package=\(packageName) old=\(oldDesc) new=\(newDesc)\(uuidDesc)")
     }
 
     // MARK: - Folder Injector Helper (Single Atomic Move via AirTraffic)

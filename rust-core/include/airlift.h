@@ -215,34 +215,6 @@ int32_t al_poster_store_delete(const char *pairing_path,
                                char **out_status,
                                char **out_error);
 
-// PosterBoard quarantine recovery (local addition, run #115,
-// src/poster_store.rs): quarantine_list enumerates the
-// airlift-quarantine-* folders deletes left in the device Media
-// root ({"items":[{quarantine,uuid,descriptorIdentifier,packageName,
-// providerGuess}]}); restore moves the given descriptors back into
-// the store via the delete mechanism reversed, re-audits each path
-// present on a fresh connection, and removes a quarantine folder
-// only after its descriptor re-audits present. targets_csv entries
-// are "<quarantine-folder>|<extension-id>|<descriptor-uuid-or-empty>".
-// Restore is not limited to the cleanup provider scope. Same
-// blocking / out-param contract as the delete entry above.
-int32_t al_poster_store_quarantine_list(const char *pairing_path,
-                                        ALLogCallback log_cb,
-                                        void *ctx,
-                                        char **out_json,
-                                        char **out_status,
-                                        char **out_error);
-
-int32_t al_poster_store_restore(const char *pairing_path,
-                                const char *container_path,
-                                int64_t struct_version,
-                                const char *targets_csv,
-                                ALLogCallback log_cb,
-                                void *ctx,
-                                char **out_json,
-                                char **out_status,
-                                char **out_error);
-
 // ---------------------------------------------------------------------------
 // Target Host Configuration
 // ---------------------------------------------------------------------------

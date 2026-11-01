@@ -509,7 +509,7 @@ struct DevicePosterCleanupView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List {
-                        if vm.devicePosters.isEmpty && vm.quarantineEntries.isEmpty {
+                        if vm.devicePosters.isEmpty {
                             Section {
                                 VStack(spacing: 10) {
                                     Image(systemName: "photo.stack")
@@ -539,6 +539,28 @@ struct DevicePosterCleanupView: View {
                                     HStack(spacing: 12) {
                                         Image(systemName: vm.devicePosterSelection.contains(item.id) ? "checkmark.circle.fill" : "circle")
                                             .foregroundStyle(vm.devicePosterSelection.contains(item.id) ? Color.accentColor : Color.secondary)
+                                        // Run #122: thumbnail borrowed from the
+                                        // matching local library entry (matched
+                                        // by package name in AppViewModel), so a
+                                        // row can be recognised by its picture.
+                                        if let thumbData = vm.devicePosterThumbs[item.id],
+                                           let thumb = UIImage(data: thumbData) {
+                                            Image(uiImage: thumb)
+                                                .resizable()
+                                                .aspectRatio(contentMode: .fill)
+                                                .frame(width: 34, height: 46)
+                                                .cornerRadius(6)
+                                                .clipped()
+                                                .shadow(color: .black.opacity(0.12), radius: 2, x: 0, y: 1)
+                                        } else {
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .fill(Color(UIColor.tertiarySystemFill))
+                                                .frame(width: 34, height: 46)
+                                                .overlay {
+                                                    Image(systemName: "photo")
+                                                        .foregroundStyle(.secondary)
+                                                }
+                                        }
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(item.name)
                                                 .font(.subheadline.bold())
@@ -571,52 +593,14 @@ struct DevicePosterCleanupView: View {
                             }
                         }
                         }
-                        // Run #115: quarantine recovery section —
-                        // folders previous cleanups moved out of the
-                        // store, restorable one by one.
-                        if !vm.quarantineEntries.isEmpty {
-                            Section {
-                                ForEach(vm.quarantineEntries) { entry in
-                                    HStack(spacing: 12) {
-                                        Image(systemName: "arrow.uturn.backward.circle")
-                                            .foregroundStyle(.secondary)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(entry.name)
-                                                .font(.subheadline.bold())
-                                                .foregroundStyle(.primary)
-                                                .lineLimit(1)
-                                            Text(entry.providerKnown
-                                                 ? "\(entry.extensionId) · \(String(entry.uuid.prefix(8)))"
-                                                 : "来源未知，暂不可恢复")
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer()
-                                        if vm.isRestoringQuarantine {
-                                            ProgressView()
-                                        } else {
-                                            Button("恢复") {
-                                                Task { await vm.restoreQuarantineEntry(entry) }
-                                            }
-                                            .font(.subheadline)
-                                            .disabled(!entry.providerKnown)
-                                        }
-                                    }
-                                }
-                            } header: {
-                                Text("隔离区（可恢复）共 \(vm.quarantineEntries.count) 条")
-                            } footer: {
-                                if !vm.quarantineStatus.isEmpty {
-                                    Text(vm.quarantineStatus)
-                                }
-                            }
-                        }
-                    }
-                    .onAppear {
-                        Task { await vm.loadQuarantine() }
                     }
                 }
+            }
+            .onChange(of: vm.tendieItems) { _, _ in
+                // A library preview regenerated after the cleanup
+                // list was built can fill in a row thumbnail that
+                // was missing (run #122).
+                vm.prepareDevicePosterThumbnails()
             }
             .navigationTitle("本机已导入的壁纸")
             .navigationBarTitleDisplayMode(.inline)
@@ -628,7 +612,6 @@ struct DevicePosterCleanupView: View {
                     Button {
                         Task {
                             await vm.detectDevicePosters()
-                            await vm.loadQuarantine()
                         }
                     } label: {
                         Image(systemName: "arrow.clockwise")
@@ -682,7 +665,7 @@ struct DevicePosterCleanupView: View {
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("所选 \(selectedItems.count) 张壁纸将从设备 PosterBoard 数据仓移入隔离区，之后可在本页「隔离区」中恢复。")
+                Text("所选 \(selectedItems.count) 张壁纸将从设备 PosterBoard 数据仓中移除。")
             }
         }
     }

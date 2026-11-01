@@ -1132,6 +1132,122 @@ TendiesEngine（C 的修复方向待定案后单独处理）、工作流文件�
   index=0/2 维持 ~103ms confirmed=true；合并偏好结论与壁纸
   进选择器不受影响。
 
+## Run #122（2026-11-01）：删除恢复功能 + 标识整套重写 + 清理列表缩略图
+
+Sage 2026-11-01 20:23 拍板三项：#121 的隔离区恢复功能整面
+删除（「恢复功能不需要了」）；修「连刷多张只显示一张」；
+清理列表加缩略图识别。
+
+### 项一：恢复功能删除（功能面整删，删除机制不动）
+
+- 删除：清理页「隔离区（可恢复）」区、刷新兼刷隔离区、
+  PosterStoreHelper 的 listQuarantine / restoreQuarantine /
+  QuarantineItem / QuarantineListResponse / RestoreResponse /
+  QuarantineDisplayItem / PosterStoreReceipts、AppViewModel 的
+  隔离区状态与 loadQuarantine / restoreQuarantineEntry / 清理后
+  回执、Rust 的 store_quarantine_list / store_restore /
+  restore_operation（poster_store.rs）、FFI
+  al_poster_store_quarantine_list / al_poster_store_restore
+  （lib.rs + airlift.h + poster_store.rs 三处）。清理确认文案
+  回到不承诺恢复的实话。
+- **不动**：delete_operation 与 build_delete_archive 逐字保留
+  ——删除时搬入 Media 隔离夹是删除机制本身的安全属性（搬移
+  而非销毁），不是恢复功能。DeleteResponse.quarantine 字段
+  （删除结果报告）保留。
+- 删后本地校验：cargo check 通过、cleanup_scope 单测 2 过；
+  swiftc -typecheck（airlift.h modulemap）PosterStoreHelper
+  零错误；四个被改 Swift 文件 swiftc -parse 零错误；全树无
+  已删符号悬空引用。
+
+### 项二：标识整套一致性重写（TendiesEngine.swift 受保护文件最小改动）
+
+理由：Sage 点名要修的功能，改动点即刷入预处理既有的标识
+处理处。旧 updatePlistIdentifiers 仅在包无 suggestionMetadata
+时才随机化（且只改两处字符串），有 suggestionMetadata 的包
+整套标识原样进仓——#115 C 项的首要嫌疑（descriptor 内部标
+识撞车，后刷覆盖先刷的呈现）。
+
+样本枚举的标识落点（upload.tendies 标识 9998 /
+upload-2.tendies 标识 7400，两样本互证）：
+1. descriptor 根目录 `com.apple.posterkit.provider.descriptor.identifier`
+   纯文本 = 数字基底本身；
+2. suggestionMetadata.plist（$archiver 键控归档，$objects）：
+   descriptorIdentifier = 基底+"."后缀（如 7400.DYNAMIC）；
+   图库条目 identifier = UUID 串（仅此文件出现）；
+3. versions/*/contents/<包名>.wallpaper/Wallpaper.plist：
+   identifier 为 **Int**（顶层与 assets.lockAndHome.default
+   各一），及 *AnimationFileName* 命名的 .ca 目录名字符串；
+4. provider.contents.userInfo：wallpaperRepresentingIdentifier
+   （String=基底）、wallpaperRepresentingFileName（.wallpaper
+   目录名）；
+5. 路径组件：<基底>.….wallpaper/ 与
+   <基底>.…_Background/Floating/Foreground-….ca/ 目录名前缀。
+无标识文件：providerInfo.plist、role.identifier（扩展自身
+标识）、RuntimeSnapshot/instance/configurableOptions/
+otherMetadata/supplements 各 plist——逐字不动。
+
+新实现 rewriteDescriptorIdentifiers（取代 updatePlistIdentifiers，
+调用点与旧函数相同）：发现数字基底（descriptor.identifier →
+Wallpaper.plist identifier → userInfo → suggestion 基底串，
+四路互证）→ 同位数随机新基底 → 字符串规则（全等或「基底.」
+前缀，后缀保留）+ 整数规则（仅 identifier /
+wallpaperRepresentingIdentifier 键）整树重写；普通 plist 按
+原格式结构化重写；$archiver 键控归档**不做对象图 round-trip**，
+改走等长字节替换（UTF-8 + UTF-16BE 双编码）保 UID 图完整；
+suggestion 图库 UUID 一并重掷（仅该文件）；包内 .DS_Store
+（记录旧目录名的 Finder 元数据、唯一真残留）预处理时删除；
+路径组件自深向浅改名。无数字基底的包（系统扩展符号标识，
+如 Mercury 的 v6x.colorA）保持跳过并打日志——重写那种标识
+会断扩展查找（MercuryPoster 扩展符号标识保持原样）。每包打
+取证日志 airlift.identifiers.rewritten
+package=… old=<原标识集> new=<新标识集>。
+
+离线自检（函数原文抽出、本地 swiftc 编译，对两样本副本执行
++ python plistlib 断言）：PASS——旧基底字节级零残留（文本/
+UTF-16BE/文件名，词边界检索；唯一形似命中为 contentVersion
+2.01 的浮点字面量，非标识）、新标识各落点一致、suggestion
+$objects 计数与非字符串对象不变、providerInfo.plist 逐字
+未动、全部 plist 仍可解析且格式（XML/二进制）保持、
+.ca/.wallpaper 改名与引用对齐、.DS_Store 已清。
+
+### 项三：清理列表缩略图（匹配键 = packageName）
+
+- 匹配键：DevicePosterItem.packageName（#114 DVT 枚举时从数
+  据仓 versions/*/contents/*.wallpaper 读得的包内目录名）为主
+  键，与本地库 .tendies 的 zip 中央目录条目中的同名路径组件
+  精确匹配；次级为归一化匹配（小写 + 去 .wallpaper 后缀）。
+  descriptor 的 identifier 字段本是天然次键，但 DVT 读不到
+  （#114 已定，字段留空），故不用。
+- AppViewModel.prepareDevicePosterThumbnails：检测成功后（及
+  库条目变化时）离线匹配，产出 devicePosterThumbs
+  [itemID: 预览 JPEG]；zip 中央目录纯 Swift 解析（EOCD 扫描，
+  不解包；zip64/解析失败即无匹配、显示占位）。zip 解析器已
+  离线验证：两样本分别得出 9998.Custom-…wallpaper 与
+  7400.WWDC_2022-…wallpaper，非 zip 输入优雅返回空。
+- UI：清理列表行左侧 34×46 圆角 6 缩略图（fill 裁切、轻阴
+  影、无描边，与库列表行同款），匹配不到显示
+  tertiarySystemFill 占位 + photo 图标；包名/UUID 文字不变。
+
+### 未动清单
+
+delete_operation / build_delete_archive（逐字）、poster_refresh
+与 #111 信号编码、#112/#113 事务骨架、配对/利用链、工作流
+文件。#114 删除日志重建的隔离夹对照表
+（~/workspace/cocowall-quarantine-map-20261101.json）随恢复功
+能取消而作废，仅留档。
+
+### 未验证项（真机验收标准）
+
+- 清理页无「隔离区（可恢复）」区段；检测/清理功能与 #121
+  一致（限域、删除搬移语义不变）。
+- 检测列表每行左侧有缩略图：本地库里有同包的显示其预览，
+  没有的显示占位图；包名/UUID 前缀文字不变。
+- 连刷 EVA + HarmonyOS 两包：日志含两包的
+  airlift.identifiers.rewritten 行（old 集是否相同即定案材
+  料——相同则撞车坐实且当场已修；不同而仍只显示一张则假
+  设作废、此日志即下一轮证据）；不注销打开系统选择器，
+  两张都在。
+
 ### CI 修复补记（run #121，2026-11-01）
 
 #115 首推（run 41295394323）CI 构建失败（Build 步 exit 65、无日志可读），

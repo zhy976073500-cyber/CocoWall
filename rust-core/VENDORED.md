@@ -308,6 +308,19 @@ SPEC.md in the cleanup-scope + quarantine-recovery section):
   The #111 signal encoding and the #112/#113 transaction skeleton
   are untouched; no vendored file changed.
 
+Run #122 (2026-11-01) removes the run #121 (B) quarantine-recovery
+surface again, on the project owner's decision that the feature is
+not wanted: `store_quarantine_list`, `store_restore` and
+`restore_operation` are deleted from `src/poster_store.rs`, the
+FFIs `poster_store_quarantine_list` / `poster_store_restore` from
+`src/poster_store.rs` and their `al_poster_store_*` wrappers from
+`src/lib.rs`, and the declarations from `include/airlift.h`. The
+(A) cleanup scope limit stays. `delete_operation` and
+`build_delete_archive` remain byte-identical — delete still moves
+descriptors into Media `airlift-quarantine-*` folders (a safety
+property of the delete mechanism itself, not the removed restore
+feature).
+
 Apart from the additions registered above, everything else in this
 tree remains a verbatim copy of upstream.
 The other adaptations live outside this directory:

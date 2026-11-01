@@ -85,13 +85,10 @@ final class AppViewModel: ObservableObject {
     @Published var isScanningDevicePosters: Bool = false
     @Published var isCleaningDevicePosters: Bool = false
     @Published var devicePosterStatus: String = ""
-    /// Quarantine recovery (run #115): folders previous cleanups
-    /// moved into the device Media quarantine, merged with the
-    /// locally persisted delete receipts for provenance.
-    @Published var quarantineEntries: [QuarantineDisplayItem] = []
-    @Published var isLoadingQuarantine: Bool = false
-    @Published var isRestoringQuarantine: Bool = false
-    @Published var quarantineStatus: String = ""
+    /// Cleanup-list thumbnails (run #122): DevicePosterItem.id ->
+    /// JPEG preview borrowed from the matching local library entry
+    /// (see prepareDevicePosterThumbnails).
+    @Published var devicePosterThumbs: [String: Data] = [:]
     @Published var showDevicePosterSheet: Bool = false
 
     // MARK: - AirCard UI States & Properties
@@ -1053,6 +1050,7 @@ final class AppViewModel: ObservableObject {
         isScanningDevicePosters = true
         devicePosters = []
         devicePosterSelection = []
+        devicePosterThumbs = [:]
         let version = posterStoreStructVersion
         let result: Result<[DevicePosterItem], PosterStoreError> = await withCheckedContinuation { cont in
             PosterStoreHelper.listImported(
@@ -1075,9 +1073,130 @@ final class AppViewModel: ObservableObject {
             if items.isEmpty && devicePosterStatus.isEmpty {
                 devicePosterStatus = "设备数据仓里没有检测到已导入的壁纸。"
             }
+            prepareDevicePosterThumbnails()
         case .failure(let err):
             devicePosterStatus = "检测失败：\(err.localizedDescription)"
         }
+    }
+
+    /// Matches device-store descriptors to local library items by
+    /// package name (run #122): the device list carries each
+    /// descriptor's inner `<name>.wallpaper` directory name
+    /// (DevicePosterItem.packageName, read from the store by the
+    /// Rust core), and the same name appears as a path component
+    /// inside the local .tendies zip — read from the zip's central
+    /// directory, no extraction. Exact match first, then a
+    /// normalized fallback (case-insensitive, ".wallpaper" suffix
+    /// trimmed). The descriptor's `identifier` field would be the
+    /// natural secondary key but the DVT listing cannot read it
+    /// (left empty by design, run #114), so normalization is the
+    /// fallback. Unmatched descriptors keep the placeholder.
+    func prepareDevicePosterThumbnails() {
+        let posters = devicePosters
+        let library = tendieItems
+        guard !posters.isEmpty, !library.isEmpty else {
+            devicePosterThumbs = [:]
+            return
+        }
+        Task.detached(priority: .utility) {
+            func norm(_ s: String) -> String {
+                var t = s.lowercased()
+                if t.hasSuffix(".wallpaper") { t = String(t.dropLast(".wallpaper".count)) }
+                return t
+            }
+            var exact: [String: Data] = [:]
+            var normalized: [String: Data] = [:]
+            for item in library {
+                guard let data = item.previewImageData else { continue }
+                for pkg in Self.wallpaperPackageNames(inZipAt: item.fileURL) {
+                    if exact[pkg] == nil { exact[pkg] = data }
+                    let n = norm(pkg)
+                    if normalized[n] == nil { normalized[n] = data }
+                }
+            }
+            var thumbs: [String: Data] = [:]
+            for poster in posters where !poster.packageName.isEmpty {
+                if let d = exact[poster.packageName] ?? normalized[norm(poster.packageName)] {
+                    thumbs[poster.id] = d
+                }
+            }
+            await MainActor.run { [weak self] in
+                // Apply only if the list hasn't been replaced since.
+                guard let self, self.devicePosters == posters else { return }
+                self.devicePosterThumbs = thumbs
+            }
+        }
+    }
+
+    /// Names of the `.wallpaper` bundle directories inside a
+    /// .tendies zip (the package names the device store reports).
+    nonisolated static func wallpaperPackageNames(inZipAt url: URL) -> [String] {
+        guard let names = zipCentralDirectoryNames(at: url) else { return [] }
+        var out = Set<String>()
+        for name in names {
+            for comp in name.split(separator: "/") {
+                // Skip __MACOSX AppleDouble shadow entries ("._…").
+                if comp.hasPrefix("._") { continue }
+                if comp.lowercased().hasSuffix(".wallpaper") {
+                    out.insert(String(comp))
+                }
+            }
+        }
+        return Array(out)
+    }
+
+    /// Entry names from a zip's central directory. Returns nil when
+    /// the archive can't be parsed (including zip64) — callers then
+    /// simply show placeholders.
+    nonisolated static func zipCentralDirectoryNames(at url: URL) -> [String]? {
+        let fh = FileHandle(forReadingAtPath: url.path)
+        guard let fh else { return nil }
+        defer { fh.closeFile() }
+        let end = fh.seekToEndOfFile()
+        guard end > 22 else { return nil }
+        let tailLen = min(UInt64(65_557), end)
+        fh.seek(toOffset: end - tailLen)
+        let tail = fh.readData(ofLength: Int(tailLen))
+        guard tail.count >= 22 else { return nil }
+        let bytes = [UInt8](tail)
+        var eocd: Int? = nil
+        var i = bytes.count - 22
+        while i >= 0 {
+            if bytes[i] == 0x50, bytes[i + 1] == 0x4B, bytes[i + 2] == 0x05, bytes[i + 3] == 0x06 {
+                eocd = i
+                break
+            }
+            i -= 1
+        }
+        guard let e = eocd else { return nil }
+        func u16(_ a: [UInt8], _ o: Int) -> Int { Int(a[o]) | (Int(a[o + 1]) << 8) }
+        func u32(_ a: [UInt8], _ o: Int) -> UInt64 {
+            UInt64(a[o]) | (UInt64(a[o + 1]) << 8) | (UInt64(a[o + 2]) << 16) | (UInt64(a[o + 3]) << 24)
+        }
+        var remaining = u16(bytes, e + 10)
+        var cursor = u32(bytes, e + 16)
+        if remaining == 0xFFFF || cursor == 0xFFFF_FFFF { return nil }
+        var names: [String] = []
+        while remaining > 0 {
+            fh.seek(toOffset: cursor)
+            let head = fh.readData(ofLength: 46)
+            guard head.count == 46 else { return nil }
+            let h = [UInt8](head)
+            guard h[0] == 0x50, h[1] == 0x4B, h[2] == 0x01, h[3] == 0x02 else { return nil }
+            let nameLen = u16(h, 28)
+            let extraLen = u16(h, 30)
+            let commentLen = u16(h, 32)
+            if nameLen > 0 {
+                let nameData = fh.readData(ofLength: nameLen)
+                guard nameData.count == nameLen else { return nil }
+                if let name = String(data: nameData, encoding: .utf8), !name.isEmpty {
+                    names.append(name)
+                }
+            }
+            cursor += UInt64(46 + nameLen + extraLen + commentLen)
+            remaining -= 1
+        }
+        return names
     }
 
     /// 清理所选： deletes the selected descriptors from the device data
@@ -1112,19 +1231,7 @@ final class AppViewModel: ObservableObject {
             var message = "清理完成：成功 \(r.deleted) 条"
             if r.failed > 0 { message += "，失败 \(r.failed) 条" }
             message += "。"
-            // Run #115: persist a recovery receipt per deleted item
-            // (quarantine folder -> provider + UUID), so the
-            // quarantine section below can offer a reliable restore.
-            PosterStoreReceipts.record(r.results.compactMap { item in
-                guard item.ok, !item.quarantine.isEmpty else { return nil }
-                return PosterStoreReceipts.Receipt(
-                    quarantine: item.quarantine,
-                    extensionId: item.extension,
-                    uuid: item.uuid
-                )
-            })
             await detectDevicePosters(clearStatus: false)
-            await loadQuarantine()
             devicePosterStatus = message
             isCleaningDevicePosters = false
             // Removal only takes effect once PosterBoard re-reads its
@@ -1148,111 +1255,6 @@ final class AppViewModel: ObservableObject {
         case .failure(let err):
             isCleaningDevicePosters = false
             devicePosterStatus = "清理失败：\(err.localizedDescription)"
-        }
-    }
-
-    /// 隔离区列表（run #115 恢复）：lists the quarantine folders
-    /// previous cleanups left in the device Media root, merged with
-    /// the persisted delete receipts (receipt provenance wins over
-    /// the scan's content guesses).
-    func loadQuarantine() async {
-        guard !isLoadingQuarantine else { return }
-        guard let ctx = await posterStoreContext() else { return }
-
-        isLoadingQuarantine = true
-        let result: Result<[PosterStoreHelper.QuarantineItem], PosterStoreError> = await withCheckedContinuation { cont in
-            PosterStoreHelper.listQuarantine(
-                pairingPath: ctx.pairingPath,
-                log: { [weak self] line in
-                    DispatchQueue.main.async {
-                        self?.tendiesFlashLog.append(line)
-                    }
-                }
-            ) { result in
-                cont.resume(returning: result)
-            }
-        }
-        isLoadingQuarantine = false
-        switch result {
-        case .success(let items):
-            let receipts = PosterStoreReceipts.load()
-            quarantineEntries = items.map { item in
-                let receipt = receipts[item.quarantine]
-                let extensionId = receipt?.extensionId ?? item.providerGuess
-                let uuid = receipt?.uuid ?? item.uuid
-                let name = !item.packageName.isEmpty
-                    ? item.packageName
-                    : (uuid.isEmpty ? item.quarantine : String(uuid.prefix(8)))
-                return QuarantineDisplayItem(
-                    quarantine: item.quarantine,
-                    uuid: uuid,
-                    extensionId: extensionId,
-                    name: name,
-                    providerKnown: !extensionId.isEmpty
-                )
-            }
-        case .failure(let err):
-            quarantineStatus = "隔离区读取失败：\(err.localizedDescription)"
-        }
-    }
-
-    /// 恢复一条隔离区壁纸（run #115）：moves the descriptor back
-    /// into the store, re-detects, then tries the no-respring
-    /// refresh so it takes effect.
-    func restoreQuarantineEntry(_ entry: QuarantineDisplayItem) async {
-        guard !isRestoringQuarantine, entry.providerKnown else { return }
-        guard let ctx = await posterStoreContext() else { return }
-
-        isRestoringQuarantine = true
-        quarantineStatus = ""
-        let version = posterStoreStructVersion
-        let target = (quarantine: entry.quarantine, extensionId: entry.extensionId, uuid: entry.uuid)
-        let result: Result<PosterStoreHelper.RestoreResponse, PosterStoreError> = await withCheckedContinuation { cont in
-            PosterStoreHelper.restoreQuarantine(
-                pairingPath: ctx.pairingPath,
-                containerPath: ctx.container,
-                structVersion: version,
-                targets: [target],
-                log: { [weak self] line in
-                    DispatchQueue.main.async {
-                        self?.tendiesFlashLog.append(line)
-                    }
-                }
-            ) { result in
-                cont.resume(returning: result)
-            }
-        }
-
-        switch result {
-        case .success(let r):
-            if r.restored > 0 {
-                PosterStoreReceipts.remove(quarantine: entry.quarantine)
-                quarantineStatus = "已恢复「\(entry.name)」，正在刷新…"
-                await detectDevicePosters(clearStatus: false)
-                await loadQuarantine()
-                isRestoringQuarantine = false
-                PosterRefreshHelper.attemptRefresh(
-                    pairingPath: ctx.pairingPath,
-                    log: { [weak self] line in
-                        DispatchQueue.main.async {
-                            self?.tendiesFlashLog.append(line)
-                        }
-                    }
-                ) { [weak self] confirmed, _ in
-                    guard let self else { return }
-                    if confirmed {
-                        self.quarantineStatus = "已恢复「\(entry.name)」并刷新生效。"
-                    } else {
-                        self.quarantineStatus = "已恢复「\(entry.name)」；自动刷新未确认，可手动注销一次生效。"
-                    }
-                }
-            } else {
-                isRestoringQuarantine = false
-                quarantineStatus = "恢复失败，请查看日志。"
-            }
-        case .failure(let err):
-            isRestoringQuarantine = false
-            quarantineStatus = "恢复失败：\(err.localizedDescription)"
         }
     }
 
