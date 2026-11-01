@@ -480,6 +480,48 @@ async fn plant_store_link(
     let stage_ok = afc.get_file_info(&source).await.is_ok()
         && afc.get_file_info(&staged_link).await.is_ok();
     if !stage_ok {
+        // DIAGNOSTIC (run #110): the #109 archives verify-failed on
+        // device for both target variants while the #108 archive
+        // (target ../../../<tail>, resolving inside the staging dir)
+        // passed this same check. AFC get_file_info is lstat-like (it
+        // reports a symlink's own st_ifmt/st_link_target), so the
+        // target string can only matter if the conduit extractor
+        // dropped the entry. Enumerate the extracted tree level by
+        // level so the next device log shows exactly what landed.
+        for level in [
+            source.clone(),
+            format!("{source}/p0"),
+            format!("{source}/p0/p1"),
+            format!("{source}/p0/p1/p2"),
+        ] {
+            match afc.list_dir(level.clone()).await {
+                Ok(entries) => logger.log(format!(
+                    "airlift: airlift.poster_store.stage.diag list path={level} entries=[{}]",
+                    entries.join(",")
+                )),
+                Err(e) => logger.log(format!(
+                    "airlift: airlift.poster_store.stage.diag list path={level} error={e:?}"
+                )),
+            }
+        }
+        match afc.get_file_info(&staged_link).await {
+            Ok(info) => logger.log(format!(
+                "airlift: airlift.poster_store.stage.diag link_info ifmt={} link_target={:?}",
+                info.st_ifmt, info.st_link_target
+            )),
+            Err(e) => logger.log(format!(
+                "airlift: airlift.poster_store.stage.diag link_info error={e:?}"
+            )),
+        }
+        match afc.get_file_info(format!("{source}/payload")).await {
+            Ok(info) => logger.log(format!(
+                "airlift: airlift.poster_store.stage.diag payload_info ifmt={}",
+                info.st_ifmt
+            )),
+            Err(e) => logger.log(format!(
+                "airlift: airlift.poster_store.stage.diag payload_info error={e:?}"
+            )),
+        }
         let _ = afc.remove_all(&source).await;
         return Err(
             "stage verification failed: extracted symlink not present in Media".to_string(),

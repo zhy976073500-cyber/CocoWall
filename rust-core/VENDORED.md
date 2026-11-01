@@ -58,7 +58,16 @@ store detect/cleanup feature, registered in SPEC.md):
   the plain absolute target is staged and tried in the same
   session (variant `absolute`). The archive builder's link target
   is a parameter; the delete flow passes the original
-  root-calibrated target unchanged.) Deletion does NOT erase through AFC: each
+  root-calibrated target unchanged.) (Diagnostic revision, run
+  #110: both #109 target variants failed the staged-presence
+  check on device while the #108 archive passed it; the only
+  staging delta is the symlink target string, and AFC
+  get_file_info is lstat-like, so the conduit extractor
+  dropping escape-target symlinks is the leading but unproven
+  mechanism. plant_store_link's verification-failure branch
+  now logs a level-by-level enumeration of the extracted
+  staging tree (stage.diag lines) before cleanup; behavior
+  otherwise unchanged.) Deletion does NOT erase through AFC: each
   descriptor is moved out of the store by an AirTraffic/Books sync
   whose two books (staging link + the descriptor, identified by its
   Airlock-escaping relative path) make the on-device ATAirlock daemon

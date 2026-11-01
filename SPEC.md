@@ -498,3 +498,36 @@ refresh_confirmed=true 即闭环；若仍 verifyTimeout，下一
 实际穿通行为，以及相对失败时绝对变体的表现——看
 variant= 日志行落在哪一支。cargo check 主机目标通过仅
 证编译。
+
+## 改动登记 · 检测暂存校验诊断版（run #110，2026-11-01）
+
+背景：#109 真机检测两变体（relative-depth / absolute）均死于
+同一句 stage verification「extracted symlink not present in
+Media」；而 #108 同设备同路径暂存校验是通过的（死在下一步
+rename）。属 #109 引入的回退。
+
+代码对照取证（ac16bfc → b9c7676 逐行 diff）：暂存段唯一功能
+差异是 zip 内 symlink 的目标字符串——#108 为
+`../../../<tail>`，在暂存深度恰好解析回暂存目录内
+build_delete_archive 镜像出的同名目录树（故 lstat 型校验通
+过）；#109 两变体目标都解析到暂存目录之外。vendored AFC
+`get_file_info` 是 lstat 语义（回 st_ifmt/st_link_target、不
+跟随链接），目标字符串本身不影响校验结果——除非 conduit
+在提取时就把「目标逃出提取根」的 symlink 条目丢弃。该机制
+代码对照无法确证，故本版不盲改，只加诊断：
+
+- `plant_store_link` 校验失败分支（poster_store.rs 一处）：
+  清理暂存前，逐级 list 暂存 source、p0、p1、p0/p1/p2 四级
+  目录并打 `stage.diag list` 日志；再对链接本体打
+  `stage.diag link_info`（ifmt/link_target 或原始错误）、对
+  payload 普通文件打 `stage.diag payload_info` 作对照。
+  下一份真机日志即可判明：链接是没被提取（p2 列表无 link）、
+  还是提取了但条目形态异常。
+- 行为不变：成功路径、双变体顺序、错误文本、清理动作、
+  注入与删除 ATC 链均未动。
+
+未动：poster_refresh 信号段、注入全链、Swift 侧、受保护
+文件、.github/workflows。
+
+未验证项：诊断结论待 Sage 真机跑 #110 检测后看 stage.diag
+日志行定案；确证机制后再出修复版。
