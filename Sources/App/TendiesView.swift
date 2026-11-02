@@ -198,9 +198,7 @@ func loopbackPresentation(phase: LoopbackPhase,
 /// 平移）与全部变换——滑动时近卡先行、远卡按距离
 /// 递增拖后，卡间距在运动中真实伸缩（级联核心）；
 /// 静止时 p̃ 与 p 精确一致、布局不漂移。选中集与
-/// 长按菜单仍归父视图管，经回调回传；长按按压态经
-/// onPressingChange 回报父视图，用于在长按识别期间
-/// 门控容器拖动。两侧卡保持正脸（无 3D 转侧），只
+/// 长按菜单仍归父视图管，经回调回传。两侧卡保持正脸（无 3D 转侧），只
 /// 倾斜/下沉/变暗/轻微虚化，缩略图另带轻去色（#137）。
 private struct FanCardView: View {
     @EnvironmentObject var vm: AppViewModel
@@ -215,10 +213,6 @@ private struct FanCardView: View {
     let sweepToken: Int
     let onTap: () -> Void
     let onLongPress: () -> Void
-    /// 长按按压态变化（按下未达识别时长即先报）：父
-    /// 视图据此在长按识别期间禁用容器拖动（见 TendiesView
-    /// 的 fanPressActive 与手势掩码）。
-    let onPressingChange: (Bool) -> Void
 
     /// 弹簧化位置 p̃：布局与全部变换的唯一驱动量来源。
     @State private var pTilde: Double
@@ -229,15 +223,13 @@ private struct FanCardView: View {
 
     init(item: TendieItem, index: Int, position: Double, sweepToken: Int,
          onTap: @escaping () -> Void,
-         onLongPress: @escaping () -> Void,
-         onPressingChange: @escaping (Bool) -> Void) {
+         onLongPress: @escaping () -> Void) {
         self.item = item
         self.index = index
         self.position = position
         self.sweepToken = sweepToken
         self.onTap = onTap
         self.onLongPress = onLongPress
-        self.onPressingChange = onPressingChange
         // 首帧即以真实 p 呈现，不从别处弹入。
         _pTilde = State(initialValue: position)
     }
@@ -347,15 +339,14 @@ private struct FanCardView: View {
         }
         .shadow(color: .black.opacity(0.22), radius: lagShadowRadius, x: 0, y: lagShadowY)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        // 点按选中 / 长按出菜单（run #130 手势口径沿用、
-        // #138 加按压态回报）：只回调父视图，触觉与状态
-        // 变更在父侧；pressing 在识别时长到达前即先报
-        // 按下，父视图据此门控容器拖动（拖动 minimumDistance
-        // 4 的阈值也让轻触点按先于拖动成立）。
+        // 点按选中 / 长按出菜单（run #130 手势口径沿用）：
+        // 只回调父视图，触觉与状态变更在父侧。容器拖动
+        // 与本手势同时识别（run #139）：真实拖动位移超过
+        // 长按失败距离（10pt）后长按自然失败、不会误出
+        // 菜单；菜单打开期间的冻结由父视图在拖动的
+        // onChanged/onEnded 开头判定 fanMenuTarget 处理。
         .onTapGesture { onTap() }
-        .onLongPressGesture(minimumDuration: 0.45,
-                            pressing: { onPressingChange($0) },
-                            perform: { onLongPress() })
+        .onLongPressGesture(minimumDuration: 0.45) { onLongPress() }
         // 延迟轮盘几何（run #138）：倾斜绕底部锚点
         // (0.5, 0.92) 向外倒；offset x = d̃×96 即卡的
         // 布局横移本身（父以 ZStack 把卡心放在视口
@@ -407,8 +398,9 @@ struct TendiesView: View {
     @State private var isNeoSpringing = false
     @State private var showImportedPage = false
     /// 扇形卡长按菜单的目标项（run #130）：非 nil 时轮播
-    /// 拖动门控禁用（run #138 手势掩码）、页面根部弹
-    /// confirmationDialog 呈现「详情/删除」。
+    /// 拖动冻结（run #139：拖动 onChanged/onEnded 开头
+    /// 判定后忽略更新）、页面根部弹 confirmationDialog
+    /// 呈现「详情/删除」。
     @State private var fanMenuTarget: TendieItem? = nil
     /// 轮播主位置 p（run #138 换底盘）：连续浮点、index
     /// 单位，p = k 表示第 k 卡居中；由容器拖动手势直驱
@@ -420,10 +412,6 @@ struct TendiesView: View {
     /// 拖动起点的主位置：非 nil 表示拖动进行中；吸附
     /// 投影与单次滑动格数上限都以它为基准。
     @State private var fanDragStart: Double? = nil
-    /// 任一卡长按按压中（尚未达识别时长）：为真时容器
-    /// 拖动经手势掩码禁用（只留子手势），避免按压被
-    /// 拖动抢走；菜单打开期间另由 fanMenuTarget 门控。
-    @State private var fanPressActive: Bool = false
     /// 停稳聚焦 index 与扫光触发（run #136 立、#138 换
     /// 信号源）：p 静止 300ms 后取 round(p) 为聚焦格
     /// （见 scheduleFanFocusSettle）；聚焦真正换人（非
@@ -569,8 +557,9 @@ struct TendiesView: View {
             // 扇形长按菜单（run #130）：不用 contextMenu——它挂在
             // rotationEffect 后的卡片上、且轮播滑动不被打断，真机
             // 录屏里菜单浮空脱锚、卡片滑走。改长按手势设
-            // fanMenuTarget（run #138 起轮播拖动随之门控冻结；
-            // #136 时为 ScrollView 的 scrollDisabled）后，在此以
+            // fanMenuTarget（run #139 起轮播拖动在回调内判定
+            // 冻结；#138 曾用手势掩码、#136 时为 ScrollView
+            // 的 scrollDisabled）后，在此以
             // confirmationDialog 稳定呈现同一组动作。
             .confirmationDialog(
                 fanMenuTarget?.name ?? "",
@@ -697,9 +686,6 @@ struct TendiesView: View {
                                         onLongPress: {
                                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                             fanMenuTarget = item
-                                        },
-                                        onPressingChange: { pressing in
-                                            fanPressActive = pressing
                                         })
                         }
                     }
@@ -710,11 +696,13 @@ struct TendiesView: View {
                 // 整带（含下垫）都是拖动命中区：卡间空隙与
                 // 卡下方留白也能起拖。
                 .contentShape(Rectangle())
-                // 手势门控：长按按压中或菜单打开期间，掩码
-                // 只留子手势——容器拖动禁用、卡的点按/长按
-                // 照常；其余时候拖动与子手势全开。
-                .gesture(fanDragGesture,
-                         including: (fanMenuTarget == nil && !fanPressActive) ? .all : .subviews)
+                // 拖动与子卡点按/长按同时识别、常开（run
+                // #139）：不再用手势掩码门控——#138 的
+                // pressing 掩码在手指一落卡即禁用拖动、整
+                // 带滑不动（根因见 SPEC #139）；菜单打开
+                // 期间的冻结改由拖动回调开头判定
+                // fanMenuTarget 后忽略更新。
+                .simultaneousGesture(fanDragGesture)
                 // p 一变就重排停稳判定（run #138）：静止满
                 // 300ms 才更新聚焦格（扫光信号源由 #136 的
                 // 滚动偏移换成 p；手势共存与仲裁见 SPEC
@@ -752,10 +740,16 @@ struct TendiesView: View {
     /// 滑动上限，可调旋钮，见 SPEC #138），再钳到
     /// [0, n−1]，以 response 0.8 / 阻尼 0.95 的弹簧把
     /// p 动画过去——慢软落位对齐实测约 0.8s 停稳、无
-    /// 可见弹跳。
+    /// 可见弹跳。菜单打开期间的冻结（run #139）：两个
+    /// 回调开头先判 fanMenuTarget——非 nil 时 onChanged
+    /// 直接忽略本次更新、onEnded 只清拖动起点不做吸附；
+    /// 菜单由长按识别成功后才打开，那时手指位移 ≤ 长按
+    /// 失败距离（10pt），此前 p 的漂移不足 0.11 格、
+    /// 可忽略，不回滚。
     private var fanDragGesture: some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
+                guard fanMenuTarget == nil else { return }
                 if fanDragStart == nil { fanDragStart = fanPosition }
                 let start = fanDragStart ?? fanPosition
                 let raw = start - Double(value.translation.width) / 96
@@ -764,6 +758,7 @@ struct TendiesView: View {
             .onEnded { value in
                 let start = fanDragStart ?? fanPosition
                 fanDragStart = nil
+                guard fanMenuTarget == nil else { return }
                 let count = vm.tendieItems.count
                 guard count > 0 else { return }
                 let projected = start - Double(value.predictedEndTranslation.width) / 96

@@ -2558,3 +2558,85 @@ Sage 验 #136/#137 后指出「滑动效果也不一样」，并把
   小、较 #136 大）；⑦扫光时机（停稳判定与吸附
   弹簧尾段的配合，慢拖半程时是否误触发/漏触发）；
   ⑧#137 遗留的侧卡虚化/变暗配比复验。
+
+## 改动登记 · 轮播手势接线修复（run #139，2026-11-02，紧急修复：#138 真机完全滑不动）
+
+只动 TendiesView.swift 壁纸页轮播区的手势接线与
+SPEC.md，在远程 head b1116a2（#138）之上。#138 的
+一切运动常数/曲线/吸附/扫光全部原样未动。
+
+### 根因
+
+Sage 真机验 #138 原话「我无法滑动预览」。#138 为防
+长按冲突给容器拖动加了 fanPressActive 门控：子卡
+onLongPressGesture 的 pressing 回报在手指一落到卡
+上（尚未达 0.45s 识别时长）即为真，父视图随即把
+.gesture(_:including:) 掩码切到 .subviews、整场触摸
+内容器拖动被禁用。而卡片铺满整个带子，任何滑动都
+必然从卡上起手——等于整条带子永远滑不动。掩码本意
+只想护住「按压中未达识别时长」这一小段，却把全部
+从卡起手的拖动一并误杀。
+
+### 修法（手势接线四条）
+
+- 删除 fanPressActive 状态、FanCardView 的
+  onPressingChange 回报（属性/init 形参/调用点）与
+  .gesture(_:including:) 掩码逻辑，pressing 参数自
+  子卡 onLongPressGesture 一并撤掉。
+- 容器拖动改为 .simultaneousGesture(fanDragGesture)
+  常开，与子卡点按/长按同时识别：真实拖动位移超过
+  长按失败距离（maximumDistance 默认 10pt）后长按
+  自然失败，不会误出菜单；长按静止识别成功则照常
+  出菜单。挂载点不变——仍在带容器（ZStack + 高
+  256 + 下垫 52 + contentShape Rectangle）链尾，卡间
+  空隙与卡下方留白起手同样能驱动 p。
+- 冻结只保留一条：fanDragGesture 的 onChanged 开头
+  guard fanMenuTarget == nil（菜单已打开时直接忽略
+  更新）；onEnded 先无条件清 fanDragStart（防残留
+  起点污染下一次拖动），再判 fanMenuTarget 非 nil 时
+  跳过吸附。菜单由长按识别成功后才打开，那时手指
+  基本静止（位移 ≤10pt），识别前 p 漂移不足 0.11 格，
+  可忽略、不回滚。
+- 手势链自查：全文件 grep 确认 fanPressActive /
+  onPressingChange / including: 零残留；卡上除
+  onTapGesture / onLongPressGesture 外无其他手势；
+  容器上除本拖动外无手势。
+
+### 触摸序列推演（代码级自检，待真机复核）
+
+1. 从卡上起手横滑：simultaneousGesture 使容器拖动
+   与子卡手势同时识别，位移达 4pt 后 onChanged 驱动
+   p（fanMenuTarget 为 nil、guard 通过）；位移超
+   10pt 后长按失败、不出菜单；松手走投影吸附。
+2. 从卡间空隙/下垫起手横滑：命中区为容器
+   contentShape Rectangle（覆盖整带含下垫），无子
+   手势参与，拖动同路径驱动 p。
+3. 点按选中：位移不足 4pt，拖动不达 minimumDistance
+   不激活；onTapGesture 于抬指触发父侧 toggleSelection，
+   长按时长亦不足，不出菜单。
+4. 长按出菜单后手指再移：识别瞬间（0.45s、位移
+   ≤10pt）onLongPress 置 fanMenuTarget、根部
+   confirmationDialog 打开；其后同一触摸序列的拖动
+   onChanged 被 guard 忽略、p 不动；抬指 onEnded 只
+   清起点、不吸附。
+5. 菜单打开时滑动带子：confirmationDialog 为模态
+   呈现，系统层先拦截带面触摸；纵有拖动到达容器，
+   onChanged/onEnded 均因 fanMenuTarget 非 nil 被
+   忽略，带纹丝不动；关菜单（置 nil）后拖动即恢复。
+
+### 未动与未验证
+
+- #138 运动常数（位置弹簧 response 梯度/阻尼、
+  吸附弹簧 0.8/0.95、单次 ±4 格、橡皮筋 0.35）、
+  #137/#138 全部变换曲线、扫光、渲染剔除、布局
+  尺寸、展开页/sheet/其他页面/受保护文件/CI
+  workflow 均未动；工作区其余既存脏改动未带入。
+- 本地核查：TendiesView.swift swiftc -parse 通过
+  （本机 Swift 6.1）；最终以推送后 CI 真 Xcode 26
+  编译为准。
+- 未验证项（归 Sage 真机）：①整带恢复可滑（本轮
+  核心验收点）；②长按仍能稳定出菜单、滑动不再误
+  出菜单；③斜滑时页面纵向 ScrollView 仲裁（#138
+  遗留风险，原样保留）；④#138 遗留的弹簧跟手感/
+  帧率、吸附节奏、点按吞没、hit 区错位、扫光时机
+  各项，随本轮一并复验。
