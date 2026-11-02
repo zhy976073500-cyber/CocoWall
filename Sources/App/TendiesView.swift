@@ -196,23 +196,30 @@ func loopbackPresentation(phase: LoopbackPhase,
 /// 项同口径（倾斜 9°×clamp(d, ±2.2)、下沉 17×
 /// clamp(d, ±2)²、scale 1.08 − 0.07×min(|d|, 2)、
 /// brightness −0.28、缩略图去色 0.30、zIndex 同公
-/// 式），但无 blur、无阴影、无弹簧、无手势、无
-/// .task：先以近乎零成本在树里占位，卡滑进 3.4 升
-/// 为全卡时视图构建与解码不再卡在高速滑动路径上。
-/// 本段 |d| 下变换已全在钳制平台段，与全卡在边界
-/// 两侧的静止画面一致，升/降级无可见跳变（运动中
-/// 判定归真机，见 SPEC #144 未验证项）。位置直用目
-/// 标距离 d（父以 index − fanPosition 传入）——外圈
-/// 简版不读物理循环积分出的 p̃，d 即布局横移
-/// （run #145 注：物理数组含外圈序号，简版只是不
-/// 消费它）。
+/// 式），但无 blur、无阴影、无手势、无 .task：先
+/// 以近乎零成本在树里占位，卡滑进 3.4 升为全卡时
+/// 视图构建与解码不再卡在高速滑动路径上。
+/// 位置源（run #149 订正）：#144–#148 本视图读目标
+/// 距离 d（index − fanPosition）、全卡读弹簧距离 d̃
+/// （index − p̃），双源并存是快滑重影的真凶——高速
+/// 时弹簧追赶滞后 (p − p̃) 达 1–2 格以上，卡在
+/// 3.4 边界由简版升全卡的瞬间按整段滞后量（约
+/// 100–230pt）瞬移，与邻卡每帧约 8–16pt 的位移完
+/// 全脱节，眼睛即读成同一张卡的双像（定因全账见
+/// SPEC #149）。本轮起与全卡同源：父以 index − p̃
+/// 传入（物理数组本就含外圈序号，stepFanPhysics
+/// 全量积分），变换公式逐项不变（对任意 |d| 均有
+/// 定义、钳制段外仅 offset 线性延伸，与全卡同），
+/// 边界两侧位置连续、升/降级不再瞬移。
 private struct FanCardGhostView: View {
     let item: TendieItem
-    /// 目标距离 d（带符号：正值在本卡位于视口中心右侧）。
-    let distance: Double
+    /// 显示距离 d̃（run #149 起与 FanCardView 同源：父
+    /// 视图物理循环积分出的本卡弹簧化位置 p̃ 换算的
+    /// index − p̃，带符号：正值在本卡位于视口中心右侧）。
+    let shownD: Double
 
     var body: some View {
-        let d = distance
+        let d = shownD
         let a = abs(d)
         let dc = min(2, max(-2, d))
         ZStack(alignment: .bottomLeading) {
@@ -558,6 +565,9 @@ private struct FanPhysics {
 
 struct TendiesView: View {
     @EnvironmentObject var vm: AppViewModel
+    /// 深色适配（run #149）：底部 sheet 一套颜色 token
+    /// 随此值取双值（见文件内 sheet 色板一节）。
+    @Environment(\.colorScheme) private var colorScheme
     @State private var showFilePicker = false
     @State private var selectedDetailItem: TendieItem? = nil
     @State private var isNeoSpringing = false
@@ -710,7 +720,9 @@ struct TendiesView: View {
                         }
                         .padding(12)
                         // run #131：错误横幅改实色浅红面，不用液态玻璃。
-                        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        // run #149：底色经 errorBannerBackground 取双值
+                        // （深色加深到 18%，浅色 8% 原值不变）。
+                        .background(errorBannerBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                         .padding(.horizontal, 20)
                         .padding(.top, 8)
                     }
@@ -921,11 +933,16 @@ struct TendiesView: View {
                 // 215 + 半卡宽 75 = 290，全卡区外必然
                 // 屏外）；3.4 < |d| ≤ 4.5 装静态简版
                 // FanCardGhostView 先行占位（无 blur/
-                // 阴影/弹簧/手势/task），卡高速滑入
-                // 时视图构建与图片解码已提前完成、不
-                // 卡在滑动路径上；|d| > 4.5 不进视图
-                // 树。窗口判定沿用目标距离（非 p̃）：
-                // 与 #144 同口径。
+                // 阴影/手势/task），卡高速滑入时视图
+                // 构建与图片解码已提前完成、不卡在滑
+                // 动路径上；|d| > 4.5 不进视图树。窗
+                // 口判定沿用目标距离（非 p̃）：与 #144
+                // 同口径——同一 index 在任一帧只进一
+                // 个分支、只渲染一次。但位置源 run
+                // #149 起统一：两分支同传 shownD =
+                // index − p̃（见 FanCardGhostView 注
+                // 释），边界升/降级位置连续，消除双
+                // 源快滑重影（定因见 SPEC #149）。
                 let dTarget = Double(idx) - fanPosition
                 let adTarget = abs(dTarget)
                 if adTarget <= 3.4 {
@@ -944,7 +961,8 @@ struct TendiesView: View {
                                     fanMenuTarget = item
                                 })
                 } else if adTarget <= 4.5 {
-                    FanCardGhostView(item: item, distance: dTarget)
+                    FanCardGhostView(item: item,
+                                     shownD: Double(idx) - fanTilde(at: idx))
                 }
             }
         }
@@ -1158,10 +1176,44 @@ struct TendiesView: View {
     // 内部瓷砖/宽条纯白面 + 轻柔阴影、状态条白色实色胶囊、
     // 刷入主按钮纯蓝实色胶囊。布局/文案/行为与 #128/#130 一致。
 
-    /// sheet 面板底色（设计稿 #F7F7FA）。
-    private static let sheetBackground = Color(red: 247.0 / 255, green: 247.0 / 255, blue: 250.0 / 255)
-    /// 刷入主按钮蓝（设计稿 #0071E3）。
-    private static let flashBlue = Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255)
+    // sheet 色板（run #149 深色适配）：#128/#131 的浅色
+    // 取值逐值保留为 light 分支（#F7F7FA/纯白/#0071E3
+    // 原样），dark 分支走苹果系统深色语汇（面板
+    // #1C1C1E、瓷砖 #2C2C2E、主按钮 #0A84FF）。此前全
+    // 部硬编码浅色：深色模式下页面背景与 tab 栏已变
+    // 黑、sheet 仍白，而文字早已是 .primary/.secondary
+    // 语义色（深色下自动变白）——白字落白底，状态条标
+    // 签与次级文案即糊掉（Sage 录屏实证）。本轮只换背
+    // 景侧 token，文字语义色一字不动；仍守 #131 平面
+    // 实色口径，深色不上玻璃（Sage 03:20 例外不变）。
+    /// sheet 面板底色（light 设计稿 #F7F7FA / dark #1C1C1E）。
+    private var sheetBackground: Color {
+        colorScheme == .dark
+            ? Color(red: 28.0 / 255, green: 28.0 / 255, blue: 30.0 / 255)
+            : Color(red: 247.0 / 255, green: 247.0 / 255, blue: 250.0 / 255)
+    }
+    /// sheet 内瓷砖/宽条/状态胶囊底色（light 纯白 / dark #2C2C2E）。
+    private var sheetTileBackground: Color {
+        colorScheme == .dark
+            ? Color(red: 44.0 / 255, green: 44.0 / 255, blue: 46.0 / 255)
+            : Color.white
+    }
+    /// 刷入主按钮蓝（light 设计稿 #0071E3 / dark #0A84FF 系统深色蓝）。
+    private var flashBlue: Color {
+        colorScheme == .dark
+            ? Color(red: 10.0 / 255, green: 132.0 / 255, blue: 255.0 / 255)
+            : Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255)
+    }
+    /// 错误横幅底色（light 红 8% / dark 红 18%：深色下 8% 近乎不可见）。
+    private var errorBannerBackground: Color {
+        Color.red.opacity(colorScheme == .dark ? 0.18 : 0.08)
+    }
+    /// 双列瓷砖图标底圆的不透明度（light 现值 0.12 保留 /
+    /// dark 略提亮到 0.22：深色下同值发暗）。
+    private var tileWellOpacity: Double { colorScheme == .dark ? 0.22 : 0.12 }
+    /// 宽条（导入/清除）图标底圆的不透明度（light 现值
+    /// 0.10 保留 / dark 0.20，同上理由）。
+    private var barWellOpacity: Double { colorScheme == .dark ? 0.20 : 0.10 }
 
     private var bottomSheet: some View {
         VStack(spacing: 12) {
@@ -1194,7 +1246,7 @@ struct TendiesView: View {
             }
         }
         .padding(16)
-        .background(Self.sheetBackground, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .background(sheetBackground, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .shadow(color: .black.opacity(0.05), radius: 15, x: 0, y: -4)
         .padding(.horizontal, 12)
     }
@@ -1223,7 +1275,7 @@ struct TendiesView: View {
         .minimumScaleFactor(0.8)
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .background(Color.white, in: Capsule())
+        .background(sheetTileBackground, in: Capsule())
         .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
     }
 
@@ -1255,7 +1307,7 @@ struct TendiesView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .background(sheetTileBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
         } else {
             flashActionButton
@@ -1279,8 +1331,8 @@ struct TendiesView: View {
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
             .frame(height: 52)
-            .background(selectedCount == 0 ? Self.flashBlue.opacity(0.45) : Self.flashBlue, in: Capsule())
-            .shadow(color: Self.flashBlue.opacity(0.28), radius: 11, x: 0, y: 5)
+            .background(selectedCount == 0 ? flashBlue.opacity(0.45) : flashBlue, in: Capsule())
+            .shadow(color: flashBlue.opacity(0.28), radius: 11, x: 0, y: 5)
         }
         .buttonStyle(.plain)
         .disabled(selectedCount == 0)
@@ -1294,7 +1346,7 @@ struct TendiesView: View {
         } label: {
             HStack(spacing: 12) {
                 ZStack {
-                    Circle().fill(Color.blue.opacity(0.10))
+                    Circle().fill(Color.blue.opacity(barWellOpacity))
                     Image(systemName: "plus")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(.blue)
@@ -1311,7 +1363,7 @@ struct TendiesView: View {
                 Spacer()
             }
             .padding(12)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .background(sheetTileBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
             .contentShape(Rectangle())
         }
@@ -1345,7 +1397,7 @@ struct TendiesView: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 0) {
                 ZStack {
-                    Circle().fill(tint.opacity(0.12))
+                    Circle().fill(tint.opacity(tileWellOpacity))
                     Image(systemName: icon)
                         .font(.system(size: 16))
                         .foregroundStyle(tint)
@@ -1362,7 +1414,7 @@ struct TendiesView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(13)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .background(sheetTileBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
             .contentShape(Rectangle())
         }
@@ -1423,7 +1475,7 @@ struct TendiesView: View {
         } label: {
             HStack(spacing: 12) {
                 ZStack {
-                    Circle().fill(Color.red.opacity(0.10))
+                    Circle().fill(Color.red.opacity(barWellOpacity))
                     Image(systemName: "trash")
                         .font(.system(size: 15))
                         .foregroundStyle(.red)
@@ -1440,7 +1492,7 @@ struct TendiesView: View {
                 Spacer()
             }
             .padding(12)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .background(sheetTileBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
             .contentShape(Rectangle())
         }
