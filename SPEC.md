@@ -2640,3 +2640,60 @@ onLongPressGesture 的 pressing 回报在手指一落到卡
   遗留风险，原样保留）；④#138 遗留的弹簧跟手感/
   帧率、吸附节奏、点按吞没、hit 区错位、扫光时机
   各项，随本轮一并复验。
+
+## 改动登记 · 类型检查超时修复（run #140，2026-11-02，纯结构拆分：#139 的 CI 红灯）
+
+只动 TendiesView.swift 的 FanCardView 内部结构与
+SPEC.md，在远程 head df89a28（#139）之上。零功能
+变化：#139 的手势接线语义与 #138 的全部运动常数/
+曲线/吸附/扫光一字未改，本轮 diff 逐行可核为搬运
+与拆分。
+
+### 故障
+
+#139 推送后 CI 红灯，失败日志原文：
+
+`Sources/App/TendiesView.swift:327:20: error: the compiler is unable to type-check this expression in reasonable time; try breaking up the expression into distinct sub-expressions`
+
+报错点 327 行是 FanCardView.body 内扫光 overlay 的
+ZStack——不是逻辑错误，是 body 单个表达式（变换量
+let 群 + 三层嵌套 ZStack + 两段 overlay 闭包 + 十余个
+修饰符 + 三个 onChange/task 闭包）超出类型检查器
+的合理耗时。
+
+### 拆分方式（FanCardView 内部）
+
+- 变换量 let 群改独立计算属性（各带显式类型）：
+  lagTilt / lagDropY / lagScale / lagBrightness /
+  lagBlur / lagSaturation / lagZIndex /
+  lagShadowRadius / lagShadowY，公式逐项与原 let
+  等价（offset x 的 CGFloat(s) 改写为等值的
+  CGFloat(shownD)）。
+- 卡面拆五个带显式返回类型（some View）的子
+  表达式：cardContent（缩略图 + 底部渐变 + 卡名，
+  blur 随组）、selectionBadge（@ViewBuilder，选中
+  徽章）、cardFace（ZStack 本体只组合前两者）、
+  selectionRing（@ViewBuilder，选中描边）、
+  sweepOverlay（扫光光带整段，含自身裁剪与
+  allowsHitTesting(false)）。
+- body 收敛为 cardFace + 原修饰链：frame /
+  brightness / clipShape / overlay×2（改为引用
+  selectionRing、sweepOverlay）/ shadow /
+  contentShape / onTapGesture / onLongPressGesture /
+  rotationEffect / offset / scaleEffect / animation /
+  zIndex / onChange(position) / onChange(sweepToken)
+  / task，顺序与参数与 #139 逐一对应。
+- 父视图 fanDragGesture 保持独立带类型属性，未
+  内联回修饰链；fanZone 与页面其余部分未动。
+
+### 未动与未验证
+
+- 手势接线（simultaneousGesture 常开、菜单打开时
+  onChanged/onEnded 忽略、长按无 pressing 回报）、
+  #138 运动常数/曲线/吸附/扫光、展开页/sheet/其他
+  页面/受保护文件/CI workflow 均未动；工作区其余
+  既存脏改动未带入。
+- 本地核查：TendiesView.swift swiftc -parse 通过
+  （本机 Swift 6.1）；本轮验收点只有一个——推送后
+  CI 真 Xcode 26 编译转绿。功能未验证项沿 #139
+  条目所列，归 Sage 真机随 #139 一并复验。

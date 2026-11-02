@@ -237,106 +237,146 @@ private struct FanCardView: View {
     /// 显示距离 d̃（正值在本卡位于视口中心右侧）。
     private var shownD: Double { Double(index) - pTilde }
 
-    var body: some View {
-        // 延迟轮盘变换量（曲线 #136 立、#137 修分层、
-        // #138 倾斜/下沉/缩放按原视频实测签名更新，
-        // 全部由 d̃ 推导）：绕底部锚点向外倾斜 9°×
-        // clamp(d̃, ±2.2)（实测约 9–10°/格、最远约
-        // 20°）；沿弧下沉 17×clamp(d̃, ±2)²（实测弧
-        // 陡，|d|=2 约卡高 1/3）；整卡压暗 −0.28×
-        // min(|d̃|/1.8, 1)（#137，深度主要靠变暗）；
-        // 模糊只留轻微虚化——正中 ±0.55 内为 0、其后
-        // 线性升至 1.6pt 封顶（#137）；缩略图另加轻
-        // 去色 0.30 封顶（#137，只挂缩略图本体）；
-        // 缩放 1.08 起、随 |d̃| 收到 0.94（#138 实测
-        // 口径）。布局横移即链尾 offset x = d̃×96
-        // 本身——#136 的 lagX 换算项退役：滞后现在就是
-        // 位置本身的滞后，不再二次换算。
-        let s = shownD
-        let asd = abs(s)
-        let sClamped = min(2.2, max(-2.2, s))
-        let dropClamped = min(2, max(-2, s))
-        let lagTilt = 9 * sClamped
-        let lagDropY = CGFloat(17 * dropClamped * dropClamped)
-        let lagScale = 1.08 - 0.07 * min(asd, 2)
-        let lagBrightness = -0.28 * min(asd / 1.8, 1)
-        let lagBlur = CGFloat(1.6 * min(max(asd - 0.55, 0) / 1.45, 1))
-        let lagSaturation = 1 - 0.30 * min(asd / 1.8, 1)
-        let lagZIndex = 100 - (asd * 10).rounded()
-        // 阴影沿 #135 的 |d| 衰减口径，改由 shownD 驱动：
-        // 近中心投影大而软、远端收紧。
-        let lagNear = 1 - min(asd, 1)
-        let lagShadowRadius = CGFloat(6 + 14 * lagNear)
-        let lagShadowY = CGFloat(4 + 6 * lagNear)
-        return ZStack(alignment: .bottomLeading) {
-            // 模糊组（缩略图 + 底部渐变 + 卡名）：模糊只
-            // 作用于此组，勾选徽章在其外保持锐利。
-            ZStack(alignment: .bottomLeading) {
-                TendieThumbnailView(item: item)
-                    .frame(width: 150, height: 200)
-                    .clipped()
-                    // 轻去色只挂缩略图本体（run #137）：
-                    // 同组的卡名与组外的徽章都不去色。
-                    .saturation(lagSaturation)
-                LinearGradient(colors: [.clear, .black.opacity(0.38)],
-                               startPoint: .center, endPoint: .bottom)
-                // 卡名防压（run #132）：最大宽收进每张卡的
-                // 可见条（约 110pt），尾部截断。
-                Text(item.name)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: 110, alignment: .leading)
-                    .padding(.leading, 10)
-                    .padding(.bottom, 9)
-                    .padding(.trailing, item.isSelected ? 34 : 10)
-            }
-            .blur(radius: lagBlur)
-            if item.isSelected {
-                ZStack {
-                    Circle().fill(Color.blue)
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 21, height: 21)
-                .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                .padding(8)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-            }
+    // 延迟轮盘变换量（run #140 自 body 拆出为独立计算
+    // 属性：曲线 #136 立、#137 修分层、#138 倾斜/下沉/
+    // 缩放按原视频实测签名更新，全部由 d̃ 推导）：
+    // 绕底部锚点向外倾斜 9°×clamp(d̃, ±2.2)（实测约
+    // 9–10°/格、最远约 20°）；沿弧下沉 17×clamp(d̃, ±2)²
+    // （实测弧陡，|d|=2 约卡高 1/3）；整卡压暗
+    // −0.28×min(|d̃|/1.8, 1)（#137，深度主要靠变暗）；
+    // 模糊只留轻微虚化——正中 ±0.55 内为 0、其后线性
+    // 升至 1.6pt 封顶（#137）；缩略图另加轻去色 0.30
+    // 封顶（#137，只挂缩略图本体）；缩放 1.08 起、随
+    // |d̃| 收到 0.94（#138 实测口径）。布局横移即链尾
+    // offset x = d̃×96 本身——#136 的 lagX 换算项退役：
+    // 滞后现在就是位置本身的滞后，不再二次换算。
+    /// 倾斜角（度）。
+    private var lagTilt: Double { 9 * min(2.2, max(-2.2, shownD)) }
+    /// 沿弧下沉量（pt）。
+    private var lagDropY: CGFloat {
+        let d = min(2, max(-2, shownD))
+        return CGFloat(17 * d * d)
+    }
+    /// 缩放（选中回弹 1.04 在 body 链尾另乘）。
+    private var lagScale: Double { 1.08 - 0.07 * min(abs(shownD), 2) }
+    /// 整卡压暗量。
+    private var lagBrightness: Double { -0.28 * min(abs(shownD) / 1.8, 1) }
+    /// 模糊组虚化半径（pt）。
+    private var lagBlur: CGFloat { CGFloat(1.6 * min(max(abs(shownD) - 0.55, 0) / 1.45, 1)) }
+    /// 缩略图去色后的饱和度。
+    private var lagSaturation: Double { 1 - 0.30 * min(abs(shownD) / 1.8, 1) }
+    /// 层级（近中心压远端）。
+    private var lagZIndex: Double { 100 - (abs(shownD) * 10).rounded() }
+    // 阴影沿 #135 的 |d| 衰减口径，改由 shownD 驱动：
+    // 近中心投影大而软、远端收紧。
+    /// 阴影半径（pt）。
+    private var lagShadowRadius: CGFloat { CGFloat(6 + 14 * (1 - min(abs(shownD), 1))) }
+    /// 阴影纵向偏移（pt）。
+    private var lagShadowY: CGFloat { CGFloat(4 + 6 * (1 - min(abs(shownD), 1))) }
+
+    /// 模糊组（run #140 自 body 拆出）：缩略图 + 底部
+    /// 渐变 + 卡名——模糊只作用于此组，勾选徽章在其
+    /// 外保持锐利。
+    private var cardContent: some View {
+        ZStack(alignment: .bottomLeading) {
+            TendieThumbnailView(item: item)
+                .frame(width: 150, height: 200)
+                .clipped()
+                // 轻去色只挂缩略图本体（run #137）：
+                // 同组的卡名与组外的徽章都不去色。
+                .saturation(lagSaturation)
+            LinearGradient(colors: [.clear, .black.opacity(0.38)],
+                           startPoint: .center, endPoint: .bottom)
+            // 卡名防压（run #132）：最大宽收进每张卡的
+            // 可见条（约 110pt），尾部截断。
+            Text(item.name)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 110, alignment: .leading)
+                .padding(.leading, 10)
+                .padding(.bottom, 9)
+                .padding(.trailing, item.isSelected ? 34 : 10)
         }
+        .blur(radius: lagBlur)
+    }
+
+    /// 选中徽章（run #140 自 body 拆出）：卡面右下角，
+    /// 在模糊组之外，不模糊、不去色。
+    @ViewBuilder
+    private var selectionBadge: some View {
+        if item.isSelected {
+            ZStack {
+                Circle().fill(Color.blue)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 21, height: 21)
+            .overlay(Circle().stroke(Color.white, lineWidth: 2))
+            .padding(8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        }
+    }
+
+    /// 卡面本体（run #140 自 body 拆出）：模糊组 + 选中
+    /// 徽章的组合，ZStack 本体只做组合；变换与手势仍
+    /// 在 body 链尾。
+    private var cardFace: some View {
+        ZStack(alignment: .bottomLeading) {
+            cardContent
+            selectionBadge
+        }
+    }
+
+    /// 选中描边（run #140 自 body 拆出）：body 以
+    /// overlay 形式叠在卡面之上。
+    @ViewBuilder
+    private var selectionRing: some View {
+        if item.isSelected {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.blue, lineWidth: 3)
+        }
+    }
+
+    // 扫光（run #136；run #140 自 body 拆出为独立子
+    // 表达式，body 以 overlay 形式叠加）：白色线性
+    // 渐变光带（宽约卡宽 45%、峰值 alpha 0.35、倾斜
+    // 约 20°），在自身容器内裁到卡圆角，不影响选中
+    // 描边；光带旋转后横向半幅约 76pt，故行程取
+    // ±155（略大于半卡宽 75 + 76）保证两端完全出卡。
+    private var sweepOverlay: some View {
+        ZStack {
+            Rectangle()
+                .fill(LinearGradient(
+                    colors: [.white.opacity(0), .white.opacity(0.35), .white.opacity(0)],
+                    startPoint: .leading, endPoint: .trailing))
+                .frame(width: 68, height: 260)
+                .rotationEffect(.degrees(20))
+                .offset(x: sweepX)
+        }
+        .frame(width: 150, height: 200)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .allowsHitTesting(false)
+    }
+
+    var body: some View {
+        // run #140：本 body 的单一大表达式曾在 CI 触发
+        // 类型检查超时（原 327 行 ZStack 处报 unable to
+        // type-check）——变换量/卡层/徽章/描边/扫光已拆
+        // 为上方带显式类型的独立子表达式，此处只组合
+        // 并挂变换与手势；手势接线与全部常数同 #139
+        // 一字未变（纯结构拆分）。
+        cardFace
         .frame(width: 150, height: 200)
         // 变暗作用于整卡（含卡名与勾选徽章）：#137 起
         // 深度主要靠压暗承担，模糊只留轻微虚化、缩略图
         // 另带一点去色（见上 lagSaturation）。
         .brightness(lagBrightness)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            if item.isSelected {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(Color.blue, lineWidth: 3)
-            }
-        }
-        // 扫光（run #136）：白色线性渐变光带（宽约卡宽
-        // 45%、峰值 alpha 0.35、倾斜约 20°），在自身
-        // 容器内裁到卡圆角，不影响选中描边；光带旋转
-        // 后横向半幅约 76pt，故行程取 ±155（略大于
-        // 半卡宽 75 + 76）保证两端完全出卡。
-        .overlay {
-            ZStack {
-                Rectangle()
-                    .fill(LinearGradient(
-                        colors: [.white.opacity(0), .white.opacity(0.35), .white.opacity(0)],
-                        startPoint: .leading, endPoint: .trailing))
-                    .frame(width: 68, height: 260)
-                    .rotationEffect(.degrees(20))
-                    .offset(x: sweepX)
-            }
-            .frame(width: 150, height: 200)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .allowsHitTesting(false)
-        }
+        .overlay { selectionRing }
+        .overlay { sweepOverlay }
         .shadow(color: .black.opacity(0.22), radius: lagShadowRadius, x: 0, y: lagShadowY)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         // 点按选中 / 长按出菜单（run #130 手势口径沿用）：
@@ -357,7 +397,7 @@ private struct FanCardView: View {
         // （contentShape），倾斜最大约 19.8°、错位有限，
         // 见 SPEC #138 未验证项。
         .rotationEffect(.degrees(lagTilt), anchor: UnitPoint(x: 0.5, y: 0.92))
-        .offset(x: CGFloat(s) * 96, y: lagDropY)
+        .offset(x: CGFloat(shownD) * 96, y: lagDropY)
         .scaleEffect(lagScale * (item.isSelected ? 1.04 : 1.0))
         .animation(.spring(response: 0.3, dampingFraction: 0.55), value: item.isSelected)
         .zIndex(lagZIndex)
