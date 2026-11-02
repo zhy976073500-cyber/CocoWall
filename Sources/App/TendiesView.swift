@@ -207,8 +207,8 @@ private struct FanScrollOffsetKey: PreferenceKey {
 /// |d| 不同响应形成级联滞后，静止时 shownD 与 d 精确
 /// 一致、布局不漂移。#135 的 fanCard 方法因需自持状态
 /// 改为独立子视图；选中集与长按菜单仍归父视图管，
-/// 经回调回传。两侧卡保持正脸（无 3D 转侧、无去色），
-/// 只倾斜/下沉/变暗/变模糊。
+/// 经回调回传。两侧卡保持正脸（无 3D 转侧），只
+/// 倾斜/下沉/变暗/轻微虚化，缩略图另带轻去色（#137）。
 private struct FanCardView: View {
     @EnvironmentObject var vm: AppViewModel
     let item: TendieItem
@@ -241,12 +241,16 @@ private struct FanCardView: View {
     }
 
     var body: some View {
-        // 延迟轮盘变换量（run #136，全部由 shownD 推导）：
-        // 绕底部锚点向外倾斜 6.5°×clamp(shownD, ±2.2)；
-        // 沿弧下沉 13×clamp(shownD, ±2.2)²；整卡压暗
-        // −0.16×min(|shownD|/1.6, 1)；缩略图+卡名模糊
-        // 5.5×min(|shownD|/2, 1)；缩放 1.04 起、随
-        // |shownD| 收到 0.92；位置级联把滞后量
+        // 延迟轮盘变换量（run #136 立、#137 修分层
+        // 曲线，全部由 shownD 推导）：绕底部锚点向外
+        // 倾斜 6.5°×clamp(shownD, ±2.2)；沿弧下沉
+        // 13×clamp(shownD, ±2.2)²；整卡压暗 −0.28×
+        // min(|shownD|/1.8, 1)（#137 加重，深度改由
+        // 变暗承担）；模糊只留轻微虚化——正中 ±0.55
+        // 内为 0、其后线性升至 1.6pt 封顶（#137 自
+        // 5.5 大砍）；缩略图另加轻去色 0.30 封顶
+        // （#137，只挂缩略图本体）；缩放 1.04 起、
+        // 随 |shownD| 收到 0.92；位置级联把滞后量
         // (shownD − d) 转成横向偏移（见链尾）。
         let s = shownD
         let asd = abs(s)
@@ -254,8 +258,9 @@ private struct FanCardView: View {
         let lagTilt = 6.5 * sClamped
         let lagDropY = CGFloat(13 * sClamped * sClamped)
         let lagScale = 1.04 - 0.06 * min(asd, 2)
-        let lagBrightness = -0.16 * min(asd / 1.6, 1)
-        let lagBlur = CGFloat(5.5 * min(asd / 2, 1))
+        let lagBrightness = -0.28 * min(asd / 1.8, 1)
+        let lagBlur = CGFloat(1.6 * min(max(asd - 0.55, 0) / 1.45, 1))
+        let lagSaturation = 1 - 0.30 * min(asd / 1.8, 1)
         // 位置级联：滞后量 × pitch 96 × 0.45，钳制 ±30
         // ——滑动中卡被横向挤压/拉伸，静止归零。
         let lagX = CGFloat(min(30, max(-30, (s - d) * 96 * 0.45)))
@@ -272,6 +277,9 @@ private struct FanCardView: View {
                 TendieThumbnailView(item: item)
                     .frame(width: 150, height: 200)
                     .clipped()
+                    // 轻去色只挂缩略图本体（run #137）：
+                    // 同组的卡名与组外的徽章都不去色。
+                    .saturation(lagSaturation)
                 LinearGradient(colors: [.clear, .black.opacity(0.38)],
                                startPoint: .center, endPoint: .bottom)
                 // 卡名防压（run #132）：最大宽收进每张卡的
@@ -301,8 +309,9 @@ private struct FanCardView: View {
             }
         }
         .frame(width: 150, height: 200)
-        // 变暗作用于整卡（含卡名与勾选徽章）：本参考
-        // 不去色，远卡靠压暗 + 模糊退后。
+        // 变暗作用于整卡（含卡名与勾选徽章）：#137 起
+        // 深度主要靠压暗承担，模糊只留轻微虚化、缩略图
+        // 另带一点去色（见上 lagSaturation）。
         .brightness(lagBrightness)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
