@@ -1,0 +1,5 @@
+icon-1024.png
+build/
+DerivedData/
+*.xcodeproj
+.DS_Store
