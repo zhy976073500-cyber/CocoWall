@@ -70,7 +70,11 @@
 //! as an airlift-quarantine-<token> copy. Presence before the move
 //! and absence after it are audited over DVT (above), the commit
 //! audit on a FRESH connection; a target only counts as deleted
-//! when its path re-audits absent.
+//! when its path re-audits absent. Run #147 batches the transport:
+//! all present targets share one tunnel and one ATC session whose
+//! combined Books.plist carries the two books per target, with
+//! per-target destinations, confirmations and accounting
+//! unchanged (previously each target ran its own full cycle).
 //!
 //! Run #115 adds a cleanup SCOPE: list/delete only ever touch the
 //! two CollectionsPoster providers (see CLEANUP_SCOPE_PROVIDERS
@@ -680,6 +684,14 @@ async fn enumerate_descriptors(
 //      the link; RETAIN the quarantine copy (Walllive: stage.retained).
 //   5. After all targets: commit audit on a FRESH connection — every
 //      deleted path must re-audit absent before it counts as deleted.
+//
+// Run #147 transport note: steps 2–4 above describe the mechanism
+// per target as Walllive's log shows it and as this code ran it
+// until #146 — one full cycle per descriptor. Since #147 the
+// cycles are batched (see "Batched delete" below): one tunnel,
+// every target staged, one combined Books.plist, one ATC session,
+// one Books restore — while steps 1 and 5 and every per-target
+// confirmation in between stay exactly as described.
 // ---------------------------------------------------------------------------
 
 const AIRLOCK_ROOT: &str = "/var/mobile/Media/Airlock/Book";
@@ -991,40 +1003,52 @@ fn collect_manifest_entries(value: &plist::Value, out: &mut Vec<(String, Option<
     }
 }
 
-// --- One delete operation (one descriptor, one ATC sync) ---
+// --- Batched delete (run #147: one tunnel, one ATC session) ---
+//
+// Until run #147 every target ran the full cycle below on its own:
+// its own tunnel, staging, Books write, ATC session and Books
+// restore — the run #146 device log prices that at ~3.5 s per
+// target (delete segment 28,069 ms for 8 targets). The mechanism
+// per target is unchanged (staging link + descriptor as a two-book
+// pair, FileComplete destinations land the link in Media and move
+// the descriptor into its own airlift-quarantine-<token>), but the
+// transport is now shared, exactly like the install side's combined
+// preferences session: stage every present target on ONE tunnel,
+// write ONE Books.plist carrying all targets' book pairs, run ONE
+// ATC session sending all FileCompletes (all links first with one
+// shared settle + verify, then all descriptors with one shared
+// settle), restore Books once. Per-target accounting is untouched:
+// each target keeps its own quarantine destination and its own
+// stage / manifest / link / quarantine / gone-through-link
+// confirmations, a manifest refusal fails only its own target, and
+// phase C's fresh commit audit still decides deleted vs failed.
 
-struct DeleteOpOutcome {
-    link_verified: bool,
+struct PreparedDelete {
+    target_idx: usize,
+    uuid: String,
+    source: String,
+    link_destination: String,
     quarantine_name: String,
+    identifiers: Vec<String>,
+    link_verified: bool,
     quarantine_confirmed: bool,
     descriptor_gone_local: bool,
+    move_sent: bool,
+    refusal: Option<String>,
 }
 
-async fn delete_operation(
-    pairing_bytes: &[u8],
+/// Stage one target's delete archive on the shared tunnel and
+/// verify the extraction (steps 2–3 of the delete flow; the Books
+/// write and the ATC session belong to the batch, below).
+async fn stage_delete_target(
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+    afc: &mut AfcClient,
     descriptors_dir_abs: &str,
+    target_idx: usize,
     uuid: &str,
     logger: &PSLogger,
-) -> Result<DeleteOpOutcome, String> {
-    let (mut adapter, mut handshake) = connect_rsd(pairing_bytes, logger)
-        .await
-        .map_err(|(_, msg)| msg)?;
-
-    let mut afc = handshake
-        .connect::<AfcClient>(&mut adapter)
-        .await
-        .map_err(|e| format!("AFC connect failed: {e:?}"))?;
-
-    // Snapshot Books sync state (restored at the end of the operation).
-    let original_books_plist = match afc.open("Books/Sync/Books.plist", AfcFopenMode::RdOnly).await {
-        Ok(mut fd) => {
-            let data = fd.read_entire().await.ok();
-            let _ = fd.close().await;
-            data
-        }
-        Err(_) => None,
-    };
-
+) -> Result<PreparedDelete, String> {
     let token = random_hex(10);
     let source = format!("airlift-src-{token}");
     let link_destination = format!("airlift-link-{token}");
@@ -1033,8 +1057,7 @@ async fn delete_operation(
     let descriptor_abs = format!("{descriptors_dir_abs}/{uuid}");
     let link_identifier = format!("../../{source}/p0/p1/p2/link");
     let descriptor_identifier = posix_rel(&descriptor_abs, AIRLOCK_ROOT);
-    let identifiers = vec![link_identifier, descriptor_identifier.clone()];
-    let destinations = vec![link_destination.clone(), quarantine_name.clone()];
+    let identifiers = vec![link_identifier, descriptor_identifier];
 
     // The delete sync lands this link at the Media root (airlift-link-*),
     // so its target keeps the root geometry: three ../ to /, then tail.
@@ -1044,12 +1067,11 @@ async fn delete_operation(
     );
     let archive = build_delete_archive(descriptors_dir_abs, &root_link_target)
         .map_err(|e| format!("build archive: {e}"))?;
-    let books_plist = build_books_plist(&identifiers).map_err(|e| format!("build Books.plist: {e}"))?;
 
     // Stage via streaming_zip_conduit (mirrors exploit::run step 1).
     let mut zip_stream = connect_service_rsd(
-        &mut adapter,
-        &mut handshake,
+        adapter,
+        handshake,
         "com.apple.streaming_zip_conduit",
         logger,
     )
@@ -1099,6 +1121,45 @@ async fn delete_operation(
         return Err("stage verification failed: extracted files not present in Media".to_string());
     }
 
+    Ok(PreparedDelete {
+        target_idx,
+        uuid: uuid.to_string(),
+        source,
+        link_destination,
+        quarantine_name,
+        identifiers,
+        link_verified: false,
+        quarantine_confirmed: false,
+        descriptor_gone_local: false,
+        move_sent: false,
+        refusal: None,
+    })
+}
+
+/// The batch's single ATC session: write the combined Books.plist
+/// (every prepared target's link + descriptor pair, in target
+/// order), run one sync, and send all FileCompletes — all links
+/// first (one shared 900 ms settle, then each link's Media
+/// destination is verified), then all descriptors (one shared 2 s
+/// settle) — filling each target's own confirmations in place. A
+/// descriptor the device manifest does not offer for download is
+/// refused for ITS target only (the old per-target operation
+/// refused the whole operation at the same point); a protocol-level
+/// failure returns Err and the caller fails every prepared target
+/// with it, as the old cycle failed its one target.
+async fn run_delete_session(
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+    afc: &mut AfcClient,
+    prepared: &mut [PreparedDelete],
+    logger: &PSLogger,
+) -> Result<(), String> {
+    let identifiers: Vec<String> = prepared
+        .iter()
+        .flat_map(|p| p.identifiers.iter().cloned())
+        .collect();
+    let books_plist = build_books_plist(&identifiers).map_err(|e| format!("build Books.plist: {e}"))?;
+
     let _ = afc.mk_dir("Airlock").await;
     let _ = afc.mk_dir("Airlock/Book").await;
     let _ = afc.mk_dir("Books").await;
@@ -1116,7 +1177,7 @@ async fn delete_operation(
     logger.log("airlift: airlift.delete.books.written=true");
 
     // ATC session (mirrors exploit::run step 2).
-    let mut atc_stream = connect_service_rsd(&mut adapter, &mut handshake, "com.apple.atc", logger).await?;
+    let mut atc_stream = connect_service_rsd(adapter, handshake, "com.apple.atc", logger).await?;
 
     let mut sync_allowed = false;
     let mut session_number: i64 = 0;
@@ -1268,8 +1329,8 @@ async fn delete_operation(
     let msg_meta = make_atc_msg("FinishedSyncingMetadata", 1, Some(meta_params));
     send_atc_dict(&mut atc_stream, &msg_meta).await?;
 
-    // Wait for AssetManifest and verify the device offers both books,
-    // the descriptor as a download (Walllive: delete.manifest.target
+    // Wait for AssetManifest and verify the device offers the books,
+    // each descriptor as a download (Walllive: delete.manifest.target
     // matching_entries=1 download=true ready=true).
     let mut manifest_entries: Vec<(String, Option<bool>)> = Vec::new();
     let mut manifest_observed = false;
@@ -1331,94 +1392,216 @@ async fn delete_operation(
             download.map(|d| d.to_string()).unwrap_or_else(|| "unknown".to_string()),
             !matched.is_empty()
         ));
-        if idx == 1 && download == Some(false) {
-            return Err(format!(
+        // Descriptor positions (odd global indices) keep the old
+        // refusal rule, now scoped to their own target: a descriptor
+        // the device does not offer for download is never
+        // FileCompleted, and its target fails alone.
+        if idx % 2 == 1 && download == Some(false) {
+            let uuid = prepared[idx / 2].uuid.clone();
+            prepared[idx / 2].refusal = Some(format!(
                 "device manifest does not offer descriptor {uuid} for download; refusing to FileComplete it"
             ));
         }
     }
     logger.log("airlift: AssetManifest observed");
 
-    // FileComplete per book, in Walllive's two phases: link first
-    // (verify its Media destination), then the descriptor (the move).
+    // FileCompletes in the old operation's two phases, batched:
+    // every target's link first (then one shared settle and each
+    // link's Media destination verified), then every descriptor
+    // (the move). Each target's own link still precedes its own
+    // descriptor, as in the per-target cycle.
     logger.log("airlift: airlift.delete.move.begin phase=link");
-    logger.log("airlift: airlift.delete.asset.requested index=0");
-    {
+    for (k, target) in prepared.iter().enumerate() {
+        if target.refusal.is_some() {
+            continue;
+        }
+        logger.log(format!("airlift: airlift.delete.asset.requested index={}", 2 * k));
         let mut params = plist::Dictionary::new();
-        params.insert("AssetID".into(), plist::Value::String(identifiers[0].clone()));
+        params.insert("AssetID".into(), plist::Value::String(target.identifiers[0].clone()));
         params.insert("Dataclass".into(), plist::Value::String("Book".into()));
-        params.insert("AssetPath".into(), plist::Value::String(destinations[0].clone()));
+        params.insert("AssetPath".into(), plist::Value::String(target.link_destination.clone()));
         let msg = make_atc_msg("FileComplete", 1, Some(params));
         send_atc_dict(&mut atc_stream, &msg).await?;
     }
     tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-    let link_verified = afc.get_file_info(&link_destination).await.is_ok();
-    logger.log(format!(
-        "airlift: airlift.delete.link.confirmed={} destination_verified={}",
-        link_verified, link_verified
-    ));
-
-    logger.log("airlift: airlift.delete.move.begin phase=descriptor");
-    logger.log("airlift: airlift.delete.asset.requested index=1");
-    {
-        let mut params = plist::Dictionary::new();
-        params.insert("AssetID".into(), plist::Value::String(identifiers[1].clone()));
-        params.insert("Dataclass".into(), plist::Value::String("Book".into()));
-        params.insert("AssetPath".into(), plist::Value::String(destinations[1].clone()));
-        let msg = make_atc_msg("FileComplete", 1, Some(params));
-        send_atc_dict(&mut atc_stream, &msg).await?;
+    for target in prepared.iter_mut() {
+        if target.refusal.is_some() {
+            continue;
+        }
+        target.link_verified = afc.get_file_info(&target.link_destination).await.is_ok();
+        logger.log(format!(
+            "airlift: airlift.delete.link.confirmed={} destination_verified={}",
+            target.link_verified, target.link_verified
+        ));
     }
 
-    // Give ATAirlock time to finish moving assets (vendored settle).
+    logger.log("airlift: airlift.delete.move.begin phase=descriptor");
+    for (k, target) in prepared.iter_mut().enumerate() {
+        if target.refusal.is_some() {
+            continue;
+        }
+        logger.log(format!("airlift: airlift.delete.asset.requested index={}", 2 * k + 1));
+        let mut params = plist::Dictionary::new();
+        params.insert("AssetID".into(), plist::Value::String(target.identifiers[1].clone()));
+        params.insert("Dataclass".into(), plist::Value::String("Book".into()));
+        params.insert("AssetPath".into(), plist::Value::String(target.quarantine_name.clone()));
+        let msg = make_atc_msg("FileComplete", 1, Some(params));
+        send_atc_dict(&mut atc_stream, &msg).await?;
+        target.move_sent = true;
+    }
+
+    // Give ATAirlock time to finish moving assets (vendored settle,
+    // once for the batch instead of once per target).
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     drop(atc_stream);
     logger.log("airlift: AirTraffic sync complete");
 
-    let quarantine_confirmed = afc.get_file_info(&quarantine_name).await.is_ok();
-    logger.log(format!(
-        "airlift: airlift.delete.quarantine.confirmed={} destination={}",
-        quarantine_confirmed, quarantine_name
-    ));
-
-    // Local confirmation: through the freshly planted Media link (which
-    // points at the descriptors directory), the descriptor must be gone.
-    let descriptor_gone_local = match afc.list_dir(link_destination.clone()).await {
-        Ok(names) => !names.iter().any(|n| n == uuid),
-        Err(_) => false,
-    };
-    if descriptor_gone_local {
-        logger.log("airlift: airlift.delete.descriptor.confirmed");
-    }
-
-    // Cleanup: remove staging source + link; RETAIN the quarantine copy
-    // (it is the only remaining copy of the user's wallpaper data).
-    let _ = afc.remove_all(&link_destination).await;
-    let _ = afc.remove_all(&source).await;
-    logger.log(format!(
-        "airlift: airlift.delete.stage.retained quarantine={} no_read=true no_remove=true",
-        quarantine_name
-    ));
-
-    // Restore original Books state (Walllive: afc.books.restore).
-    let mut restored = false;
-    if let Some(orig) = &original_books_plist {
-        if let Ok(mut fd) = afc.open("Books/Sync/Books.plist", AfcFopenMode::WrOnly).await {
-            restored = fd.write_entire(orig).await.is_ok();
-            let _ = fd.close().await;
+    for target in prepared.iter_mut() {
+        if target.refusal.is_some() {
+            continue;
         }
-    } else {
-        restored = afc.remove("Books/Sync/Books.plist").await.is_ok();
-    }
-    logger.log(format!(
-        "airlift: airlift.afc.books.restore.end verified={restored}"
-    ));
+        target.quarantine_confirmed = afc.get_file_info(&target.quarantine_name).await.is_ok();
+        logger.log(format!(
+            "airlift: airlift.delete.quarantine.confirmed={} destination={}",
+            target.quarantine_confirmed, target.quarantine_name
+        ));
 
-    Ok(DeleteOpOutcome {
-        link_verified,
-        quarantine_name,
-        quarantine_confirmed,
-        descriptor_gone_local,
-    })
+        // Local confirmation: through the freshly planted Media link
+        // (which points at the descriptors directory), the descriptor
+        // must be gone.
+        target.descriptor_gone_local = match afc.list_dir(target.link_destination.clone()).await {
+            Ok(names) => !names.iter().any(|n| n == &target.uuid),
+            Err(_) => false,
+        };
+        if target.descriptor_gone_local {
+            logger.log("airlift: airlift.delete.descriptor.confirmed");
+        }
+    }
+
+    Ok(())
+}
+
+/// The batch frame: one tunnel, one Books snapshot/restore, every
+/// present target staged on the shared connection, one session.
+/// Returns one (target_idx, op_ok, quarantine, op_error) outcome per
+/// batch target; Err is reserved for frame-level failures before
+/// any target could be staged (connect / AFC), which fail all of
+/// them with the same message — as each target's own cycle would
+/// have failed at the same step before run #147.
+async fn delete_batch(
+    pairing_bytes: &[u8],
+    store_root: &str,
+    targets: &[(String, String)],
+    batch_indices: &[usize],
+    logger: &PSLogger,
+) -> Result<Vec<(usize, bool, String, String)>, String> {
+    let (mut adapter, mut handshake) = connect_rsd(pairing_bytes, logger)
+        .await
+        .map_err(|(_, msg)| msg)?;
+
+    let mut afc = handshake
+        .connect::<AfcClient>(&mut adapter)
+        .await
+        .map_err(|e| format!("AFC connect failed: {e:?}"))?;
+
+    // Snapshot Books sync state once (restored at the end of the
+    // batch, on success and on session failure alike, so a failed
+    // batch never leaves the combined Books.plist behind).
+    let original_books_plist = match afc.open("Books/Sync/Books.plist", AfcFopenMode::RdOnly).await {
+        Ok(mut fd) => {
+            let data = fd.read_entire().await.ok();
+            let _ = fd.close().await;
+            data
+        }
+        Err(_) => None,
+    };
+
+    let mut outcomes: Vec<(usize, bool, String, String)> = Vec::new();
+    let mut prepared: Vec<PreparedDelete> = Vec::new();
+    for &idx in batch_indices {
+        let (ext, uuid) = &targets[idx];
+        logger.log(format!(
+            "airlift: airlift.delete.operation.begin target={ext}/{uuid}"
+        ));
+        logger.log(format!(
+            "airlift: airlift.delete.target provider={ext} descriptor={uuid}"
+        ));
+        let descriptors_dir_abs = format!("{store_root}/Extensions/{ext}/descriptors");
+        match stage_delete_target(
+            &mut adapter,
+            &mut handshake,
+            &mut afc,
+            &descriptors_dir_abs,
+            idx,
+            uuid,
+            logger,
+        )
+        .await
+        {
+            Ok(p) => prepared.push(p),
+            Err(e) => outcomes.push((idx, false, String::new(), e)),
+        }
+    }
+
+    let mut session_error: Option<String> = None;
+    if !prepared.is_empty() {
+        if let Err(e) =
+            run_delete_session(&mut adapter, &mut handshake, &mut afc, &mut prepared, logger).await
+        {
+            session_error = Some(e);
+        }
+
+        // Cleanup per target: remove staging source + link; RETAIN
+        // the quarantine copy (it is the only remaining copy of the
+        // user's wallpaper data).
+        for p in &prepared {
+            let _ = afc.remove_all(&p.link_destination).await;
+            let _ = afc.remove_all(&p.source).await;
+            if p.move_sent {
+                logger.log(format!(
+                    "airlift: airlift.delete.stage.retained quarantine={} no_read=true no_remove=true",
+                    p.quarantine_name
+                ));
+            }
+        }
+
+        // Restore original Books state once for the batch
+        // (Walllive: afc.books.restore).
+        let mut restored = false;
+        if let Some(orig) = &original_books_plist {
+            if let Ok(mut fd) = afc.open("Books/Sync/Books.plist", AfcFopenMode::WrOnly).await {
+                restored = fd.write_entire(orig).await.is_ok();
+                let _ = fd.close().await;
+            }
+        } else {
+            restored = afc.remove("Books/Sync/Books.plist").await.is_ok();
+        }
+        logger.log(format!(
+            "airlift: airlift.afc.books.restore.end verified={restored}"
+        ));
+    }
+
+    for p in prepared {
+        // The operation's own gate is the quarantine landing, exactly
+        // as before the batching; whether the descriptor is truly
+        // gone is decided by the fresh commit audit in phase C
+        // (descriptor_gone_local is logged as supporting evidence).
+        let (op_ok, op_error) = if let Some(r) = &p.refusal {
+            (false, r.clone())
+        } else if let Some(e) = &session_error {
+            (false, e.clone())
+        } else if p.quarantine_confirmed {
+            (true, String::new())
+        } else {
+            (
+                false,
+                "quarantine copy not confirmed in Media after sync".to_string(),
+            )
+        };
+        outcomes.push((p.target_idx, op_ok, p.quarantine_name.clone(), op_error));
+    }
+
+    Ok(outcomes)
 }
 
 // --- Audit helper (DVT directoryListingForPath on absolute store paths) ---
@@ -1525,7 +1708,11 @@ async fn store_delete(
         }
     }
 
-    // Phase B: one ATC move operation per present target.
+    // Phase B (run #147): one batched move for every present
+    // target — a single tunnel + ATC session inside delete_batch,
+    // with the same per-target outcomes the per-target cycle
+    // produced (the phase C commit audit below still decides
+    // deleted vs failed per target).
     struct ItemState {
         ext: String,
         uuid: String,
@@ -1535,6 +1722,7 @@ async fn store_delete(
         quarantine: String,
     }
     let mut states: Vec<ItemState> = Vec::new();
+    let mut batch_indices: Vec<usize> = Vec::new();
     for (idx, (ext, uuid)) in targets.iter().enumerate() {
         let mut st = ItemState {
             ext: ext.clone(),
@@ -1556,31 +1744,24 @@ async fn store_delete(
             states.push(st);
             continue;
         }
-        logger.log(format!(
-            "airlift: airlift.delete.operation.begin target={ext}/{uuid}"
-        ));
-        logger.log(format!(
-            "airlift: airlift.delete.target provider={ext} descriptor={uuid}"
-        ));
-        let descriptors_dir_abs = format!("{store_root}/Extensions/{ext}/descriptors");
-        match delete_operation(&pairing_bytes, &descriptors_dir_abs, uuid, logger).await {
-            Ok(outcome) => {
-                // The operation's own gate is the quarantine landing;
-                // whether the descriptor is truly gone is decided by the
-                // fresh commit audit in phase C (descriptor_gone_local is
-                // logged inside the operation as supporting evidence).
-                st.op_ok = outcome.quarantine_confirmed;
-                st.quarantine = outcome.quarantine_name;
-                if !outcome.quarantine_confirmed {
-                    st.op_error =
-                        "quarantine copy not confirmed in Media after sync".to_string();
+        batch_indices.push(idx);
+        states.push(st);
+    }
+    if !batch_indices.is_empty() {
+        match delete_batch(&pairing_bytes, &store_root, &targets, &batch_indices, logger).await {
+            Ok(outcomes) => {
+                for (idx, op_ok, quarantine, op_error) in outcomes {
+                    states[idx].op_ok = op_ok;
+                    states[idx].quarantine = quarantine;
+                    states[idx].op_error = op_error;
                 }
             }
             Err(e) => {
-                st.op_error = e;
+                for idx in &batch_indices {
+                    states[*idx].op_error = e.clone();
+                }
             }
         }
-        states.push(st);
     }
 
     // Phase C: commit audit on a FRESH connection — a target only counts

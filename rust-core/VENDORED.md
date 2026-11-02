@@ -321,6 +321,37 @@ descriptors into Media `airlift-quarantine-*` folders (a safety
 property of the delete mechanism itself, not the removed restore
 feature).
 
+Run #147 (2026-11-03, Sage-approved wait/session optimization of
+the measured flash/cleanup paths, registered in SPEC.md; timings
+from the run #146 device log):
+
+- `src/exploit.rs` — two constant-level changes inside the run
+  #112 transaction path only. (A) `wait_file_asset_settle`: the
+  file-asset listing-observation budget drops 1500 ms -> 150 ms
+  (poll 100 ms -> 50 ms). Device evidence: the observation never
+  once succeeded (16/16 waits burned the full budget and returned
+  Skipped), so the wait was dead time, not verification; the
+  outcome taxonomy, log lines, and the session verdict's
+  independence from this wait are unchanged, as is
+  `wait_move_settle` (5000 ms fallback). (B)
+  `run_atc_asset_session`: the fixed post-session drain drops
+  2 s -> 150 ms — the log shows it as the entire ~2 s silent tail
+  of both sessions of every flash. The legacy per-operation paths
+  keep their own 2 s sleeps untouched.
+- `src/poster_store.rs` — the delete transport is batched:
+  `delete_operation` (one full tunnel/ATC cycle per target) is
+  replaced by `stage_delete_target` + `run_delete_session` +
+  `delete_batch`, which share one tunnel, one Books
+  snapshot/restore and one ATC session across all present
+  targets, with a combined Books.plist carrying each target's
+  link + descriptor pair. Per-target mechanism, quarantine
+  destinations, confirmations, manifest-refusal behavior (now
+  scoped to the refused target only), deleted/failed accounting
+  and the run #115 scope hard block are unchanged; the batch also
+  restores Books on session-failure exits (the per-target cycle
+  skipped the restore on its error returns). No FFI signature
+  changed; `src/lib.rs` and `include/airlift.h` untouched.
+
 Apart from the additions registered above, everything else in this
 tree remains a verbatim copy of upstream.
 The other adaptations live outside this directory:

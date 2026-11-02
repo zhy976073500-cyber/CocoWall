@@ -3273,3 +3273,87 @@ connect_device_info（新隧道 + 新 DVT 会话）后逐目标复查
 - 刷一次 + 清一次后回传设置页刷入日志，按 [计时] 行定
   位瓶颈段，再定优化轮（连接复用 / 枚举并发 / 合并同步
   的取舍以这份数据为准）。
+
+## 改动登记 · 刷入/清理等待与会话优化（run #147，2026-11-03，Sage 拍板三处一起治，授权动 rust-core）
+
+依据 run #146 计时版回传的原始引擎日志（8 笔刷入 + 一次 8 目标
+清理）逐段算账后定点治理；三处都只动等待/会话结构，不动成功判
+定、偏好内容、目标路径与其余常数。#146 的 `[计时]` 埋点与 rust
+duration_ms 标记全保留，供下轮同口径对比验收。
+
+### 治法一：刷入 preferences 的必超时 settle（exploit.rs）
+
+- 病灶证据：每笔刷入 4 个 FileComplete 中，index 1/3（两个
+  target 的 plist 文件本体）恒 `atc.move.settle skipped=true
+  reason=file_asset_unobserved duration_ms≈1553–1571`，16/16
+  次全额烧满 wait_file_asset_settle 的 1500 ms 观察预算；
+  index 0/2（link）恒 ~105 ms confirmed。每笔白等 2×~1.56 s。
+- 病灶定性：run #115 已坐实该观察点（经 AFC 读 landed link 的
+  目录列表找 plist 叶子）对文件目的地结构性不可见——文件实
+  际落位、偏好实际生效，只是看不见。该等待从不构成落位验证：
+  它返回的 Skipped 按设计不门控会话结论，资产由 FileComplete
+  回执 + 会话完成 + 紧邻其前、经目标轮询 ~105 ms 确认落位的
+  配对 link 承载（文件正是经该 link 送达）。
+- 改法：观察预算 1500 ms → 150 ms 宽限，轮询 100 ms → 50 ms；
+  观察动作（同一 list_dir）、结果三态（Confirmed/Skipped）、
+  日志行格式全不变。判定语义保持：会话成功判定此前不依赖该
+  等待，此后亦然；link 与 descriptor 的 wait_move_settle
+  （5000 ms fallback、100 ms 轮询）一字不动。
+
+### 治法二：descriptor/preferences 两段会话尾的固定 2 s 空等（exploit.rs）
+
+- 病灶订正：原假设「落位确认轮询太稀」不成立——settle 轮询
+  本就是 100 ms 且 ~105–112 ms 即确认。日志里 FileComplete
+  [2/2] 后 ~2.1 s 无事件、以及 preferences 最后一次 settle
+  后 ~2.0 s 无事件，两处同一真凶：run_atc_asset_session 尾部
+  的固定 `sleep(2 s)`，每笔刷入被两段会话各收一次，共 ~4 s。
+- 改法：该 drain 2 s → 150 ms（仍大于日志中最慢的单次
+  settle 112 ms）。仅限 run #112 事务路径的这一处；旧逐操作
+  路径（inject/write_batch 等）自带的 2 s sleep 不在本轮实
+  测路径内，不动。
+
+### 治法三：清理多目标共用一个会话批量删（poster_store.rs）
+
+- 病灶证据：清理删除段 28,069 ms / 8 目标——每目标一整轮独
+  立周期（独立隧道 + 独立 ATC session + 独立 stage/Books/
+  manifest/settle + 独立 Books 还原），约 3.5 s/目标；检测
+  5.6 s、复查 ~0.1 s、刷新 0.83 s 均非瓶颈，本轮不动。
+- 改法：delete_operation 拆为 stage_delete_target /
+  run_delete_session / delete_batch。Phase B 改为：一
+  次 connect_rsd + 一次 AFC、Books 快照一次；逐目标在同一
+  隧道上暂存并验提取；一份合并 Books.plist 承载全部目标的
+  link+descriptor 书目对（刷入 preferences 的 combined 会
+  话已证明此形状）；一次 ATC 会话内 FileComplete 两阶段批
+  量发送——先全部 link、共享一次 900 ms settle 后逐个验
+  Media 落位，再全部 descriptor、共享一次 2 s settle 后逐
+  个验 quarantine 落位与经 link 的 gone 检查；最后逐目标移
+  除暂存与 link（quarantine 保留日志仅对实际发出 descriptor
+  FileComplete 的目标输出）、Books 还原一次（会话失败时也
+  还原，不留合并 Books.plist——旧逐目标流程在会话错误时跳
+  过还原，本轮按「快照/还原各一次」收紧，方向更安全）。
+- 判定语义保持：逐目标成败记账公式不变（op 门 = 本目标
+  quarantine 落位确认；deleted 还须 phase C fresh 连接复查
+  absent）；manifest 对某 descriptor 给出 download=false
+  时旧流程整轮拒绝该目标，本轮只拒绝该目标、其余继续，
+  失败隔离不串扰；协议级失败（ReadyForSync/AssetManifest
+  未观察到等）使全部 prepared 目标以同一原因失败，与旧流
+  程各目标会在同一步以同一原因失败等价。quarantine 移动语
+  义、保留策略、run #115 的 FFI 范围硬拦、phase A 前置审计、
+  phase C fresh 复查、FFI 签名与 Swift 侧均未动。#146 依赖
+  的 rust 标记（audit.session / delete.operation.begin /
+  delete.commit.connection=fresh 等）全部保留。
+
+### 预期（待真机同口径复测）
+
+- 刷入：每张 ~8.4 s → 约 2.5–3.5 s（preferences ~5.65 s →
+  ~1.3 s；descriptor ~2.8 s → ~0.9 s；建连/暂存原本无辜）。
+- 清理：删除段 28.1 s → 约 6–8 s，整轮 ~35 s → 约 13–15 s。
+
+### 未验证（归 Sage 真机）
+
+- preferences plist 在缩短宽限后仍实际落位生效（壁纸刷新行
+  为即验收点）；批量 manifest 下设备对 16 书目的提供/下载
+  标记行为；link 批量先行、descriptor 随后这一发送顺序的设
+  备接受度；drain 缩短后 phase 2 握手（ReadyForSync /
+  AssetManifest 等待）不拉长；清理整轮的逐目标计数与 phase
+  C 复查结果与旧版一致。
