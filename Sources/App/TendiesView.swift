@@ -1400,6 +1400,14 @@ struct TendiesDocumentPickerView: UIViewControllerRepresentable {
 /// data store (via PosterStoreHelper), lets the user tick items, and —
 /// after an explicit confirmation — deletes the selected ones from the
 /// device, then shows the refreshed list and the cleanup result.
+///
+/// run #142：版式按清理页设计稿 v2 实装——每行独立成
+/// 整行全胶囊玻璃面、行距 8，浮在柔和氛围底上（撤旧版
+/// List 大白容器）；顶栏改自绘页头：关闭/刷新做玻璃
+/// 圆钮、导航栏隐藏；底部改悬浮玻璃条承载已选计数与
+/// 清理钮（0 选灰置、>0 红色强调）。数据来源、勾选/
+/// 全选、清理确认与删除流程、刷新/关闭行为一字未动，
+/// 只动呈现层（见 SPEC #142）。
 struct DevicePosterCleanupView: View {
     @EnvironmentObject var vm: AppViewModel
     @Environment(\.dismiss) private var dismiss
@@ -1415,173 +1423,46 @@ struct DevicePosterCleanupView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if vm.isScanningDevicePosters {
-                    VStack(spacing: 12) {
-                        ProgressView()
-                        Text("正在检测设备数据仓…")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List {
-                        if vm.devicePosters.isEmpty {
-                            Section {
-                                VStack(spacing: 10) {
-                                    Image(systemName: "photo.stack")
-                                        .font(.system(size: 32))
-                                        .foregroundStyle(.secondary)
-                                    Text(vm.devicePosterStatus.isEmpty ? "设备数据仓里没有检测到已导入的壁纸。" : vm.devicePosterStatus)
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                        .multilineTextAlignment(.center)
-                                        .padding(.horizontal, 24)
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 24)
-                                .listRowSeparator(.hidden)
-                            }
+            ZStack {
+                cleanupAmbientBackground
+                VStack(spacing: 0) {
+                    cleanupHeader
+                    if vm.isScanningDevicePosters {
+                        VStack(spacing: 12) {
+                            ProgressView()
+                            Text("正在检测设备数据仓…")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
                         }
-                        if !vm.devicePosters.isEmpty {
-                        Section {
-                            ForEach(vm.devicePosters) { item in
-                                Button {
-                                    if vm.devicePosterSelection.contains(item.id) {
-                                        vm.devicePosterSelection.remove(item.id)
-                                    } else {
-                                        vm.devicePosterSelection.insert(item.id)
-                                    }
-                                } label: {
-                                    HStack(spacing: 12) {
-                                        Image(systemName: vm.devicePosterSelection.contains(item.id) ? "checkmark.circle.fill" : "circle")
-                                            .foregroundStyle(vm.devicePosterSelection.contains(item.id) ? Color.accentColor : Color.secondary)
-                                        // Runs #122/#124: thumbnail borrowed
-                                        // from the matching local library
-                                        // entry (flash registry first, then
-                                        // package-name matching in
-                                        // AppViewModel), so a row can be
-                                        // recognised by its picture.
-                                        if let thumbData = vm.devicePosterThumbs[item.id],
-                                           let thumb = UIImage(data: thumbData) {
-                                            Image(uiImage: thumb)
-                                                .resizable()
-                                                .aspectRatio(contentMode: .fill)
-                                                .frame(width: 34, height: 46)
-                                                .cornerRadius(6)
-                                                .clipped()
-                                                .shadow(color: .black.opacity(0.12), radius: 2, x: 0, y: 1)
-                                        } else {
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .fill(Color(UIColor.tertiarySystemFill))
-                                                .frame(width: 34, height: 46)
-                                                .overlay {
-                                                    Image(systemName: "photo")
-                                                        .foregroundStyle(.secondary)
-                                                }
-                                        }
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            // Run #124: prefer the local
-                                            // library display name when the
-                                            // row's source entry is known —
-                                            // the store-reported name carries
-                                            // the rewritten packaged base
-                                            // (e.g. "1572.WWDC_2022-…"), which
-                                            // identifies nothing.
-                                            Text(vm.devicePosterDisplayNames[item.id] ?? item.name)
-                                                .font(.subheadline.bold())
-                                                .foregroundStyle(.primary)
-                                                .lineLimit(1)
-                                            Text("\(item.extensionId) · \(String(item.uuid.prefix(8)))")
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer()
-                                    }
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        } header: {
-                            HStack {
-                                Text("设备数据仓中共 \(vm.devicePosters.count) 张")
-                                Spacer()
-                                Button(allSelected ? "取消全选" : "全选") {
-                                    if allSelected {
-                                        vm.devicePosterSelection = []
-                                    } else {
-                                        vm.devicePosterSelection = Set(vm.devicePosters.map { $0.id })
-                                    }
-                                }
-                                .font(.caption)
-                                .textCase(nil)
-                            }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if vm.devicePosters.isEmpty {
+                        VStack(spacing: 10) {
+                            Image(systemName: "photo.stack")
+                                .font(.system(size: 32))
+                                .foregroundStyle(.secondary)
+                            Text(vm.devicePosterStatus.isEmpty ? "设备数据仓里没有检测到已导入的壁纸。" : vm.devicePosterStatus)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 24)
                         }
-                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        cleanupCountRow
+                        cleanupRows
                     }
                 }
             }
+            .toolbar(.hidden, for: .navigationBar)
             .onChange(of: vm.tendieItems) { _, _ in
                 // A library preview regenerated after the cleanup
                 // list was built can fill in a row thumbnail that
                 // was missing (run #122).
                 vm.prepareDevicePosterThumbnails()
             }
-            .navigationTitle("本机已导入的壁纸")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("关闭") { dismiss() }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        Task {
-                            await vm.detectDevicePosters()
-                        }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .disabled(vm.isScanningDevicePosters || vm.isCleaningDevicePosters)
-                }
-            }
             .safeAreaInset(edge: .bottom) {
                 if !vm.devicePosters.isEmpty {
-                    // run #129：底栏与清理按钮玻璃化（清理逻辑不变）——
-                    // 栏面走 glassSurface、主按钮走 glassProminent 双路。
-                    GlassGroup {
-                        VStack(spacing: 8) {
-                            if !vm.devicePosterStatus.isEmpty {
-                                Text(vm.devicePosterStatus)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .multilineTextAlignment(.center)
-                            }
-                            Button(role: .destructive) {
-                                showCleanupConfirm = true
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Spacer()
-                                    if vm.isCleaningDevicePosters {
-                                        ProgressView()
-                                        Text("正在清理…")
-                                    } else {
-                                        Image(systemName: "trash")
-                                        Text("清理所选（\(selectedItems.count)）")
-                                    }
-                                    Spacer()
-                                }
-                                .font(.headline)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 48)
-                            }
-                            .glassProminentButton(tint: .red)
-                            .disabled(selectedItems.isEmpty || vm.isCleaningDevicePosters || vm.isScanningDevicePosters)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .glassSurface(Rectangle())
-                    }
+                    cleanupBottomBar
                 }
             }
             .confirmationDialog(
@@ -1597,5 +1478,243 @@ struct DevicePosterCleanupView: View {
                 Text("所选 \(selectedItems.count) 张壁纸将从设备 PosterBoard 数据仓中移除。")
             }
         }
+    }
+
+    /// 氛围底（run #142）：近白底 + 四团大半径模糊的
+    /// 柔和彩晕（蓝/绿/桃/紫），参照设计稿 v2 的环境
+    /// 光感；纯装饰，不拦截触摸。
+    private var cleanupAmbientBackground: some View {
+        ZStack {
+            Color(red: 0.96, green: 0.96, blue: 0.98)
+            Circle()
+                .fill(Color.blue.opacity(0.28))
+                .frame(width: 360, height: 360)
+                .blur(radius: 90)
+                .offset(x: -160, y: -330)
+            Circle()
+                .fill(Color.green.opacity(0.26))
+                .frame(width: 320, height: 320)
+                .blur(radius: 90)
+                .offset(x: 180, y: -300)
+            Circle()
+                .fill(Color.orange.opacity(0.22))
+                .frame(width: 340, height: 340)
+                .blur(radius: 95)
+                .offset(x: 200, y: 60)
+            Circle()
+                .fill(Color.purple.opacity(0.20))
+                .frame(width: 360, height: 360)
+                .blur(radius: 100)
+                .offset(x: -180, y: 330)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+
+    /// 页头（run #142）：关闭 = 玻璃胶囊钮、刷新 = 玻璃
+    /// 圆钮（参照液态玻璃概念图的 Edit / compose 钮），
+    /// 标题居中加粗；行为沿旧 toolbar——关闭 dismiss、
+    /// 刷新重扫、扫描/清理中刷新禁用。
+    private var cleanupHeader: some View {
+        ZStack {
+            Text("本机已导入的壁纸")
+                .font(.headline)
+            HStack {
+                Button {
+                    dismiss()
+                } label: {
+                    Text("关闭")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 16)
+                        .frame(height: 38)
+                        .glassSurface(Capsule(), interactive: true)
+                }
+                .buttonStyle(.plain)
+                Spacer()
+                Button {
+                    Task {
+                        await vm.detectDevicePosters()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 38, height: 38)
+                        .glassSurface(Circle(), interactive: true)
+                }
+                .buttonStyle(.plain)
+                .disabled(vm.isScanningDevicePosters || vm.isCleaningDevicePosters)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 6)
+    }
+
+    /// 计数行（run #142）：文案与全选/取消全选行为沿用
+    /// 旧 Section 头；全选钮改玻璃小胶囊。
+    private var cleanupCountRow: some View {
+        HStack {
+            Text("设备数据仓中共 \(vm.devicePosters.count) 张")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                if allSelected {
+                    vm.devicePosterSelection = []
+                } else {
+                    vm.devicePosterSelection = Set(vm.devicePosters.map { $0.id })
+                }
+            } label: {
+                Text(allSelected ? "取消全选" : "全选")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 14)
+                    .frame(height: 32)
+                    .glassSurface(Capsule(), interactive: true)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+    }
+
+    /// 壁纸行列（run #142）：撤 List——ScrollView 里
+    /// 每行一张独立全胶囊、行距 8，浮在氛围底上。
+    private var cleanupRows: some View {
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                ForEach(vm.devicePosters) { item in
+                    cleanupRow(item)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 12)
+        }
+    }
+
+    /// 单行（run #142）：整行全胶囊玻璃面（Capsule 的
+    /// 圆角即行高一半）；行内容与点按勾选行为沿用旧行
+    /// ——选择圆圈 + 圆角缩略图 + 名称/副行；选中行另
+    /// 叠一层淡强调 tint 与描边（参照设计稿选中态）。
+    private func cleanupRow(_ item: DevicePosterItem) -> some View {
+        let isSelected = vm.devicePosterSelection.contains(item.id)
+        return Button {
+            if isSelected {
+                vm.devicePosterSelection.remove(item.id)
+            } else {
+                vm.devicePosterSelection.insert(item.id)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                // Runs #122/#124: thumbnail borrowed
+                // from the matching local library
+                // entry (flash registry first, then
+                // package-name matching in
+                // AppViewModel), so a row can be
+                // recognised by its picture.
+                if let thumbData = vm.devicePosterThumbs[item.id],
+                   let thumb = UIImage(data: thumbData) {
+                    Image(uiImage: thumb)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 34, height: 46)
+                        .cornerRadius(8)
+                        .clipped()
+                        .shadow(color: .black.opacity(0.12), radius: 2, x: 0, y: 1)
+                } else {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(UIColor.tertiarySystemFill))
+                        .frame(width: 34, height: 46)
+                        .overlay {
+                            Image(systemName: "photo")
+                                .foregroundStyle(.secondary)
+                        }
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    // Run #124: prefer the local
+                    // library display name when the
+                    // row's source entry is known —
+                    // the store-reported name carries
+                    // the rewritten packaged base
+                    // (e.g. "1572.WWDC_2022-…"), which
+                    // identifies nothing.
+                    Text(vm.devicePosterDisplayNames[item.id] ?? item.name)
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text("\(item.extensionId) · \(String(item.uuid.prefix(8)))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .contentShape(Capsule())
+            .glassSurface(Capsule(), tint: isSelected ? Color.accentColor.opacity(0.08) : nil)
+            .overlay {
+                if isSelected {
+                    Capsule()
+                        .stroke(Color.accentColor.opacity(0.5), lineWidth: 1.2)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 底部悬浮玻璃条（run #142）：玻璃胶囊条承载
+    /// 「已选 N 张」与清理钮；清理钮走玻璃主按钮双路，
+    /// 0 选时灰 tint 禁用、>0 时红色 destructive 强调
+    /// （参照设计稿 v2 底栏）。状态文案保留在条上方；
+    /// 确认对话与清理行为、禁用条件未动。
+    private var cleanupBottomBar: some View {
+        VStack(spacing: 8) {
+            if !vm.devicePosterStatus.isEmpty {
+                Text(vm.devicePosterStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            GlassGroup {
+                HStack(spacing: 12) {
+                    Text("已选 \(selectedItems.count) 张")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(role: .destructive) {
+                        showCleanupConfirm = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            if vm.isCleaningDevicePosters {
+                                ProgressView()
+                                Text("正在清理…")
+                            } else {
+                                Image(systemName: "trash")
+                                Text("清理所选（\(selectedItems.count)）")
+                            }
+                        }
+                        .font(.headline)
+                        .padding(.horizontal, 18)
+                        .frame(height: 44)
+                    }
+                    .glassProminentButton(tint: selectedItems.isEmpty ? Color.gray : Color.red)
+                    .disabled(selectedItems.isEmpty || vm.isCleaningDevicePosters || vm.isScanningDevicePosters)
+                }
+                .padding(.leading, 20)
+                .padding(.trailing, 8)
+                .padding(.vertical, 8)
+                .glassSurface(Capsule())
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
     }
 }

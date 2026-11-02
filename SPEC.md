@@ -2737,3 +2737,71 @@ sweepOverlay 本体）未改；工作区其余既存脏改动
 通过（本机 Swift 6.1）；验收点仍只有一个——推送
 后 CI 真 Xcode 26 编译转绿；功能未验证项沿 #139
 条目所列，归 Sage 真机复验。
+
+## 改动登记 · 清理页 v2 版式实装（run #142，2026-11-02，Sage 已点头的设计稿落地）
+
+只动 TendiesView.swift 的 DevicePosterCleanupView
+呈现层与 SPEC.md，在远程 head 2e2762d（#141）之上。
+旧版式是一堆行塞在 List 的白色大圆角容器里、底部
+灰色大按钮；#129 只换过玻璃皮、版式没动。本轮按已
+定稿的设计稿（~/workspace/cocowall-design/
+cleanup-page-v2.png，参考 @lukosois 液态玻璃
+Messages 概念图）实装版式。
+
+### 版式（对照设计稿逐项）
+
+- 氛围底：撤 List 的系统底，换近白底 + 四团大半径
+  模糊彩晕（蓝左上/绿右上/桃右中/紫左下，透明度
+  0.20–0.28、blur 90–100），纯装饰不拦截触摸；行与
+  底栏浮在其上。
+- 每行独立成整行全胶囊：Capsule 玻璃面（圆角即行
+  高一半）、行距 8、行内横边距 16/纵 10；行内容沿
+  用旧行——选择圆圈 + 圆角缩略图（34×46、圆角 8）
+  + 名称/副行（provider · 指纹前 8 位）；选中行另
+  叠淡强调 tint（0.08）与 1.2pt 强调描边，对照设计
+  稿选中态的蓝色辉光。行容器由 List 换 ScrollView
+  + LazyVStack，点按整行勾选的行为不变。
+- 顶栏改自绘页头（导航栏隐藏）：关闭 = 玻璃胶囊钮
+  （高 38）、刷新 = 玻璃圆钮（38×38），走共用
+  glassSurface(interactive:) 双路（26+ glassEffect、
+  旧路 ultraThinMaterial）；标题「本机已导入的壁
+  纸」居中加粗；计数行「设备数据仓中共 N 张」保留
+  在页头下方，全选/取消全选改玻璃小胶囊钮（高 32、
+  强调色字）。
+- 底部改悬浮玻璃条：Capsule 玻璃面内左「已选 N
+  张」、右清理钮；清理钮沿用 glassProminentButton
+  双路，0 选时灰 tint 且禁用、>0 时红 tint
+  destructive 强调（对照设计稿底栏的红色胶囊钮）；
+  状态文案保留在条上方居中显示。
+
+### 功能红线（全部未动）
+
+- 数据来源：vm.devicePosters（DVT 列仓、双
+  CollectionsPoster 范围 + FFI 硬拦在引擎侧，本
+  视图只读呈现）。
+- 勾选/全选：行点按切换 devicePosterSelection、
+  全选/取消全选整集替换，逻辑原文沿用。
+- 清理流程：点清理钮 → confirmationDialog 确认
+  → cleanupSelectedDevicePosters（移入隔离夹），
+  确认文案、按钮禁用条件（0 选/清理中/扫描中）、
+  清理中 ProgressView 态未动。
+- 刷新（detectDevicePosters，扫描/清理中禁用）、
+  关闭（dismiss）、扫描中/空态文案、tendieItems
+  变化时 prepareDevicePosterThumbnails 的 onChange
+  均原文保留。
+
+### 未动与未验证
+
+- 轮播区（fanZone / FanCardView）、展开页、壁纸页
+  sheet、其他页面、受保护文件、CI workflow 均未
+  动；工作区其余既存脏改动未带入。壁纸页底部 sheet
+  的「不用玻璃」例外（#131）不适用于清理页，本页
+  行/顶栏/底栏全走玻璃双路。
+- 本地核查：TendiesView.swift swiftc -parse 通过
+  （本机 Swift 6.1）。
+- 未验证（归 Sage 真机）：玻璃胶囊行在氛围底上的
+  实际质感与滚动帧率；自绘页头在 sheet 内的顶部
+  间距与刘海机型观感；旧系统（iOS 17–25）材质回退
+  下的行/钮外观；行数多时 LazyVStack 滚动与玻璃
+  采样开销；清理全流程（勾选→确认→隔离夹→列表
+  刷新）回归。
