@@ -2697,3 +2697,43 @@ let 群 + 三层嵌套 ZStack + 两段 overlay 闭包 + 十余个
   （本机 Swift 6.1）；本轮验收点只有一个——推送后
   CI 真 Xcode 26 编译转绿。功能未验证项沿 #139
   条目所列，归 Sage 真机随 #139 一并复验。
+
+### 补记 · 拆链续修（run #141，2026-11-02，仍纯结构拆分）
+
+#140 推送后 CI 仍红，新日志报错点挪进 FanCardView
+的 body 修饰链本身：
+
+`Sources/App/TendiesView.swift:379:18: error: the compiler is unable to type-check this expression in reasonable time`
+
+379 行即原链的 `.overlay { sweepOverlay }`——#140
+拆出的子表达式各自过关后，body 本体仍是一条 17 个
+修饰符的长链，链本身成了新的超时源。
+
+本轮在远程 head 6b0cf6c（#140）之上，只动
+TendiesView.swift 与 SPEC.md：
+
+- body 的修饰链按原顺序切成三段带显式返回类型
+  （some View）的计算属性，每段 ≤6 个修饰符：
+  baseFace（frame / brightness / clipShape /
+  overlay(selectionRing) / overlay(sweepOverlay) /
+  shadow）、positionedFace（contentShape /
+  onTapGesture / onLongPressGesture /
+  rotationEffect / offset / scaleEffect）、
+  interactiveFace（animation / zIndex /
+  onChange(position) / onChange(sweepToken) /
+  task）；body 只返回 interactiveFace。
+- 闭包式 `.overlay { … }` 改值式
+  `.overlay(selectionRing)` / `.overlay(sweepOverlay)`。
+- 顺序等价已逐项核对：脚本提取旧链与三段拼接的
+  修饰符序列（含参数与闭包体）比对，17 项逐一
+  一致，唯一形式差异即上述 overlay 闭包改值式。
+
+未动与口径同 #140：#139 手势接线语义、#138 全部
+常数/曲线/吸附/扫光一字未改；FanCardView 对外
+接口与其余子表达式（lag* 变换量、cardContent、
+selectionBadge、cardFace、selectionRing、
+sweepOverlay 本体）未改；工作区其余既存脏改动
+未带入。本地核查：TendiesView.swift swiftc -parse
+通过（本机 Swift 6.1）；验收点仍只有一个——推送
+后 CI 真 Xcode 26 编译转绿；功能未验证项沿 #139
+条目所列，归 Sage 真机复验。

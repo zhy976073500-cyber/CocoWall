@@ -257,7 +257,7 @@ private struct FanCardView: View {
         let d = min(2, max(-2, shownD))
         return CGFloat(17 * d * d)
     }
-    /// 缩放（选中回弹 1.04 在 body 链尾另乘）。
+    /// 缩放（选中回弹 1.04 在 positionedFace 段另乘）。
     private var lagScale: Double { 1.08 - 0.07 * min(abs(shownD), 2) }
     /// 整卡压暗量。
     private var lagBrightness: Double { -0.28 * min(abs(shownD) / 1.8, 1) }
@@ -321,8 +321,8 @@ private struct FanCardView: View {
     }
 
     /// 卡面本体（run #140 自 body 拆出）：模糊组 + 选中
-    /// 徽章的组合，ZStack 本体只做组合；变换与手势仍
-    /// 在 body 链尾。
+    /// 徽章的组合，ZStack 本体只做组合；变换与手势在
+    /// 其后的三段链（run #141）里。
     private var cardFace: some View {
         ZStack(alignment: .bottomLeading) {
             cardContent
@@ -330,7 +330,7 @@ private struct FanCardView: View {
         }
     }
 
-    /// 选中描边（run #140 自 body 拆出）：body 以
+    /// 选中描边（run #140 自 body 拆出）：baseFace 以
     /// overlay 形式叠在卡面之上。
     @ViewBuilder
     private var selectionRing: some View {
@@ -341,7 +341,7 @@ private struct FanCardView: View {
     }
 
     // 扫光（run #136；run #140 自 body 拆出为独立子
-    // 表达式，body 以 overlay 形式叠加）：白色线性
+    // 表达式，baseFace 以 overlay 形式叠加）：白色线性
     // 渐变光带（宽约卡宽 45%、峰值 alpha 0.35、倾斜
     // 约 20°），在自身容器内裁到卡圆角，不影响选中
     // 描边；光带旋转后横向半幅约 76pt，故行程取
@@ -361,73 +361,94 @@ private struct FanCardView: View {
         .allowsHitTesting(false)
     }
 
-    var body: some View {
-        // run #140：本 body 的单一大表达式曾在 CI 触发
-        // 类型检查超时（原 327 行 ZStack 处报 unable to
-        // type-check）——变换量/卡层/徽章/描边/扫光已拆
-        // 为上方带显式类型的独立子表达式，此处只组合
-        // 并挂变换与手势；手势接线与全部常数同 #139
-        // 一字未变（纯结构拆分）。
+    // run #141：#140 后 CI 仍红——超时自卡面表达式挪进
+    // body 修饰链本身（379 行 .overlay { sweepOverlay }
+    // 处报错）。本轮把链按原顺序切成三段带显式返回
+    // 类型（some View）的计算属性，每段 ≤6 个修饰符，
+    // body 只返回最后一段；闭包式 overlay 改值式。
+    // 修饰符顺序与参数与 #140 逐一等价，纯结构拆分：
+    // #139 手势接线语义与 #138 全部常数/曲线/吸附/
+    // 扫光一字未改。
+
+    /// 链段一（修饰符 1–6）：卡面 + 尺寸/压暗/裁形/
+    /// 描边/扫光/阴影。
+    private var baseFace: some View {
         cardFace
-        .frame(width: 150, height: 200)
-        // 变暗作用于整卡（含卡名与勾选徽章）：#137 起
-        // 深度主要靠压暗承担，模糊只留轻微虚化、缩略图
-        // 另带一点去色（见上 lagSaturation）。
-        .brightness(lagBrightness)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay { selectionRing }
-        .overlay { sweepOverlay }
-        .shadow(color: .black.opacity(0.22), radius: lagShadowRadius, x: 0, y: lagShadowY)
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        // 点按选中 / 长按出菜单（run #130 手势口径沿用）：
-        // 只回调父视图，触觉与状态变更在父侧。容器拖动
-        // 与本手势同时识别（run #139）：真实拖动位移超过
-        // 长按失败距离（10pt）后长按自然失败、不会误出
-        // 菜单；菜单打开期间的冻结由父视图在拖动的
-        // onChanged/onEnded 开头判定 fanMenuTarget 处理。
-        .onTapGesture { onTap() }
-        .onLongPressGesture(minimumDuration: 0.45) { onLongPress() }
-        // 延迟轮盘几何（run #138）：倾斜绕底部锚点
-        // (0.5, 0.92) 向外倒；offset x = d̃×96 即卡的
-        // 布局横移本身（父以 ZStack 把卡心放在视口
-        // 中心），y 为沿弧下沉 lagDropY；选中回弹 1.04
-        // 并入缩放（弹簧 .animation(value: isSelected)
-        // 沿用 #130，只在选中态变化时触发，不干扰 p̃
-        // 弹簧的逐帧追赶）。hit 区按未倾斜卡框判定
-        // （contentShape），倾斜最大约 19.8°、错位有限，
-        // 见 SPEC #138 未验证项。
-        .rotationEffect(.degrees(lagTilt), anchor: UnitPoint(x: 0.5, y: 0.92))
-        .offset(x: CGFloat(shownD) * 96, y: lagDropY)
-        .scaleEffect(lagScale * (item.isSelected ? 1.04 : 1.0))
-        .animation(.spring(response: 0.3, dampingFraction: 0.55), value: item.isSelected)
-        .zIndex(lagZIndex)
-        // 位置弹簧追赶（run #138 级联核心）：p 每变一次
-        // 就以 response 0.55 + 0.10×min(|index − p|, 2.5)、
-        // 阻尼 0.92 的弹簧重新瞄准 p̃——离焦点越远响应
-        // 越慢，整带滑动时近卡先行、远卡拖后，间距在
-        // 运动中伸缩；阻尼近临界，落位慢软、无可见
-        // 弹跳（约 0.8s 停稳主要由父视图的松手吸附
-        // 弹簧主导，本弹簧管逐卡跟随）。
-        .onChange(of: position) { _, newP in
-            withAnimation(.spring(response: 0.55 + 0.10 * min(abs(Double(index) - newP), 2.5),
-                                  dampingFraction: 0.92)) {
-                pTilde = newP
+            .frame(width: 150, height: 200)
+            // 变暗作用于整卡（含卡名与勾选徽章）：#137 起
+            // 深度主要靠压暗承担，模糊只留轻微虚化、缩略图
+            // 另带一点去色（见上 lagSaturation）。
+            .brightness(lagBrightness)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(selectionRing)
+            .overlay(sweepOverlay)
+            .shadow(color: .black.opacity(0.22), radius: lagShadowRadius, x: 0, y: lagShadowY)
+    }
+
+    /// 链段二（修饰符 7–12）：命中形状/点按/长按 +
+    /// 倾斜/横移/缩放。
+    private var positionedFace: some View {
+        baseFace
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            // 点按选中 / 长按出菜单（run #130 手势口径沿用）：
+            // 只回调父视图，触觉与状态变更在父侧。容器拖动
+            // 与本手势同时识别（run #139）：真实拖动位移超过
+            // 长按失败距离（10pt）后长按自然失败、不会误出
+            // 菜单；菜单打开期间的冻结由父视图在拖动的
+            // onChanged/onEnded 开头判定 fanMenuTarget 处理。
+            .onTapGesture { onTap() }
+            .onLongPressGesture(minimumDuration: 0.45) { onLongPress() }
+            // 延迟轮盘几何（run #138）：倾斜绕底部锚点
+            // (0.5, 0.92) 向外倒；offset x = d̃×96 即卡的
+            // 布局横移本身（父以 ZStack 把卡心放在视口
+            // 中心），y 为沿弧下沉 lagDropY；选中回弹 1.04
+            // 并入缩放（弹簧 .animation(value: isSelected)
+            // 沿用 #130，只在选中态变化时触发，不干扰 p̃
+            // 弹簧的逐帧追赶）。hit 区按未倾斜卡框判定
+            // （contentShape），倾斜最大约 19.8°、错位有限，
+            // 见 SPEC #138 未验证项。
+            .rotationEffect(.degrees(lagTilt), anchor: UnitPoint(x: 0.5, y: 0.92))
+            .offset(x: CGFloat(shownD) * 96, y: lagDropY)
+            .scaleEffect(lagScale * (item.isSelected ? 1.04 : 1.0))
+    }
+
+    /// 链段三（修饰符 13–17）：选中动画/层级 + 位置
+    /// 弹簧追赶/扫光触发/预览再生成。
+    private var interactiveFace: some View {
+        positionedFace
+            .animation(.spring(response: 0.3, dampingFraction: 0.55), value: item.isSelected)
+            .zIndex(lagZIndex)
+            // 位置弹簧追赶（run #138 级联核心）：p 每变一次
+            // 就以 response 0.55 + 0.10×min(|index − p|, 2.5)、
+            // 阻尼 0.92 的弹簧重新瞄准 p̃——离焦点越远响应
+            // 越慢，整带滑动时近卡先行、远卡拖后，间距在
+            // 运动中伸缩；阻尼近临界，落位慢软、无可见
+            // 弹跳（约 0.8s 停稳主要由父视图的松手吸附
+            // 弹簧主导，本弹簧管逐卡跟随）。
+            .onChange(of: position) { _, newP in
+                withAnimation(.spring(response: 0.55 + 0.10 * min(abs(Double(index) - newP), 2.5),
+                                      dampingFraction: 0.92)) {
+                    pTilde = newP
+                }
             }
-        }
-        // 扫光触发：token 跳到新正值（本卡刚成为停稳
-        // 聚焦卡）时播一次——光带先瞬时归位左外，
-        // 再 0.7s easeInOut 扫到右外。
-        .onChange(of: sweepToken) { _, newToken in
-            guard newToken > 0 else { return }
-            sweepX = -155
-            withAnimation(.easeInOut(duration: 0.7)) {
-                sweepX = 155
+            // 扫光触发：token 跳到新正值（本卡刚成为停稳
+            // 聚焦卡）时播一次——光带先瞬时归位左外，
+            // 再 0.7s easeInOut 扫到右外。
+            .onChange(of: sweepToken) { _, newToken in
+                guard newToken > 0 else { return }
+                sweepX = -155
+                withAnimation(.easeInOut(duration: 0.7)) {
+                    sweepX = 155
+                }
             }
-        }
-        .task {
-            // 已存预览缺失或解码失败时，从包内重新提取（与旧列表行同口径）。
-            vm.regenerateTendiePreview(itemID: item.id)
-        }
+            .task {
+                // 已存预览缺失或解码失败时，从包内重新提取（与旧列表行同口径）。
+                vm.regenerateTendiePreview(itemID: item.id)
+            }
+    }
+
+    var body: some View {
+        interactiveFace
     }
 }
 
