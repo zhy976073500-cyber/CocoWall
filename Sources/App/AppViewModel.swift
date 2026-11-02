@@ -37,6 +37,61 @@ enum SystemSupportLevel {
     case patchedRisk
 }
 
+/// 壁纸库排序键（run #148 第五件）：文件名（自然排序，
+/// 数字按数值序）/ 导入时间（模型 dateImported，引擎在
+/// 导入当下写入）/ 文件大小（已存包实际字节数）。每键
+/// 固定默认方向：name 升序、imported 最新在前、size
+/// 从大到小；tendieSortReversed 整体反转。
+enum TendieSortOrder: String, CaseIterable {
+    case name
+    case imported
+    case size
+
+    var title: String {
+        switch self {
+        case .name: return "按文件名"
+        case .imported: return "按导入时间"
+        case .size: return "按文件大小"
+        }
+    }
+}
+
+/// 清理实时进度（run #148）：阶段 + 计数 + 确定型比例。
+/// 比例口径：检测段小权重（0.08）、删除段按已确认目标
+/// 线性占 0.1–0.8、复查 0.85、刷新 0.95（收尾段由
+/// AppViewModel 在删后重检测 + PosterBoard 刷新期间置位）。
+struct CleanupProgressState: Equatable {
+    enum Phase: Equatable {
+        case detecting, deleting, reviewing, refreshing
+    }
+    var phase: Phase
+    var completed: Int
+    var total: Int
+
+    var fraction: Double {
+        switch phase {
+        case .detecting:
+            return 0.08
+        case .deleting:
+            guard total > 0 else { return 0.1 }
+            return 0.1 + 0.7 * Double(completed) / Double(total)
+        case .reviewing:
+            return 0.85
+        case .refreshing:
+            return 0.95
+        }
+    }
+
+    var stageText: String {
+        switch phase {
+        case .detecting: return "检测中"
+        case .deleting: return "删除中"
+        case .reviewing: return "复查中"
+        case .refreshing: return "刷新中"
+        }
+    }
+}
+
 // MARK: - AppViewModel
 
 @MainActor
@@ -109,6 +164,11 @@ final class AppViewModel: ObservableObject {
     @Published var tendiesFlashLog: [String] = []
     @Published var isNeoSpringing: Bool = false
     private var previewRegenInFlight: Set<UUID> = []
+    /// 预览再生等待队列（run #148）：展开页快速滑动时
+    /// 单元格 .task 会成批请求再生，无上限并发解压会把
+    /// CPU 打满、反过来卡滚动；改为排队 + 并发上限泵送。
+    private var previewRegenQueue: [UUID] = []
+    private static let previewRegenMaxConcurrent = 3
 
     // MARK: - Device PosterBoard store (detect / cleanup)
     /// Descriptors actually present in the device's PosterBoard data store
@@ -128,6 +188,58 @@ final class AppViewModel: ObservableObject {
     /// match). Rows without an entry keep the store-reported name.
     @Published var devicePosterDisplayNames: [String: String] = [:]
     @Published var showDevicePosterSheet: Bool = false
+
+    // MARK: - 成功提示 toast（run #148）
+
+    /// 轻量浮层提示的当前文案（nil = 不显示）：刷入/导入/
+    /// 清理成功后由 showToast 写入，约 1.6 秒自动清除；
+    /// 呈现挂在 ContentView 根层（胶囊 + 对勾，不挡操作）。
+    /// 失败一律走原有 errorMessage / 状态文案通道，绝不
+    /// 经这里冒充成功。
+    @Published var toastMessage: String? = nil
+    private var toastDismissTask: Task<Void, Never>? = nil
+
+    /// 显示一条成功 toast；连发时以最后一条为准并重新计时。
+    func showToast(_ message: String) {
+        toastMessage = message
+        toastDismissTask?.cancel()
+        toastDismissTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            guard !Task.isCancelled else { return }
+            self?.toastMessage = nil
+        }
+    }
+
+    // MARK: - 清理实时进度（run #148）
+
+    /// 清理一轮的实时进度（nil = 没有清理在进行）：阶段 +
+    /// 已确认数/总数，由 PosterStoreHelper 的进度回调（rust
+    /// 阶段标记映射）与本类在删后刷新段的衔接共同驱动，
+    /// 清理页据此画确定型进度条；删除流程本身不因进度改动。
+    @Published var cleanupProgress: CleanupProgressState? = nil
+
+    // MARK: - 壁纸库排序（run #148 第五件）
+
+    /// 当前排序键（持久化于 UserDefaults，三选一）；写入即
+    /// 存盘并重排 tendieItems——展开页网格与壁纸页轮播共用
+    /// tendieItems 同一顺序，两处天然一致。
+    @Published var tendieSortOrder: TendieSortOrder = TendieSortOrder(
+        rawValue: UserDefaults.standard.string(forKey: "cocowall.tendie_sort_order") ?? ""
+    ) ?? .imported {
+        didSet {
+            UserDefaults.standard.set(tendieSortOrder.rawValue, forKey: "cocowall.tendie_sort_order")
+            applyTendieSort()
+        }
+    }
+
+    /// 排序方向反转（持久化）：false = 每键的固定默认方向
+    /// （文件名升序 / 导入时间最新在前 / 文件大小从大到小）。
+    @Published var tendieSortReversed: Bool = UserDefaults.standard.bool(forKey: "cocowall.tendie_sort_reversed") {
+        didSet {
+            UserDefaults.standard.set(tendieSortReversed, forKey: "cocowall.tendie_sort_reversed")
+            applyTendieSort()
+        }
+    }
 
     // MARK: - AirCard UI States & Properties
     static var detectedDeviceLanguage: PasscodeLanguageTarget {
@@ -772,12 +884,55 @@ final class AppViewModel: ObservableObject {
                     item.isSelected = false
                     return item
                 }
+            // 载入即按当前排序键成序（run #148 第五件）：
+            // 展开页与轮播进页第一帧就是排序后的统一顺序。
+            applyTendieSort()
         }
     }
 
     func saveTendieItems() {
         if let data = try? JSONEncoder().encode(tendieItems) {
             UserDefaults.standard.set(data, forKey: "aircard.saved_tendies")
+        }
+    }
+
+    // MARK: - 壁纸库排序（run #148 第五件）
+
+    /// 按当前排序键把 tendieItems 原地重排（展开页与轮播
+    /// 共用这同一份数组顺序）。只在数据变化（载入/导入
+    /// 完成）与排序设置变化时调用，视图 body 内不做任何
+    /// 排序计算。比较器是全序：主键 → 文件名自然序 →
+    /// id，保证结果确定、方向反转即严格逆序。
+    func applyTendieSort() {
+        guard tendieItems.count > 1 else { return }
+        // 文件大小键才需要逐个 stat 已存包（实际字节数）；
+        // 其余键不碰文件系统。
+        var sizes: [UUID: Int] = [:]
+        if tendieSortOrder == .size {
+            for item in tendieItems {
+                let attrs = try? FileManager.default.attributesOfItem(atPath: item.fileURL.path)
+                sizes[item.id] = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+            }
+        }
+        let order = tendieSortOrder
+        let reversed = tendieSortReversed
+        func baseLess(_ a: TendieItem, _ b: TendieItem) -> Bool {
+            switch order {
+            case .name:
+                let c = a.fileName.localizedStandardCompare(b.fileName)
+                if c != .orderedSame { return c == .orderedAscending }
+            case .imported:
+                if a.dateImported != b.dateImported { return a.dateImported > b.dateImported }
+            case .size:
+                let sa = sizes[a.id] ?? 0, sb = sizes[b.id] ?? 0
+                if sa != sb { return sa > sb }
+            }
+            let c = a.fileName.localizedStandardCompare(b.fileName)
+            if c != .orderedSame { return c == .orderedAscending }
+            return a.id.uuidString < b.id.uuidString
+        }
+        tendieItems.sort { a, b in
+            reversed ? baseLess(b, a) : baseLess(a, b)
         }
     }
 
@@ -791,24 +946,48 @@ final class AppViewModel: ObservableObject {
     /// 成败都置标记（UserDefaults 键 cocowall.previewV2.<条目 id>），避免
     /// 每次展示重复解压。有标记时回到原行为：仅缺失或解码失败才再生。
     func regenerateTendiePreview(itemID: UUID) {
-        guard let idx = tendieItems.firstIndex(where: { $0.id == itemID }) else { return }
-        let item = tendieItems[idx]
-        let v2Key = "cocowall.previewV2.\(itemID.uuidString)"
-        let v2Done = UserDefaults.standard.bool(forKey: v2Key)
-        if v2Done, let data = item.previewImageData, UIImage(data: data) != nil { return }
-        guard !previewRegenInFlight.contains(itemID) else { return }
-        previewRegenInFlight.insert(itemID)
-        let packageURL = item.fileURL
-        Task {
-            let data = await Task.detached(priority: .utility) {
-                AppViewModel.extractPreviewData(from: packageURL)
-            }.value
-            previewRegenInFlight.remove(itemID)
-            if !v2Done { UserDefaults.standard.set(true, forKey: v2Key) }
-            guard let data,
-                  let current = tendieItems.firstIndex(where: { $0.id == itemID }) else { return }
-            tendieItems[current].previewImageData = data
-            saveTendieItems()
+        guard tendieItems.contains(where: { $0.id == itemID }) else { return }
+        guard !previewRegenInFlight.contains(itemID),
+              !previewRegenQueue.contains(itemID) else { return }
+        // run #148：只入队，不在这里做任何解码校验（原版
+        // 在调用方线程上 UIImage(data:) 全量解码验旧预览，
+        // 展开页每格出现都付一遍）；校验与提取统一在泵出
+        // 的后台任务里、并发封顶。
+        previewRegenQueue.append(itemID)
+        pumpPreviewRegenQueue()
+    }
+
+    /// 预览再生泵（run #148）：在飞任务不超过上限时逐个
+    /// 取出队列头部执行；任务收尾回填、置 V2 标记（口径
+    /// 同原实现）后继续泵。跳过条件与原实现一致：V2 已
+    /// 升级且已存预览可解码 —— 只是改在后台线程判定。
+    private func pumpPreviewRegenQueue() {
+        while previewRegenInFlight.count < Self.previewRegenMaxConcurrent,
+              !previewRegenQueue.isEmpty {
+            let itemID = previewRegenQueue.removeFirst()
+            guard let idx = tendieItems.firstIndex(where: { $0.id == itemID }) else { continue }
+            let item = tendieItems[idx]
+            previewRegenInFlight.insert(itemID)
+            let v2Key = "cocowall.previewV2.\(itemID.uuidString)"
+            let v2Done = UserDefaults.standard.bool(forKey: v2Key)
+            let existingData = item.previewImageData
+            let packageURL = item.fileURL
+            Task {
+                let extracted = await Task.detached(priority: .utility) { () -> Data? in
+                    if v2Done, let existingData, UIImage(data: existingData) != nil {
+                        return nil
+                    }
+                    return AppViewModel.extractPreviewData(from: packageURL)
+                }.value
+                previewRegenInFlight.remove(itemID)
+                if !v2Done { UserDefaults.standard.set(true, forKey: v2Key) }
+                if let extracted,
+                   let current = tendieItems.firstIndex(where: { $0.id == itemID }) {
+                    tendieItems[current].previewImageData = extracted
+                    saveTendieItems()
+                }
+                pumpPreviewRegenQueue()
+            }
         }
     }
 
@@ -923,6 +1102,15 @@ final class AppViewModel: ObservableObject {
                 await MainActor.run {
                     self.errorMessage = "导入 \(url.lastPathComponent) 失败：\(error.localizedDescription)"
                 }
+            }
+        }
+        // 导入收尾（run #148）：新条目并入当前排序顺序；
+        // 至少一张落盘入库成功才弹「导入成功」toast——
+        // 全失败时只有上面的错误通道，不冒充成功。
+        if importedCount > 0 {
+            await MainActor.run {
+                self.applyTendieSort()
+                self.showToast("导入成功")
             }
         }
     }
@@ -1050,6 +1238,10 @@ final class AppViewModel: ObservableObject {
                 guard let self else { return }
                 if confirmed {
                     self.tendiesFlashLog.append("✅ 系统壁纸已刷新，免注销生效。")
+                    // run #148：刷入全程成功（事务成功 + 刷新
+                    // 已确认）才弹「刷入成功」toast；刷新未确认
+                    // 只留下面的如实提示，不弹成功。
+                    self.showToast("刷入成功")
                 } else {
                     self.tendiesFlashLog.append("⚠️ 壁纸已写入，自动刷新未确认（本版不自动注销；如未生效可手动点注销）。")
                 }
@@ -1401,6 +1593,10 @@ final class AppViewModel: ObservableObject {
         guard let ctx = await posterStoreContext() else { return }
 
         isCleaningDevicePosters = true
+        // run #148：进度从检测段起位；删除段的逐目标计数由
+        // PosterStoreHelper 的进度回调（rust 标记映射）推进，
+        // 删除流程本身不因进度改动。
+        cleanupProgress = CleanupProgressState(phase: .detecting, completed: 0, total: targets.count)
         let version = posterStoreStructVersion
         let result: Result<PosterStoreHelper.DeleteResponse, PosterStoreError> = await withCheckedContinuation { cont in
             PosterStoreHelper.deleteImported(
@@ -1411,6 +1607,19 @@ final class AppViewModel: ObservableObject {
                 log: { [weak self] line in
                     DispatchQueue.main.async {
                         self?.tendiesFlashLog.append(line)
+                    }
+                },
+                progress: { [weak self] p in
+                    DispatchQueue.main.async {
+                        guard let self, self.isCleaningDevicePosters else { return }
+                        switch p.phase {
+                        case .detecting:
+                            self.cleanupProgress = CleanupProgressState(phase: .detecting, completed: 0, total: p.total)
+                        case .deleting:
+                            self.cleanupProgress = CleanupProgressState(phase: .deleting, completed: p.completed, total: p.total)
+                        case .reviewing:
+                            self.cleanupProgress = CleanupProgressState(phase: .reviewing, completed: p.total, total: p.total)
+                        }
                     }
                 }
             ) { result in
@@ -1427,6 +1636,11 @@ final class AppViewModel: ObservableObject {
             var message = "清理完成：成功 \(r.deleted) 条"
             if r.failed > 0 { message += "，失败 \(r.failed) 条" }
             message += "。"
+            // run #148：删后段（重检测 + PosterBoard 刷新）
+            // 进度置「刷新中」，收尾在刷新回调里清进度并
+            // 弹「已清理 N 张」toast。
+            cleanupProgress = CleanupProgressState(phase: .refreshing, completed: targets.count, total: targets.count)
+            let deletedCount = r.deleted
             await detectDevicePosters(clearStatus: false)
             // Run #146: round total （删除 + 删后重检测）; poster_refresh
             // reports its own [计时] line when it finishes.
@@ -1445,6 +1659,12 @@ final class AppViewModel: ObservableObject {
                 }
             ) { [weak self] confirmed, _ in
                 guard let self else { return }
+                // run #148：一轮清理到此收尾——清进度，删
+                // 除本身已成功即弹「已清理 N 张」toast（刷
+                // 新是否确认只影响下面状态文案的措辞，删
+                // 除事实不变，不因此扣住成功提示）。
+                self.cleanupProgress = nil
+                self.showToast("已清理 \(deletedCount) 张")
                 if confirmed {
                     self.devicePosterStatus += "已刷新 PosterBoard，删除已生效。"
                 } else {
@@ -1454,6 +1674,7 @@ final class AppViewModel: ObservableObject {
         case .failure(let err):
             tendiesFlashLog.append("[计时] 清理·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（失败）")
             isCleaningDevicePosters = false
+            cleanupProgress = nil
             devicePosterStatus = "清理失败：\(err.localizedDescription)"
         }
     }

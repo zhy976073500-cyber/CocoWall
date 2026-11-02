@@ -3357,3 +3357,144 @@ duration_ms 标记全保留，供下轮同口径对比验收。
   备接受度；drain 缩短后 phase 2 握手（ReadyForSync /
   AssetManifest 等待）不拉长；清理整轮的逐目标计数与 phase
   C 复查结果与旧版一致。
+
+## 改动登记 · 体验优化五件套（run #148，2026-11-03，Sage 在 #147 包实测后提出；纯 Swift 侧，rust 零改动）
+
+本轮五件：①成功 toast ②清理实时进度条 ③展开页两修（底条
+锚点 + 滑动卡顿）④壁纸页进页卡顿 ⑤壁纸库排序。共同红线：
+不改刷入/清理/导入的业务判定与流程语义；#145 物理轮播、
+#147 的 rust 改动、#146 计时埋点全保留；观感常数不动（只
+动布局锚点、呈现层与性能路径）。
+
+### 一、成功提示 toast（AppViewModel + ContentView）
+
+- AppViewModel 新增 toastMessage（@Published）+ showToast：
+  写入文案、约 1.6 s 自动清除，连发以最后一条为准重新计
+  时。呈现挂 ContentView 根层 TabView 的顶部 overlay：
+  对勾 + 文案的玻璃胶囊（glassSurface 沿全 App 液态玻璃
+  口径），allowsHitTesting(false) 不挡操作，弹簧过渡。
+  与密码盘的模态 success alert 是两条独立通道，互不影响。
+- 触发点（全部以现有成功判定为准，失败永不经此通道）：
+  - 刷入成功：flashSelectedTendies 的 PosterRefreshHelper
+    完成回调 confirmed == true 时（即事务成功 + 刷新已确
+    认）弹「刷入成功」；刷新未确认仍只走原 ⚠️ 日志行。
+  - 导入成功：importTendieFiles 整批跑完且 importedCount
+    > 0（至少一张落盘入库）时弹「导入成功」；全失败只有
+    原 errorMessage 错误通道。
+  - 清理：见第二件收尾——删除成功后在刷新回调里弹
+    「已清理 N 张」（N = DeleteResponse.deleted）。
+
+### 二、清理实时进度条（PosterStoreHelper + AppViewModel + 清理页）
+
+- 数据源：不改删除流程、不新增 rust 标记——#147 批量删除
+  的现有日志标记已足够逐目标计数。PosterStoreHelper.
+  deleteImported 新增可选 progress 回调（默认 nil，原调用
+  语义不变），由 DeleteProgressTracker 与 #146 计时器共用
+  同一个日志 tap 映射：FFI 调用起 → detecting；首个
+  airlift.delete.operation.begin → deleting(0)；每条
+  airlift.delete.quarantine.confirmed（批量校验循环逐目标
+  各发一条，即「已移出隔离区并验落位」）→ deleting(k)；
+  airlift.delete.commit.connection=fresh → reviewing。
+  全部回调经主队列送出。被 manifest 拒收的目标不发
+  quarantine 标记，其 deleting 计数可停在总数以下，复查
+  段随后接管——如实呈现，不伪造。
+- AppViewModel 新增 cleanupProgress（CleanupProgressState：
+  阶段 detecting/deleting/reviewing/refreshing + 已完成/
+  总数 + 确定型 fraction）。比例口径：检测 0.08、删除
+  0.1 + 0.7×(k/N)、复查 0.85、刷新 0.95。删后段（重检
+  测 + PosterRefreshHelper）在删除成功后置 refreshing，
+  刷新回调收尾：清进度 + 弹「已清理 N 张」toast；删除
+  失败清进度、只走原失败文案。
+- UI：清理页（#142 版式）页头下方加一条玻璃进度块：阶段
+  文案（检测中/删除中/复查中/刷新中）+ ProgressView 条，
+  删除段另显 k/N 计数。清理按钮的重复触发禁用沿用原
+  isCleaningDevicePosters 口径，未动。
+
+### 三、展开页（已导入的壁纸）两修（ImportedWallpapersView、TendiesView 缩略图缓存、AppViewModel 再生限流）
+
+(a) 布局：本页是壁纸页导航栈的 push 页，原实现未隐藏
+tab 栏，系统 tab 栏占住底部、页内 safeAreaInset 底条
+（已选/删除/完成）只能叠在 tab 栏上方（Sage 截图实证）。
+改：本页加 .toolbar(.hidden, for: .tabBar)（iOS 16+ API，
+部署下限 17 兼容），push 期间 tab 栏隐藏、底条锚到真正
+的底部安全区；pop 回壁纸页自动恢复，壁纸页自身呈现不变。
+
+(b) 滑动卡顿（Sage 真机 99 张实测）——定因三条，逐条对治：
+  1. 缩略图解码缓存装不下整库：TendieThumbnailView 的
+     NSCache countLimit 48 < 99，来回滚时先解码的格子被
+     逐出、回来在 body 里再付一遍同步降采样解码。改：
+     countLimit 160、加 totalCostLimit 64MB 并按解码像素
+     计价（setObject cost），内存压力下仍自动回收。
+  2. 点选引发全网格重算：tendieItems 是整体发布的数组，
+     任一格点选都让数组重新发布，原 cell 是页面函数的一
+     段视图链、全网格每格 body 跟着重算。改：格子视觉拆
+     为独立的 Equatable 子视图 PickerCellContent（只收
+     item）并挂 .equatable()：TendieItem.== 比的恰是格子
+     的全部视觉输入（id/名称/选中态/描述符数/预览数据长
+     度），未变的格子跳过 body。定尺寸结构（#133 死结构
+     盒 + 全 overlay）逐字搬入，视觉零变；手势与 .task
+     留在外层 wrapper。
+  3. 预览再生无并发上限：快速滑动时每格 .task 各起一个
+     detached 整包解压提取，并发无封顶打满 CPU 反卡滚
+     动；且旧实现在调用方（主）线程上先 UIImage(data:)
+     全量解码验旧预览，每格出现付一遍。改：AppViewModel
+     再生改排队泵送——regenerateTendiePreview 只入队，
+     pumpPreviewRegenQueue 以并发上限 3 泵送；解码校验
+     与提取都进 detached 任务。跳过条件（V2 已升级且已
+     存预览可解码）、V2 标记与回填口径与原实现一致。
+
+### 四、壁纸页进页卡顿（TendiesView + AppViewModel 再生路径）
+
+- 原进页路径做了什么：壁纸页首帧本就由持久化数据出画
+  （App 启动 init 里的 loadSavedTendies 载入上次保存的
+  库 + 已存预览 JPEG）。压在进页路径上的额外同步工作是
+  TendiesView.onAppear 里当场执行的三件：①
+  scanDocumentsForTendies——主 actor 上同步枚举 Documents
+  与壁纸存储目录，发现新包时当场触发整批 importTendieFiles
+  （逐包解压提取预览）；②扇形卡与网格格 .task 的预览再
+  生校验在主线程全量解码（已随第三件改为后台 + 限流）；
+  ③进页 .task 的容器自动检测是异步网络往返，不阻塞首
+  帧，未动。
+- 改法：onAppear 的 Documents 增量扫描推迟约 0.6 s（进
+  页 Task 里 sleep 后执行），与首帧出画错开；扫描语义、
+  自动导入行为不变，只是时点后移。页面呈现自此两段式：
+  先持久化库立即出画，增量刷新在后台跟上。
+
+### 五、壁纸库排序（AppViewModel + 展开页菜单，Sage 追加）
+
+- 统一顺序：排序直接作用于 tendieItems 本身（原地重排），
+  展开页网格与壁纸页轮播条迭代的是同一份数组、同一顺序，
+  两处天然一致，不存在双份投影。重排只发生在数据变化
+  （loadSavedTendies 载入后、importTendieFiles 整批完成
+  后）与排序设置变化时；任何视图 body 内不做排序计算。
+- 三键（AppViewModel.TendieSortOrder，UserDefaults 键
+  cocowall.tendie_sort_order 持久化，未设过时默认
+  .imported）：
+  - 按文件名：fileName 的 localizedStandardCompare 自
+    然排序（数字按数值序，库里大量纯数字名如 88/98/31
+    按 31 < 88 < 98），升序。
+  - 按导入时间：模型现成的 dateImported（TendiesEngine
+    导入当下以 Date() 写入、随条目持久化，非文件时间
+    兜底），最新在前。
+  - 按文件大小：已存包实际字节数（重排时逐个 stat，
+    仅此键碰文件系统），从大到小。
+  比较器全序：主键 → 文件名自然序 → id，方向反转即严格
+  逆序。方向切换成本已核低：另存 tendieSortReversed
+  （UserDefaults 键 cocowall.tendie_sort_reversed）一并
+  做了，菜单内「倒序排列」开关切换即重排。
+- UI：展开页页头工具栏与「全选」并列加一个排序 Menu
+  （arrow.up.arrow.down 图标钮，不挤标题）：Picker 三
+  项（Menu 内自带当前项打勾）+ Divider + 倒序 Toggle；
+  选择经 @Published didSet 存盘并立即 applyTendieSort。
+  轮播侧不加入口（统一顺序自动跟随）。
+
+### 未验证（归 Sage 真机）
+
+- 三个 toast 的实际呈现（刷入刷新确认后才弹、导入部分
+  失败时只弹成功不遮错误、清理 toast 的 N 与实际删除数
+  一致）；清理进度条阶段推进与删除实速的贴合度（删
+  除段计数在批量校验点集中跳变是否可接受）；展开页
+  pop 后 tab 栏恢复、底条落位；99 张展开页来回滚与点
+  选的流畅度对比；进页 0.6 s 后增量扫描的实际观感；
+  三种排序与倒序的顺序正确性（尤其纯数字名与导入时
+  间），及排序后轮播聚焦/物理数组按新顺序对齐。

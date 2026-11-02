@@ -771,7 +771,17 @@ struct TendiesView: View {
                 isNeoSpringing = false
                 vm.showSuccessAlert = false
                 vm.successAlertMessage = ""
-                vm.scanDocumentsForTendies()
+                // 进页刷新延后（run #148）：页面先用启动时
+                // 已载入的持久化库（loadSavedTendies 的上次
+                // 扫描结果 + 已存预览）立即出画，Documents
+                // 增量扫描推到首帧之后再跑——原实现 onAppear
+                // 同步枚举目录、发现新包时当场触发整包导入
+                // （解压提取），全压在进页路径上（见 SPEC
+                // #148 第四件的定因）。
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    vm.scanDocumentsForTendies()
+                }
                 // 状态条（沿用 run #124/#127 触发）：进页面查一次
                 // 配对文件与回环探活状态（均为现成只读轻量检查）。
                 vm.refreshPairingFile()
@@ -1469,9 +1479,17 @@ struct TendieThumbnailView: View {
     // 样后画质与原口径一致。NSCache 线程安全、内存压
     // 力时自动回收；countLimit 48 覆盖轮播与展开页同
     // 屏所需。
+    //
+    // run #148 提额：48 的上限小于真实库规模（Sage 真
+    // 机 99 张）——展开页来回滚时先解码的格子必然被逐
+    // 出、回来再付一遍同步解码，正是滚动卡顿的一环。
+    // 改为 countLimit 160（覆盖整库 + 轮播同屏）并加
+    // totalCostLimit 64MB 按解码像素计价封顶，内存压
+    // 力下仍由 NSCache 自动回收。
     private static let decodeCache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
-        cache.countLimit = 48
+        cache.countLimit = 160
+        cache.totalCostLimit = 64 * 1024 * 1024
         return cache
     }()
 
@@ -1480,7 +1498,10 @@ struct TendieThumbnailView: View {
         let key = "\(item.id.uuidString)|\(data.count)|\(data.hashValue)" as NSString
         if let hit = decodeCache.object(forKey: key) { return hit }
         let image = downsampledImage(from: data, maxPixel: 600)
-        if let image { decodeCache.setObject(image, forKey: key) }
+        if let image {
+            let cost = Int(image.size.width * image.scale) * Int(image.size.height * image.scale) * 4
+            decodeCache.setObject(image, forKey: key, cost: cost)
+        }
         return image
     }
 
@@ -1727,6 +1748,33 @@ struct DevicePosterCleanupView: View {
                 cleanupAmbientBackground
                 VStack(spacing: 0) {
                     cleanupHeader
+                    // 清理实时进度（run #148）：阶段文案 +
+                    // 计数 + 确定型进度条，数据来自
+                    // vm.cleanupProgress（PosterStoreHelper
+                    // 标记映射 + 删后刷新段衔接）；只呈现，
+                    // 不参与删除流程。
+                    if let progress = vm.cleanupProgress {
+                        VStack(spacing: 6) {
+                            HStack {
+                                Text(progress.stageText)
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer()
+                                if progress.phase == .deleting {
+                                    Text("\(progress.completed)/\(progress.total)")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            ProgressView(value: progress.fraction)
+                                .tint(Color.accentColor)
+                                .animation(.easeOut(duration: 0.25), value: progress.fraction)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .glassSurface(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                    }
                     if vm.isScanningDevicePosters {
                         VStack(spacing: 12) {
                             ProgressView()

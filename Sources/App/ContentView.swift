@@ -862,6 +862,28 @@ struct ContentView: View {
         } message: {
             Text(vm.successAlertMessage)
         }
+        // 成功 toast（run #148）：顶部轻量浮层胶囊（对勾 +
+        // 文案、液态玻璃面），约 1.6 秒由 AppViewModel 自动
+        // 清除；不拦截触摸、不打断当前操作，与上面两个
+        // 模态 alert 是两条通道（密码盘成功仍走 alert）。
+        .overlay(alignment: .top) {
+            if let toast = vm.toastMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text(toast)
+                        .font(.subheadline.weight(.semibold))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .glassSurface(Capsule())
+                .padding(.top, 8)
+                .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .allowsHitTesting(false)
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: vm.toastMessage)
         .sheet(isPresented: $vm.showShareSheet) {
             if let url = vm.exportedThemeURL {
                 ShareSheet(items: [url])

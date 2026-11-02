@@ -142,15 +142,37 @@ public enum PosterStoreHelper {
         }
     }
 
+    /// Run #148: delete progress snapshots, mapped purely from
+    /// the Rust core's stage-marker log lines (same observation
+    /// channel as the run #146 stage timer). `detecting` covers
+    /// the in-call pre-audit up to the first staged target;
+    /// `deleting` counts targets whose quarantine landing has
+    /// been confirmed (`airlift.delete.quarantine.confirmed`,
+    /// emitted once per prepared target in the batch verify
+    /// loop); `reviewing` starts at the fresh-connection commit
+    /// audit marker. The delete flow itself is untouched.
+    public struct DeleteProgress: Equatable {
+        public enum Phase: Equatable {
+            case detecting, deleting, reviewing
+        }
+        public let phase: Phase
+        public let completed: Int
+        public let total: Int
+    }
+
     /// Deletes the given descriptors from the device data store.
     /// Completion is called on the main queue with the full response
     /// (counts + per-item results incl. quarantine folders).
+    /// The optional progress callback (run #148) is called on the
+    /// main queue with marker-mapped snapshots; it never feeds
+    /// back into the delete flow.
     public static func deleteImported(
         pairingPath: String,
         containerPath: String,
         structVersion: Int,
         targets: [DevicePosterItem],
         log: @escaping (String) -> Void,
+        progress: ((DeleteProgress) -> Void)? = nil,
         completion: @escaping (Result<DeleteResponse, PosterStoreError>) -> Void
     ) {
         let targetsCSV = targets.map { $0.target }.joined(separator: ",")
@@ -158,8 +180,12 @@ public enum PosterStoreHelper {
             // Run #146: stage timing, same observation pattern as
             // listImported above (see SPEC #146).
             let timer = PosterStoreStageTimer()
+            // Run #148: progress mapping shares the same log tap.
+            let progressTracker = DeleteProgressTracker(total: targets.count, handler: progress)
+            progressTracker.emitDetecting()
             let box = LogBox({ line in
                 timer.observe(line)
+                progressTracker.observe(line)
                 log(line)
             })
             let ctx = Unmanaged.passRetained(box).toOpaque()
@@ -240,6 +266,54 @@ func cwStageText(_ value: Int) -> String {
         digits = String(digits.dropLast(3))
     }
     return digits + grouped
+}
+
+/// Run #148: maps the Rust delete core's stage-marker lines to
+/// progress snapshots for the cleanup UI. Written only from the
+/// FFI-calling thread while the call is in flight; every emission
+/// hops to the main queue. Markers that never arrive simply never
+/// advance the phase — progress is never fabricated. Refused
+/// targets (manifest download=false) emit no quarantine marker,
+/// so the deleting count can end below total; the reviewing
+/// phase then takes over regardless.
+final class DeleteProgressTracker {
+    private let total: Int
+    private let handler: ((PosterStoreHelper.DeleteProgress) -> Void)?
+    private var sawOperationBegin = false
+    private var confirmedCount = 0
+    private var sawCommitFresh = false
+
+    init(total: Int, handler: ((PosterStoreHelper.DeleteProgress) -> Void)?) {
+        self.total = total
+        self.handler = handler
+    }
+
+    private func emit(_ phase: PosterStoreHelper.DeleteProgress.Phase, completed: Int) {
+        guard let handler else { return }
+        let snapshot = PosterStoreHelper.DeleteProgress(phase: phase, completed: completed, total: total)
+        DispatchQueue.main.async { handler(snapshot) }
+    }
+
+    func emitDetecting() {
+        emit(.detecting, completed: 0)
+    }
+
+    func observe(_ line: String) {
+        if !sawOperationBegin, line.contains("airlift.delete.operation.begin") {
+            sawOperationBegin = true
+            emit(.deleting, completed: 0)
+            return
+        }
+        if sawOperationBegin, !sawCommitFresh, line.contains("airlift.delete.quarantine.confirmed") {
+            confirmedCount += 1
+            emit(.deleting, completed: confirmedCount)
+            return
+        }
+        if !sawCommitFresh, line.contains("airlift.delete.commit.connection=fresh") {
+            sawCommitFresh = true
+            emit(.reviewing, completed: total)
+        }
+    }
 }
 
 /// Records when the Rust poster-store core's stage-marker log lines
