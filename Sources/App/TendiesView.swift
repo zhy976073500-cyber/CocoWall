@@ -9,6 +9,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import NetworkExtension
+import ImageIO
 
 // MARK: - 液态玻璃（run #128 起全 App standing 要求）
 //
@@ -189,6 +190,59 @@ func loopbackPresentation(phase: LoopbackPhase,
     }
 }
 
+/// 轮播外圈静态简版卡（run #144）：安装窗口外圈
+/// （3.4 < |d| ≤ 4.5）专用——只有缩略图 + 渐变 +
+/// 卡名，变换公式与 FanCardView 在该距离段的取值逐
+/// 项同口径（倾斜 9°×clamp(d, ±2.2)、下沉 17×
+/// clamp(d, ±2)²、scale 1.08 − 0.07×min(|d|, 2)、
+/// brightness −0.28、缩略图去色 0.30、zIndex 同公
+/// 式），但无 blur、无阴影、无弹簧、无手势、无
+/// .task：先以近乎零成本在树里占位，卡滑进 3.4 升
+/// 为全卡时视图构建与解码不再卡在高速滑动路径上。
+/// 本段 |d| 下变换已全在钳制平台段，与全卡在边界
+/// 两侧的静止画面一致，升/降级无可见跳变（运动中
+/// 判定归真机，见 SPEC #144 未验证项）。位置直用目
+/// 标距离 d（父以 index − fanPosition 传入）——外
+/// 圈无 p̃，d 即布局横移。
+private struct FanCardGhostView: View {
+    let item: TendieItem
+    /// 目标距离 d（带符号：正值在本卡位于视口中心右侧）。
+    let distance: Double
+
+    var body: some View {
+        let d = distance
+        let a = abs(d)
+        let dc = min(2, max(-2, d))
+        ZStack(alignment: .bottomLeading) {
+            TendieThumbnailView(item: item)
+                .frame(width: 150, height: 200)
+                .clipped()
+                // 轻去色只挂缩略图本体（与全卡 #137 口径一致）。
+                .saturation(1 - 0.30 * min(a / 1.8, 1))
+            LinearGradient(colors: [.clear, .black.opacity(0.38)],
+                           startPoint: .center, endPoint: .bottom)
+            Text(item.name)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 110, alignment: .leading)
+                .padding(.leading, 10)
+                .padding(.bottom, 9)
+                .padding(.trailing, item.isSelected ? 34 : 10)
+        }
+        .frame(width: 150, height: 200)
+        .brightness(-0.28 * min(a / 1.8, 1))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .rotationEffect(.degrees(9 * min(2.2, max(-2.2, d))), anchor: UnitPoint(x: 0.5, y: 0.92))
+        .offset(x: CGFloat(d) * 96, y: CGFloat(17 * dc * dc))
+        .scaleEffect(1.08 - 0.07 * min(a, 2))
+        .zIndex(100 - (a * 10).rounded())
+        // 纯占位：不接任何手势，触摸穿透到带容器。
+        .allowsHitTesting(false)
+    }
+}
+
 /// 轮播单卡（run #136 独立子视图、#138 换底盘沿用）：
 /// 延迟轮盘式轮播的卡片子视图。#138 起父视图持连续
 /// 主位置 p（手势直驱），本视图自持弹簧化位置 p̃、以
@@ -213,9 +267,25 @@ private struct FanCardView: View {
     let sweepToken: Int
     /// 拖动进行中标记（run #143 渲染减负）：父视图以
     /// fanDragStart != nil 传入；为真期间近中心卡直跟
-    /// p、全卡阴影切静态值（见 interactiveFace 与
-    /// activeShadow* 口径）。
+    /// p（阴影静态口径 run #144 起改由 shadowStatic 承
+    /// 担，见下）。
     let isDragging: Bool
+    /// 高速态标记（run #144）：父视图速度估计 |v| >
+    /// 2.5 格/秒（拖动实测或吸附初速估计窗口）时为真；
+    /// 为真期间全卡 p̃ 直跟（弹簧旁路）、blur 半径冻
+    /// 结。速度回落后转假，弹簧恢复并完成到达级联。
+    let isHighSpeed: Bool
+    /// 阴影静态标记（run #144）：整个运动期（拖动 +
+    /// 吸附动画停稳前）为真——#143 的「拖动中静态阴
+    /// 影」由此扩展到吸附全程，activeShadow* 据此二
+    /// 选一；父以 fanDragStart != nil || fanSnapInFlight
+    /// 传入。
+    let shadowStatic: Bool
+    /// 预览补全推迟标记（run #144）：运动未停稳时为
+    /// 真，本卡 .task 不跑 regenerateTendiePreview；
+    /// 停稳（父 300ms 静默信号）后转假、.task 补跑，
+    /// 解压提取不落在滑动路径上。
+    let previewsDeferred: Bool
     let onTap: () -> Void
     let onLongPress: () -> Void
 
@@ -225,9 +295,16 @@ private struct FanCardView: View {
     /// 完全出卡左界、被卡面裁掉不可见），触发时先瞬时
     /// 归位 −155、再动画扫到 +155。
     @State private var sweepX: CGFloat = -155
+    /// 高速态冻结的 blur 半径（run #144）：进入高速态
+    /// 那一刻把当时的 lagBlur 存下，高速期间 cardContent
+    /// 用它代替逐帧曲线值；退出高速态清空、恢复 #137
+    /// 曲线逐帧取值（与 #143 的 0.5 台阶量化叠加——冻
+    /// 结值本身即已量化）。
+    @State private var frozenBlur: CGFloat? = nil
 
     init(item: TendieItem, index: Int, position: Double, sweepToken: Int,
-         isDragging: Bool,
+         isDragging: Bool, isHighSpeed: Bool, shadowStatic: Bool,
+         previewsDeferred: Bool,
          onTap: @escaping () -> Void,
          onLongPress: @escaping () -> Void) {
         self.item = item
@@ -235,6 +312,9 @@ private struct FanCardView: View {
         self.position = position
         self.sweepToken = sweepToken
         self.isDragging = isDragging
+        self.isHighSpeed = isHighSpeed
+        self.shadowStatic = shadowStatic
+        self.previewsDeferred = previewsDeferred
         self.onTap = onTap
         self.onLongPress = onLongPress
         // 首帧即以真实 p 呈现，不从别处弹入。
@@ -276,6 +356,16 @@ private struct FanCardView: View {
         let raw = 1.6 * min(max(abs(shownD) - 0.55, 0) / 1.45, 1)
         return CGFloat((raw * 2).rounded() / 2)
     }
+    /// 当前生效的模糊半径（run #144）：高速态期间用
+    /// frozenBlur（进入高速态那刻的取值，本卡各自冻
+    /// 结），速度回落后回 lagBlur 逐帧曲线——高速段
+    /// blur 逐帧变只换来重光栅、观感本就看不清。冻
+    /// 结值的捕获/清空在 interactiveFace 的
+    /// onChange(of: isHighSpeed) 与 .task 入场处。
+    private var effectiveBlur: CGFloat {
+        if isHighSpeed, let frozen = frozenBlur { return frozen }
+        return lagBlur
+    }
     /// 缩略图去色后的饱和度。
     private var lagSaturation: Double { 1 - 0.30 * min(abs(shownD) / 1.8, 1) }
     /// 层级（近中心压远端）。
@@ -286,16 +376,19 @@ private struct FanCardView: View {
     private var lagShadowRadius: CGFloat { CGFloat(6 + 14 * (1 - min(abs(shownD), 1))) }
     /// 阴影纵向偏移（pt）。
     private var lagShadowY: CGFloat { CGFloat(4 + 6 * (1 - min(abs(shownD), 1))) }
-    // 拖动中的阴影（run #143）：拖动期间全卡改用一组
-    // 静态值（radius 10 / y 6 / opacity 0.18），免去阴影
-    // 随 d̃ 逐帧重算；停稳（松手）后恢复上面随 |d̃|
-    // 衰减的动态口径，数值与切换时机都不改观感常数。
+    // 运动期静态阴影（run #143 立、#144 扩展）：#143
+    // 时只覆盖拖动期，松手吸附的约 0.8s 里阴影又随
+    // d̃ 逐帧重绘（离屏 alpha 轮廓重绘是逐帧大头之
+    // 一）；#144 起判定改用 shadowStatic——拖动 + 吸
+    // 附动画停稳前的整个运动期都用一组静态值（radius
+    // 10 / y 6 / opacity 0.18），停稳后才恢复上面随
+    // |d̃| 衰减的动态口径。静态三值与动态公式均未动。
     /// 当前生效的阴影半径（pt）。
-    private var activeShadowRadius: CGFloat { isDragging ? 10 : lagShadowRadius }
+    private var activeShadowRadius: CGFloat { shadowStatic ? 10 : lagShadowRadius }
     /// 当前生效的阴影纵向偏移（pt）。
-    private var activeShadowY: CGFloat { isDragging ? 6 : lagShadowY }
+    private var activeShadowY: CGFloat { shadowStatic ? 6 : lagShadowY }
     /// 当前生效的阴影不透明度。
-    private var activeShadowOpacity: Double { isDragging ? 0.18 : 0.22 }
+    private var activeShadowOpacity: Double { shadowStatic ? 0.18 : 0.22 }
 
     /// 模糊组（run #140 自 body 拆出）：缩略图 + 底部
     /// 渐变 + 卡名——模糊只作用于此组，勾选徽章在其
@@ -324,8 +417,10 @@ private struct FanCardView: View {
         }
         // run #143：先 compositingGroup 把卡面拍平，
         // 模糊只对拍平结果算一次，不再逐子层重复采样。
+        // run #144：半径取 effectiveBlur（高速态冻结，
+        // 见其注释）。
         .compositingGroup()
-        .blur(radius: lagBlur)
+        .blur(radius: effectiveBlur)
     }
 
     /// 选中徽章（run #140 自 body 拆出）：卡面右下角，
@@ -438,8 +533,10 @@ private struct FanCardView: View {
             .scaleEffect(lagScale * (item.isSelected ? 1.04 : 1.0))
     }
 
-    /// 链段三（修饰符 13–17）：选中动画/层级 + 位置
-    /// 弹簧追赶/扫光触发/预览再生成。
+    /// 链段三（修饰符 13–18）：选中动画/层级 + 位置
+    /// 弹簧追赶/扫光触发/高速态冻结捕获/预览补全推迟。
+    /// （run #144 在本段尾部加 onChange(of: isHighSpeed)
+    /// 一项——本段 6 个修饰符仍在 #141 的 ≤6 纪律内。）
     private var interactiveFace: some View {
         positionedFace
             .animation(.spring(response: 0.3, dampingFraction: 0.55), value: item.isSelected)
@@ -458,7 +555,13 @@ private struct FanCardView: View {
                 // 「不丝滑」的主因；远卡弹簧照常保留拖尾
                 // 级联。松手后 isDragging 转假，全体恢复本
                 // 弹簧口径走吸附级联（弹簧常数 #138 原样）。
-                if isDragging, abs(Double(index) - newP) < 1.5 {
+                // run #144：高速态（父速度估计 |v| > 2.5 格/
+                // 秒）下全卡直跟——逐事件重瞄准的弹簧在高
+                // 速段是纯开销（相位全乱、级联本就看不清），
+                // 旁路后位置只剩合成层 offset；速度回落后
+                // isHighSpeed 转假，弹簧恢复、由它完成到达
+                // 级联（级联在落位阶段可见，正是设计意图）。
+                if isHighSpeed || (isDragging && abs(Double(index) - newP) < 1.5) {
                     pTilde = newP
                 } else {
                     withAnimation(.spring(response: 0.55 + 0.10 * min(abs(Double(index) - newP), 2.5),
@@ -477,8 +580,27 @@ private struct FanCardView: View {
                     sweepX = 155
                 }
             }
-            .task {
-                // 已存预览缺失或解码失败时，从包内重新提取（与旧列表行同口径）。
+            // blur 冻结捕获/释放（run #144）：进入高速态
+            // 这一跳把当时的半径存进 frozenBlur（本卡各
+            // 自冻结），退出时清空恢复曲线；入场时已是高
+            // 速态的卡由 .task 入场处补捕（见下）。
+            .onChange(of: isHighSpeed) { _, newHigh in
+                if newHigh {
+                    frozenBlur = lagBlur
+                } else {
+                    frozenBlur = nil
+                }
+            }
+            // 预览补全（run #144 改推迟口径）：.task(id:)
+            // 以 previewsDeferred 为标识——运动期（deferred
+            // = true）任务起来即返回、不解压不提取；停稳
+            // 后父置 fanIsSettled、deferred 转假，任务标识
+            // 变化自动重跑、此时才补全（已存预览缺失或解
+            // 码失败时从包内重新提取，与旧列表行同口径）。
+            // 入场时若已是高速态，顺手补捕冻结半径。
+            .task(id: previewsDeferred) {
+                if isHighSpeed, frozenBlur == nil { frozenBlur = lagBlur }
+                guard !previewsDeferred else { return }
                 vm.regenerateTendiePreview(itemID: item.id)
             }
     }
@@ -517,6 +639,35 @@ struct TendiesView: View {
     @State private var fanFocusedIndex: Int? = nil
     @State private var fanSweepToken: Int = 0
     @State private var fanSettleTask: Task<Void, Never>? = nil
+    /// 速度估计（run #144）：拖动 onChanged 以手势事件
+    /// 时间戳对原始（未橡皮筋）位置差分、EMA（0.65/
+    /// 0.35）平滑，单位格/秒。只由手势事件写入——拖动
+    /// 本就以同一速率写 fanPosition，不额外增加 body
+    /// 重算次数。
+    @State private var fanVelocity: Double = 0
+    /// 上一拖动样本（原始位置与其事件时刻）：算差分用，
+    /// 新拖动起手时清零。
+    @State private var fanLastDragP: Double? = nil
+    @State private var fanLastDragTime: Date? = nil
+    /// 高速态（run #144）：|v| > 2.5 格/秒为真——拖动
+    /// 中逐事件按 EMA 判定；松手时按释放速度与吸附弹
+    /// 簧初速估计（距离×2.9）判定并由 fanMotionTask 按
+    /// 初速衰减窗口（≤0.65s）自动解除。为真期间全卡
+    /// 弹簧旁路直跟、blur 冻结（见 FanCardView）。
+    @State private var fanHighSpeed: Bool = false
+    /// 吸附在飞（run #144）：松手吸附动画启动置真，
+    /// fanMotionTask 在约 0.9s（response 0.8 弹簧基本
+    /// 停稳）后置假；与拖动态一起构成「运动期」，驱
+    /// 动全卡阴影静态（shadowStatic）。
+    @State private var fanSnapInFlight: Bool = false
+    /// 运动尾计时（run #144）：管 fanHighSpeed 解除窗
+    /// 口与 fanSnapInFlight 收尾；新拖动起手即取消。
+    @State private var fanMotionTask: Task<Void, Never>? = nil
+    /// 停稳标志（run #144）：scheduleFanFocusSettle 开
+    /// 始置假、300ms 静默判定完成置真；卡的预览补全
+    /// .task 以其取反（previewsDeferred）为开关，运
+    /// 动期不跑、停稳后补跑。
+    @State private var fanIsSettled: Bool = true
 
     private var selectedCount: Int {
         vm.tendieItems.filter { $0.isSelected }.count
@@ -765,18 +916,29 @@ struct TendiesView: View {
                 // #136 的 96、卡 150×200。
                 ZStack {
                     ForEach(Array(vm.tendieItems.enumerated()), id: \.element.id) { idx, item in
-                        // 渲染剔除：目标 |d| > 3.4 的卡必然在
-                        // 屏外（视口半宽约 215pt + 半卡宽 75
-                        // = 290 < 3.4×96 = 326），不进视图树，
-                        // 省 blur/阴影的逐帧开销；再入场时
-                        // p̃ 以当前 p 初始化（见 FanCardView），
-                        // 以正确变换直接出现在边缘、无弹入。
-                        if abs(Double(idx) - fanPosition) <= 3.4 {
+                        // 安装窗口（run #144 放宽）：目标 |d|
+                        // ≤ 3.4 装全卡 FanCardView（同旧剔除
+                        // 阈值——3.4×96 = 326 > 视口半宽约
+                        // 215 + 半卡宽 75 = 290，全卡区外必然
+                        // 屏外）；3.4 < |d| ≤ 4.5 装静态简版
+                        // FanCardGhostView 先行占位（无 blur/
+                        // 阴影/弹簧/手势/task），卡高速滑入
+                        // 时视图构建与图片解码已提前完成、不
+                        // 卡在滑动路径上；|d| > 4.5 不进视图
+                        // 树。再入场时 p̃ 以当前 p 初始化（见
+                        // FanCardView），以正确变换直接出现
+                        // 在边缘、无弹入。
+                        let dTarget = Double(idx) - fanPosition
+                        let adTarget = abs(dTarget)
+                        if adTarget <= 3.4 {
                             FanCardView(item: item,
                                         index: idx,
                                         position: fanPosition,
                                         sweepToken: idx == fanFocusedIndex ? fanSweepToken : 0,
                                         isDragging: fanDragStart != nil,
+                                        isHighSpeed: fanHighSpeed,
+                                        shadowStatic: fanDragStart != nil || fanSnapInFlight,
+                                        previewsDeferred: !fanIsSettled,
                                         onTap: {
                                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                             toggleSelection(itemID: item.id)
@@ -785,6 +947,8 @@ struct TendiesView: View {
                                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                             fanMenuTarget = item
                                         })
+                        } else if adTarget <= 4.5 {
+                            FanCardGhostView(item: item, distance: dTarget)
                         }
                     }
                 }
@@ -848,9 +1012,34 @@ struct TendiesView: View {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
                 guard fanMenuTarget == nil else { return }
-                if fanDragStart == nil { fanDragStart = fanPosition }
+                if fanDragStart == nil {
+                    fanDragStart = fanPosition
+                    // 新拖动起手（run #144）：上一轮的运动尾
+                    // 计时作废、吸附在飞清除（本拖动接管运
+                    // 动期）；速度样本清零，避免旧 EMA 把新
+                    // 拖动一开头误判成高速。
+                    fanMotionTask?.cancel()
+                    fanSnapInFlight = false
+                    fanVelocity = 0
+                    fanLastDragP = nil
+                    fanLastDragTime = nil
+                }
                 let start = fanDragStart ?? fanPosition
                 let raw = start - Double(value.translation.width) / 96
+                // 速度估计（run #144）：以手势事件时间戳对
+                // 原始位置差分、EMA 平滑——橡皮筋会压缩边
+                // 界外的位移，故用未橡皮筋的 raw；dt 过小
+                // （同帧多事件）跳过本样本防除零放大。
+                let now = value.time
+                if let lastP = fanLastDragP, let lastT = fanLastDragTime {
+                    let dt = now.timeIntervalSince(lastT)
+                    if dt > 0.001 {
+                        fanVelocity = 0.65 * fanVelocity + 0.35 * (raw - lastP) / dt
+                    }
+                }
+                fanLastDragP = raw
+                fanLastDragTime = now
+                fanHighSpeed = abs(fanVelocity) > 2.5
                 fanPosition = fanRubberBanded(raw)
             }
             .onEnded { value in
@@ -867,8 +1056,61 @@ struct TendiesView: View {
                 withAnimation(.spring(response: 0.8, dampingFraction: 0.95)) {
                     fanPosition = target
                 }
+                // 运动尾判定（run #144）：吸附距离 ×2.9 ≈
+                // response 0.8 / 阻尼 0.95 弹簧的初速量级
+                // （格/秒）；释放 EMA 或初速估计任一超 2.5
+                // 判高速——高速保持窗口按初速对数衰减估算
+                // （0.14×ln(初速/2.5) + 0.1，钳 0.15–0.65s），
+                // 窗口过后弹簧恢复完成到达级联。吸附距离
+                // 非零时 fanSnapInFlight 置真（阴影静态覆盖
+                // 整个吸附期），由运动尾计时收尾。
+                let snapDistance = abs(target - fanPosition)
+                let peakV = snapDistance * 2.9
+                let releaseV = abs(fanVelocity)
+                let releaseHigh = releaseV > 2.5 || peakV > 2.5
+                fanSnapInFlight = snapDistance > 0.001
+                fanHighSpeed = releaseHigh
+                fanVelocity = 0
+                fanLastDragP = nil
+                fanLastDragTime = nil
+                if releaseHigh {
+                    // 保持窗口按主导初速（弹簧初速与释放速度取大者）衰减估算。
+                    let governing = max(peakV, releaseV, 2.6)
+                    let hold = min(max(0.14 * log(governing / 2.5) + 0.1, 0.15), 0.65)
+                    scheduleFanMotionTail(highSpeedHold: hold)
+                } else if fanSnapInFlight {
+                    scheduleFanMotionTail(highSpeedHold: 0)
+                }
                 scheduleFanFocusSettle()
             }
+    }
+
+    /// 运动尾计时（run #144）：松手时排期——先等
+    /// highSpeedHold（高速保持窗口）解除 fanHighSpeed，
+    /// 再等到松手后约 0.9s 解除 fanSnapInFlight（吸附
+    /// 弹簧 response 0.8、约 0.9s 基本停稳，与既有
+    /// 300ms 停稳判定并行、互不替代：停稳判定管聚焦/
+    /// 扫光与预览补全，本计时管弹簧旁路与阴影静态的
+    /// 收尾）。highSpeedHold = 0 表示松手未判高速、只
+    /// 收尾吸附在飞。新拖动起手时取消（见 onChanged）。
+    private func scheduleFanMotionTail(highSpeedHold: Double) {
+        fanMotionTask?.cancel()
+        fanMotionTask = Task { @MainActor in
+            if highSpeedHold > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(highSpeedHold * 1_000_000_000))
+                if Task.isCancelled { return }
+                fanHighSpeed = false
+                let rest = 0.9 - highSpeedHold
+                if rest > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(rest * 1_000_000_000))
+                    if Task.isCancelled { return }
+                }
+            } else {
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                if Task.isCancelled { return }
+            }
+            fanSnapInFlight = false
+        }
     }
 
     /// 橡皮筋（run #138）：[0, n−1] 内 1:1 跟手，超出
@@ -888,10 +1130,17 @@ struct TendiesView: View {
     /// 只传给聚焦卡，触发其扫光；首次定聚焦不递增、
     /// 不扫光。
     private func scheduleFanFocusSettle() {
+        // run #144：判定排期即视为未停稳——卡的预览补全
+        // 据此推迟（见 fanIsSettled 与 FanCardView 的
+        // .task(id:) 口径）；判定完成置真、补全放行。
+        // 卡数归零的早退路径不置真：无卡可补，下次有卡
+        // 进场时 onChange(of: count)/onAppear 会重新排期。
+        fanIsSettled = false
         fanSettleTask?.cancel()
         fanSettleTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 300_000_000)
             if Task.isCancelled { return }
+            fanIsSettled = true
             let count = vm.tendieItems.count
             guard count > 0 else { return }
             let best = min(max(Int(fanPosition.rounded()), 0), count - 1)
@@ -1229,7 +1478,7 @@ struct TendieThumbnailView: View {
     let item: TendieItem
 
     var body: some View {
-        if let imgData = item.previewImageData, let uiImg = UIImage(data: imgData) {
+        if let uiImg = Self.decodedImage(for: item) {
             Image(uiImage: uiImg)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
@@ -1240,6 +1489,54 @@ struct TendieThumbnailView: View {
                     .foregroundColor(.secondary)
             }
         }
+    }
+
+    // 解码缓存（run #144）：原实现每次 body 求值都
+    // UIImage(data:) 全量解码一遍预览 JPEG——轮播运动
+    // 时每卡每帧 body 重跑，等于主线程逐帧重复解码。
+    // 改为：ImageIO 降采样解码（缩略图直出、跳过全尺
+    // 寸中间图）+ NSCache 按「条目 id + 数据长度 +
+    // 数据哈希」缓存；预览被再生替换时键随数据变、自
+    // 动失效。显示上限 600px：卡面显示 150×200pt
+    // @3x = 450×600px，且已存预览的规格本就是最长边
+    // 600（见 AppViewModel.extractPreviewData），降采
+    // 样后画质与原口径一致。NSCache 线程安全、内存压
+    // 力时自动回收；countLimit 48 覆盖轮播与展开页同
+    // 屏所需。
+    private static let decodeCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 48
+        return cache
+    }()
+
+    private static func decodedImage(for item: TendieItem) -> UIImage? {
+        guard let data = item.previewImageData else { return nil }
+        let key = "\(item.id.uuidString)|\(data.count)|\(data.hashValue)" as NSString
+        if let hit = decodeCache.object(forKey: key) { return hit }
+        let image = downsampledImage(from: data, maxPixel: 600)
+        if let image { decodeCache.setObject(image, forKey: key) }
+        return image
+    }
+
+    /// ImageIO 降采样解码：建源时不缓存、缩略图立即
+    /// 解码（ShouldCacheImmediately），避免首次上屏再
+    /// 付一遍解码；任一步失败回退 UIImage(data:) 原
+    /// 口径，显示语义与旧实现一致。
+    private static func downsampledImage(from data: Data, maxPixel: Int) -> UIImage? {
+        let sourceOptions: [CFString: Any] = [kCGImageSourceShouldCache: false]
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions as CFDictionary) else {
+            return UIImage(data: data)
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel
+        ]
+        if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+            return UIImage(cgImage: cgImage)
+        }
+        return UIImage(data: data)
     }
 }
 
