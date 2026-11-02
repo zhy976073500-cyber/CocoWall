@@ -3,15 +3,19 @@ import UIKit
 
 // MARK: - 时间轴（Blurrr 式：播放头固定正中，拖轨道 scrub）
 //
-// 结构自上而下：刻度尺（秒）/ 背景缩略图条 / 每浮动图层一行 clip /
-// 前景行 / 「+ 添加图层」灰行。内容按当前帧横向偏移，循环拷贝
-// ×3（前/当/后）保证拖过回环点不露白。clip 恒跨整个循环
+// 结构自上而下：刻度尺（秒）/ 背景轨 / 每浮动图层一行 clip /
+// 前景行 / 「+ 添加图层」灰行。浮动 clip 按当前帧横向偏移，循环
+// 拷贝 ×3（前/当/后）保证拖过回环点不露白。clip 恒跨整个循环
 // （图层一直在），两头手柄拖动 = 淡入/淡出帧数。
+// 背景轨 v2 改三段横排（不随 scrub 滚动，是状态示意）：
+// [开屏背景 clip][过渡段][主屏背景 clip]，过渡段宽度按过渡帧数
+// 占循环的比例示意，点它打开「解锁过渡」编辑。
 // 刻度与时间码按 60fps 口径：mm:ss:ff。
 struct ClipTimelineView: View {
     @ObservedObject var vm: EditorViewModel
     var onAddLayer: () -> Void
     var onOpenLayers: () -> Void
+    var onOpenTransition: () -> Void
 
     private let labelWidth: CGFloat = 38
     private let rowHeight: CGFloat = 26
@@ -23,7 +27,8 @@ struct ClipTimelineView: View {
     @State private var fadeDragLayerID: UUID?
     @State private var fadeDragIsIn = true
     @State private var fadeDragStart = 0
-    @State private var backgroundThumb: UIImage?
+    @State private var lockedThumb: UIImage?
+    @State private var unlockThumb: UIImage?
 
     static func height(floatingCount: Int) -> CGFloat {
         let rows = 1 + min(floatingCount, 5) + 1 + 1 // 背景 + 浮动 + 前景 + 添加
@@ -43,7 +48,7 @@ struct ClipTimelineView: View {
             ZStack(alignment: .topLeading) {
                 VStack(spacing: rowSpacing) {
                     ruler(trackWidth: trackWidth, ppf: ppf)
-                    backgroundRow(trackWidth: trackWidth, ppf: ppf)
+                    backgroundRow(trackWidth: trackWidth)
                     ForEach(Array(visibleFloating)) { layer in
                         clipRow(layer: layer, trackWidth: trackWidth, ppf: ppf)
                     }
@@ -79,8 +84,9 @@ struct ClipTimelineView: View {
             .contentShape(Rectangle())
             .gesture(scrubGesture(ppf: ppf))
         }
-        .onAppear { refreshThumb() }
-        .onChange(of: vm.project.background?.id) { _ in refreshThumb() }
+        .onAppear { refreshThumbs() }
+        .onChange(of: vm.project.backgroundLocked?.id) { _ in refreshThumbs() }
+        .onChange(of: vm.project.backgroundUnlock?.id) { _ in refreshThumbs() }
     }
 
     // MARK: scrub
@@ -138,48 +144,94 @@ struct ClipTimelineView: View {
         .frame(height: rulerHeight)
     }
 
-    // MARK: 背景行（缩略图条）
+    // MARK: 背景行（三段：开屏 clip + 过渡段 + 主屏 clip）
 
-    private func backgroundRow(trackWidth: CGFloat, ppf: CGFloat) -> some View {
-        HStack(spacing: 0) {
+    private func backgroundRow(trackWidth: CGFloat) -> some View {
+        // 过渡段宽度按过渡帧数占循环时长的比例示意（夹在 58pt 与
+        // 整轨 42% 之间，保证标注文字放得下）。
+        let proportion = CGFloat(vm.project.transitionFrames) / CGFloat(vm.project.loopFrames)
+        let transitionW = min(max(trackWidth * proportion, 58), trackWidth * 0.42)
+        let sideW = max((trackWidth - transitionW - 6) / 2, 10)
+        return HStack(spacing: 0) {
             rowLabel("背景")
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(white: 0.94))
-                ForEach(-1...1, id: \.self) { copy in
-                    thumbnailStrip
-                        .frame(width: trackWidth, height: rowHeight - 4)
-                        .offset(x: (CGFloat(copy) * CGFloat(vm.project.loopFrames) - CGFloat(vm.currentFrame)) * ppf)
-                }
+            HStack(spacing: 3) {
+                backgroundSegment(part: .locked, width: sideW)
+                transitionSegment(width: transitionW)
+                backgroundSegment(part: .unlock, width: sideW)
             }
             .frame(width: trackWidth, height: rowHeight)
-            .clipped()
         }
     }
 
-    private var thumbnailStrip: some View {
-        HStack(spacing: 1.5) {
-            ForEach(0..<6, id: \.self) { _ in
-                if let thumb = backgroundThumb {
-                    Image(uiImage: thumb)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipped()
-                } else {
-                    Rectangle().fill(Color(white: 0.88))
-                }
+    /// 一侧背景 clip：显示该部分实际生效的背景（自己设的优先，
+    /// 没设则共用另一侧那张并标注）。点按选中对应图层。
+    private func backgroundSegment(part: PartTab, width: CGFloat) -> some View {
+        let own = part == .locked ? vm.project.backgroundLocked : vm.project.backgroundUnlock
+        let other = part == .locked ? vm.project.backgroundUnlock : vm.project.backgroundLocked
+        let shown = own ?? other
+        let shared = own == nil && other != nil
+        let thumb = part == .locked ? lockedThumb : unlockThumb
+        let selected = shown != nil && vm.selectedLayerID == shown?.id
+        return ZStack(alignment: .bottomLeading) {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(white: 0.94))
+            if let thumb {
+                Image(uiImage: thumb)
+                    .resizable()
+                    .scaledToFill()
+                    .opacity(shared ? 0.45 : 1)
             }
+            Text(segmentCaption(part: part, shared: shared, hasImage: shown != nil))
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(shown != nil ? .white : Color(white: 0.55))
+                .shadow(color: shown != nil ? .black.opacity(0.45) : .clear, radius: 2, y: 1)
+                .lineLimit(1)
+                .padding(.leading, 5)
+                .padding(.bottom, 2.5)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .frame(width: width, height: rowHeight - 4)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(selected ? Color(red: 0, green: 0.44, blue: 0.89) : .clear, lineWidth: 1.4))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if let shown { vm.select(shown.id) }
+        }
     }
 
-    private func refreshThumb() {
-        if let bg = vm.project.background, case .photo(let data, _) = bg.content {
-            backgroundThumb = UIImage(data: data)
-        } else {
-            backgroundThumb = nil
+    private func segmentCaption(part: PartTab, shared: Bool, hasImage: Bool) -> String {
+        if !hasImage { return part == .locked ? "开屏背景 · 未设" : "主屏背景 · 未设" }
+        if shared { return part == .locked ? "与主屏共用" : "与开屏共用" }
+        return part == .locked ? "开屏背景" : "主屏背景"
+    }
+
+    /// 中间过渡段：渐变条 + 「类型 N帧」标注，点按打开过渡编辑。
+    private func transitionSegment(width: CGFloat) -> some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color(red: 0.62, green: 0.74, blue: 0.92),
+                         Color(red: 0, green: 0.44, blue: 0.89)],
+                startPoint: .leading, endPoint: .trailing)
+            Text("\(vm.project.transitionKind.displayName) \(vm.project.transitionFrames)帧")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
         }
+        .frame(width: width, height: rowHeight - 4)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .onTapGesture { onOpenTransition() }
+    }
+
+    private func refreshThumbs() {
+        lockedThumb = Self.thumb(of: vm.project.backgroundLocked ?? vm.project.backgroundUnlock)
+        unlockThumb = Self.thumb(of: vm.project.backgroundUnlock ?? vm.project.backgroundLocked)
+    }
+
+    private static func thumb(of layer: EditorLayer?) -> UIImage? {
+        guard let layer, case .photo(let data, _) = layer.content else { return nil }
+        return UIImage(data: data)
     }
 
     // MARK: 浮动图层 clip 行

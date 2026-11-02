@@ -29,7 +29,7 @@ struct CanvasView: View {
             RoundedRectangle(cornerRadius: 26)
                 .fill(LinearGradient(colors: [Color(white: 0.93), Color(white: 0.82)],
                                      startPoint: .top, endPoint: .bottom))
-            if vm.project.background == nil {
+            if !vm.project.hasAnyBackground {
                 Text("点底部「素材」选背景图")
                     .font(.system(size: 13))
                     .foregroundStyle(.gray)
@@ -66,6 +66,9 @@ struct CanvasView: View {
         let w = layout.size.width * CGFloat(offset.scale) * s
         let h = layout.size.height * CGFloat(offset.scale) * s
         let selected = vm.selectedLayerID == layer.id
+        // 两张背景都设时，另一部分的那张在本页签不可见，禁手势防误拖。
+        let hidden = vm.backgroundHiddenInCurrentTab(layer)
+        let editTab = vm.editingTab(for: layer)
 
         layerContent(layer)
             .frame(width: max(w, 1), height: max(h, 1))
@@ -77,6 +80,7 @@ struct CanvasView: View {
                             style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
             )
             .position(x: cx, y: cy)
+            .allowsHitTesting(!hidden)
             .onTapGesture { vm.select(layer.id) }
             .gesture(
                 DragGesture(minimumDistance: 1)
@@ -84,17 +88,17 @@ struct CanvasView: View {
                         if dragLayerID != layer.id {
                             dragLayerID = layer.id
                             dragStartCenter = vm.project.layer(id: layer.id)?
-                                .layout(for: vm.currentTab).center ?? layout.center
+                                .layout(for: editTab).center ?? layout.center
                             vm.select(layer.id)
                         }
                         let dx = value.translation.width / s
                         let dy = value.translation.height / s
                         vm.updateSelected { l in
-                            var target = l.layout(for: vm.currentTab)
+                            var target = l.layout(for: editTab)
                             target.center = CGPoint(
                                 x: min(max(dragStartCenter.x + dx, -100), 490),
                                 y: min(max(dragStartCenter.y + dy, -100), 944))
-                            l.setLayout(target, for: vm.currentTab)
+                            l.setLayout(target, for: editTab)
                         }
                     }
                     .onEnded { _ in dragLayerID = nil }

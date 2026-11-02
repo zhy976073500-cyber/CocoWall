@@ -1,15 +1,23 @@
 import Foundation
 import CoreGraphics
 
-// MARK: - 剪辑式制作器数据模型（探针 v1）
+// MARK: - 剪辑式制作器数据模型（探针 v2）
 //
 // 定案口径（2026-11-02 Sage 拍板，见工程 README）：
 //  · 部分（状态）3 个：开屏 Locked / 主屏 Unlock / 熄屏 Sleep。
 //    编辑器只编开屏、主屏两套摆位；熄屏导出时自动生成（= 开屏摆位，
 //    透明度 ×0.5 压暗），没有熄屏画布。
-//  · 图层分 3 组对应 3 个 .ca：背景 Background（1 张底图）/
-//    浮动 Floating（多图层，不设上限）/ 前景 Foreground（文字、扫光，
-//    渲染成 PNG）。组固定，用户只能往组里加图层。
+//  · 图层分 3 组对应 3 个 .ca：背景 Background / 浮动 Floating
+//    （多图层，不设上限）/ 前景 Foreground（文字、扫光，渲染成 PNG）。
+//    组固定，用户只能往组里加图层。
+//  · 背景 v2 改两张（Sage 真机试 v1 后反馈）：开屏背景 + 主屏背景
+//    各一张、各自一个图层；只设一张时另一部分共用这张（画布与
+//    导出都按共用退化为单图层老行为）。两张都设时靠状态透明度
+//    绑定 + opacity 弹簧过渡天然成交叉淡变（见 ClipExporter）。
+//  · 动画入口 v2 摆明（同上反馈）：「开屏入场」与「解锁过渡」是
+//    两个独立可编的过渡——入场管 *→Locked / Locked→* 两条，
+//    解锁过渡管其余过渡；各自有帧数与弹簧，解锁过渡另有类型
+//    （渐变 / 摆位弹簧 / 渐变+摆位）。
 //  · 帧口径 60fps：循环一圈默认 240 帧（可选 180/240/360）；
 //    状态过渡默认 48 帧（可调 24–60）。
 //  · 动画分工不抢属性：位置/大小/透明度归状态（每图层在开屏、主屏
@@ -287,6 +295,56 @@ enum MotionMath {
     }
 }
 
+// MARK: 过渡类型与开屏入场（v2）
+
+/// 解锁过渡类型：决定状态切换时哪些属性挂弹簧过渡元素。
+/// 渐变 = 只 opacity（样本包已验路径）；摆位弹簧 = 只 position/size
+/// （实验性，未真机验证）；渐变+摆位 = 五条全挂。
+enum TransitionKind: String, CaseIterable, Identifiable {
+    case fade
+    case layoutSpring
+    case fadeAndLayout
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .fade: return "渐变"
+        case .layoutSpring: return "摆位弹簧"
+        case .fadeAndLayout: return "渐变+摆位"
+        }
+    }
+
+    var animatesOpacity: Bool { self != .layoutSpring }
+    var animatesLayout: Bool { self != .fade }
+}
+
+/// 开屏入场类型：渐显（默认，只挂 opacity）/ 无（不挂过渡元素，
+/// 直接切到开屏画面）。
+enum EntranceKind: String, CaseIterable, Identifiable {
+    case fadeIn
+    case none
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .fadeIn: return "渐显"
+        case .none: return "无"
+        }
+    }
+}
+
+/// 开屏入场设置（独立于解锁过渡的帧数与弹簧）。
+struct EntranceSetting: Equatable {
+    var kind: EntranceKind = .fadeIn
+    /// 入场时长（帧）：24…60，默认 48。
+    var frames: Int = 48
+    var spring: SpringSpec = .responsive
+
+    var seconds: Double { Double(frames) / ClipProject.fps }
+}
+
 // MARK: 工程
 
 struct ClipProject: Equatable {
@@ -296,28 +354,49 @@ struct ClipProject: Equatable {
     var name: String = "未命名壁纸"
     /// 循环长度（帧）：180 / 240 / 360。
     var loopFrames: Int = 240
-    /// 状态过渡时长（帧）：24…60，默认 48。
+    /// 解锁过渡时长（帧）：24…60，默认 48。
     var transitionFrames: Int = 48
     var spring: SpringSpec = .responsive
+    /// 解锁过渡类型，默认渐变。
+    var transitionKind: TransitionKind = .fade
+    /// 开屏入场设置（帧数/弹簧独立）。
+    var entrance = EntranceSetting()
 
-    var background: EditorLayer?
+    /// 开屏背景（Locked 用）。只设一张时另一侧共用（见 ViewModel 的
+    /// background 共用判定与 ClipExporter 的 .shared 角色）。
+    var backgroundLocked: EditorLayer?
+    /// 主屏背景（Unlock 用）。
+    var backgroundUnlock: EditorLayer?
     var floating: [EditorLayer] = []
     var foreground: [EditorLayer] = []
 
     var loopSeconds: Double { Double(loopFrames) / Self.fps }
     var transitionSeconds: Double { Double(transitionFrames) / Self.fps }
 
+    /// 是否已设任意一张背景。
+    var hasAnyBackground: Bool { backgroundLocked != nil || backgroundUnlock != nil }
+    /// 是否两张背景都设了（此时各自只属于自己那一部分，不共用）。
+    var hasBothBackgrounds: Bool { backgroundLocked != nil && backgroundUnlock != nil }
+
     func layers(in group: LayerGroup) -> [EditorLayer] {
         switch group {
-        case .background: return background.map { [$0] } ?? []
+        case .background: return [backgroundLocked, backgroundUnlock].compactMap { $0 }
         case .floating: return floating
         case .foreground: return foreground
         }
     }
 
-    /// 渲染顺序（底→顶）：背景、浮动（数组序）、前景（数组序）。
+    /// 渲染顺序（底→顶）：开屏背景、主屏背景（在上，交叉淡变时
+    /// 淡入的一张盖在上面）、浮动（数组序）、前景（数组序）。
     var allLayersBottomToTop: [EditorLayer] {
         layers(in: .background) + floating + foreground
+    }
+
+    /// 某背景图层属于哪一部分（不在背景槽里返回 nil）。
+    func backgroundSlot(of layer: EditorLayer) -> PartTab? {
+        if backgroundLocked?.id == layer.id { return .locked }
+        if backgroundUnlock?.id == layer.id { return .unlock }
+        return nil
     }
 
     func layer(id: UUID) -> EditorLayer? {
@@ -327,7 +406,8 @@ struct ClipProject: Equatable {
     mutating func updateLayer(_ layer: EditorLayer) {
         switch layer.group {
         case .background:
-            if background?.id == layer.id { background = layer }
+            if backgroundLocked?.id == layer.id { backgroundLocked = layer }
+            if backgroundUnlock?.id == layer.id { backgroundUnlock = layer }
         case .floating:
             if let i = floating.firstIndex(where: { $0.id == layer.id }) { floating[i] = layer }
         case .foreground:
@@ -336,7 +416,8 @@ struct ClipProject: Equatable {
     }
 
     mutating func removeLayer(id: UUID) {
-        if background?.id == id { background = nil }
+        if backgroundLocked?.id == id { backgroundLocked = nil }
+        if backgroundUnlock?.id == id { backgroundUnlock = nil }
         floating.removeAll { $0.id == id }
         foreground.removeAll { $0.id == id }
     }

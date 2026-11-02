@@ -24,14 +24,17 @@ struct SelectionPanelView: View {
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Capsule().fill(Color(white: 0.55)))
                     Spacer()
-                    Button {
-                        vm.updateSelected { l in
-                            let other: PartTab = vm.currentTab == .locked ? .unlock : .locked
-                            l.setLayout(l.layout(for: vm.currentTab), for: other)
+                    // 两张背景都设时背景图层只有自己那套摆位，复制无意义，隐藏。
+                    if !(layer.group == .background && vm.project.hasBothBackgrounds) {
+                        Button {
+                            vm.updateSelected { l in
+                                let other: PartTab = vm.currentTab == .locked ? .unlock : .locked
+                                l.setLayout(l.layout(for: vm.currentTab), for: other)
+                            }
+                        } label: {
+                            Text("摆位复制到\(vm.currentTab == .locked ? "主屏" : "开屏")")
+                                .font(.system(size: 11.5))
                         }
-                    } label: {
-                        Text("摆位复制到\(vm.currentTab == .locked ? "主屏" : "开屏")")
-                            .font(.system(size: 11.5))
                     }
                     Button(role: .destructive) {
                         vm.deleteLayer(id: layer.id)
@@ -151,27 +154,35 @@ struct SelectionPanelView: View {
 
     private func opacityBinding(layer: EditorLayer) -> Binding<Double> {
         Binding(
-            get: { vm.selectedLayer?.layout(for: vm.currentTab).opacity ?? 1 },
+            get: {
+                guard let current = vm.selectedLayer else { return 1 }
+                return current.layout(for: vm.editingTab(for: current)).opacity
+            },
             set: { newValue in
                 vm.updateSelected { l in
-                    var layout = l.layout(for: vm.currentTab)
+                    let tab = vm.editingTab(for: l)
+                    var layout = l.layout(for: tab)
                     layout.opacity = newValue
-                    l.setLayout(layout, for: vm.currentTab)
+                    l.setLayout(layout, for: tab)
                 }
             })
     }
 
-    /// 大小滑杆：绑定图层当前部分摆位的宽度，高度按原比例跟随。
+    /// 大小滑杆：绑定图层应编部分摆位的宽度，高度按原比例跟随。
     private func sizeBinding(layer: EditorLayer) -> Binding<Double> {
         Binding(
-            get: { Double(vm.selectedLayer?.layout(for: vm.currentTab).size.width ?? 100) },
+            get: {
+                guard let current = vm.selectedLayer else { return 100 }
+                return Double(current.layout(for: vm.editingTab(for: current)).size.width)
+            },
             set: { newWidth in
                 vm.updateSelected { l in
-                    var layout = l.layout(for: vm.currentTab)
+                    let tab = vm.editingTab(for: l)
+                    var layout = l.layout(for: tab)
                     let ratio = newWidth / max(Double(layout.size.width), 1)
                     layout.size = CGSize(width: CGFloat(newWidth),
                                          height: CGFloat(min(max(Double(layout.size.height) * ratio, 12), 1600)))
-                    l.setLayout(layout, for: vm.currentTab)
+                    l.setLayout(layout, for: tab)
                 }
             })
     }
@@ -198,12 +209,9 @@ struct LayerListView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("背景（底图 1 张）") {
-                    if let bg = vm.project.background {
-                        layerRow(bg)
-                    } else {
-                        Text("未选背景图").foregroundStyle(.gray)
-                    }
+                Section("背景（开屏 / 主屏各一张，只设一张时另一侧共用）") {
+                    backgroundSlotRow(part: .locked)
+                    backgroundSlotRow(part: .unlock)
                 }
                 Section("浮动（可多层）") {
                     ForEach(vm.project.floating) { layer in layerRow(layer) }
@@ -243,6 +251,21 @@ struct LayerListView: View {
         }
     }
 
+    @ViewBuilder
+    private func backgroundSlotRow(part: PartTab) -> some View {
+        let own = part == .locked ? vm.project.backgroundLocked : vm.project.backgroundUnlock
+        let other = part == .locked ? vm.project.backgroundUnlock : vm.project.backgroundLocked
+        if let own {
+            layerRow(own)
+        } else if other != nil {
+            Text("\(part.displayName)背景：与\(part == .locked ? "主屏" : "开屏")共用同一张")
+                .foregroundStyle(.gray)
+        } else {
+            Text("\(part.displayName)背景：未设置")
+                .foregroundStyle(.gray)
+        }
+    }
+
     private func layerRow(_ layer: EditorLayer) -> some View {
         HStack {
             Button {
@@ -270,7 +293,140 @@ struct LayerListView: View {
     }
 }
 
-// MARK: - 状态设置页（底部工具坞「状态」）
+// MARK: - 开屏入场设置段（状态页与独立编辑面共用同一份数据）
+
+struct EntranceFields: View {
+    @ObservedObject var vm: EditorViewModel
+
+    var body: some View {
+        Picker("入场类型", selection: $vm.project.entrance.kind) {
+            ForEach(EntranceKind.allCases) { kind in
+                Text(kind.displayName).tag(kind)
+            }
+        }
+        .pickerStyle(.segmented)
+        if vm.project.entrance.kind != .none {
+            HStack {
+                Text("入场帧数")
+                Spacer()
+                Text("\(vm.project.entrance.frames) 帧 · \(String(format: "%.2f", vm.project.entrance.seconds))s")
+                    .foregroundStyle(.gray)
+            }
+            Slider(value: Binding(
+                get: { Double(vm.project.entrance.frames) },
+                set: { vm.project.entrance.frames = Int($0.rounded()) }),
+                in: 24...60, step: 1)
+            Picker("弹簧手感", selection: $vm.project.entrance.spring) {
+                ForEach(SpringSpec.all) { spec in
+                    Text(spec.name).tag(spec)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text("亮屏时画面从熄屏的压暗样子淡入到开屏画面，就是这段动画。用上方「预览开屏」可以先看效果。")
+                .font(.system(size: 12.5))
+                .foregroundStyle(.gray)
+        } else {
+            Text("亮屏时不做入场动画，画面直接切到开屏。")
+                .font(.system(size: 12.5))
+                .foregroundStyle(.gray)
+        }
+    }
+}
+
+// MARK: - 解锁过渡设置段（状态页与独立编辑面共用同一份数据）
+
+struct UnlockTransitionFields: View {
+    @ObservedObject var vm: EditorViewModel
+
+    var body: some View {
+        Picker("过渡类型", selection: $vm.project.transitionKind) {
+            ForEach(TransitionKind.allCases) { kind in
+                Text(kind.displayName).tag(kind)
+            }
+        }
+        .pickerStyle(.segmented)
+        HStack {
+            Text("过渡帧数")
+            Spacer()
+            Text("\(vm.project.transitionFrames) 帧 · \(String(format: "%.2f", vm.project.transitionSeconds))s")
+                .foregroundStyle(.gray)
+        }
+        Slider(value: Binding(
+            get: { Double(vm.project.transitionFrames) },
+            set: { vm.project.transitionFrames = Int($0.rounded()) }),
+            in: 24...60, step: 1)
+        Picker("弹簧手感", selection: $vm.project.spring) {
+            ForEach(SpringSpec.all) { spec in
+                Text(spec.name).tag(spec)
+            }
+        }
+        .pickerStyle(.segmented)
+        Text(unlockNote)
+            .font(.system(size: 12.5))
+            .foregroundStyle(.gray)
+    }
+
+    private var unlockNote: String {
+        switch vm.project.transitionKind {
+        case .fade:
+            return "渐变：开锁时两张画面交叉淡变（开屏背景淡出、主屏背景淡入），图层位置直接切换。样本包就是这种，已验证的写法。"
+        case .layoutSpring:
+            return "摆位弹簧：开锁时图层用弹簧从开屏摆位滑到主屏摆位，画面不淡变。注意：这是实验写法，还没在真机上验证过。"
+        case .fadeAndLayout:
+            return "渐变+摆位：淡变和摆位滑动一起来。注意：其中的摆位弹簧是实验写法，还没在真机上验证过。"
+        }
+    }
+}
+
+// MARK: - 开屏入场编辑面（时间轴上方 chip 打开）
+
+struct EntranceEditorView: View {
+    @ObservedObject var vm: EditorViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("开屏入场（亮屏时的动画）") {
+                    EntranceFields(vm: vm)
+                }
+            }
+            .navigationTitle("开屏入场")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 解锁过渡编辑面（时间轴上方 chip / 背景轨过渡段打开）
+
+struct TransitionEditorView: View {
+    @ObservedObject var vm: EditorViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("解锁过渡（开屏 → 主屏）") {
+                    UnlockTransitionFields(vm: vm)
+                }
+            }
+            .navigationTitle("解锁过渡")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 状态设置页（底部工具坞「状态」，与 chip 编辑面共用同一份数据）
 
 struct StateSettingsView: View {
     @ObservedObject var vm: EditorViewModel
@@ -290,23 +446,11 @@ struct StateSettingsView: View {
                     }
                     .pickerStyle(.segmented)
                 }
-                Section("过渡（部分之间）") {
-                    HStack {
-                        Text("过渡帧数")
-                        Spacer()
-                        Text("\(vm.project.transitionFrames) 帧 · \(String(format: "%.2f", vm.project.transitionSeconds))s")
-                            .foregroundStyle(.gray)
-                    }
-                    Slider(value: Binding(
-                        get: { Double(vm.project.transitionFrames) },
-                        set: { vm.project.transitionFrames = Int($0.rounded()) }),
-                        in: 24...60, step: 1)
-                    Picker("弹簧手感", selection: $vm.project.spring) {
-                        ForEach(SpringSpec.all) { spec in
-                            Text(spec.name).tag(spec)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                Section("开屏入场（亮屏时的动画）") {
+                    EntranceFields(vm: vm)
+                }
+                Section("解锁过渡（开屏 → 主屏）") {
+                    UnlockTransitionFields(vm: vm)
                 }
                 Section {
                     Text("熄屏部分不用做：导出时自动生成（照抄开屏摆位，整体透明度 ×0.5 压暗）。淡入/淡出（clip 两头）目前只在编辑器预览里生效，暂不写进导出包。")

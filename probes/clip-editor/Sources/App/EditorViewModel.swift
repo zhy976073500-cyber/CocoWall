@@ -37,10 +37,20 @@ final class EditorViewModel: ObservableObject {
     }
 
     // MARK: 过渡预览状态
+    //
+    // 开始预览时把当次过渡的设置快照下来（类型/弹簧/时长），中途改
+    // 设置不影响正在播的这一段。开屏预览（previewWake）是特殊的
+    // 同页签过渡：from == to == .locked，来源摆位取熄屏压暗态
+    // （开屏摆位、透明度 ×0.5），用入场设置。
 
     private var transitionFrom: PartTab?
     private var transitionTo: PartTab?
     private var transitionElapsed: Double = 0
+    private var transitionIsWake = false
+    private var activeSpring: SpringSpec = .responsive
+    private var activeDuration: Double = 0.8
+    private var activeAnimatesOpacity = true
+    private var activeAnimatesLayout = false
     @Published private(set) var isTransitioning = false
 
     private var timer: Timer?
@@ -63,7 +73,7 @@ final class EditorViewModel: ObservableObject {
 
         if isTransitioning {
             transitionElapsed += dt
-            if transitionElapsed >= project.transitionSeconds * 1.15 {
+            if transitionElapsed >= activeDuration * 1.15 {
                 finishTransition()
             }
         } else if isPlaying && !isScrubbing {
@@ -75,54 +85,126 @@ final class EditorViewModel: ObservableObject {
     // MARK: 过渡预览
 
     /// 当前过渡曲线进度（无过渡时为 nil）。弹簧规范时长 0.8s
-    /// （样本原值）线性映射到选定的过渡时长。
+    /// （样本原值）线性映射到当次过渡的选定时长。
     var transitionProgress: Double? {
         guard isTransitioning else { return nil }
-        let t = transitionElapsed * (0.8 / max(project.transitionSeconds, 0.01))
-        return SpringCurve.value(spec: project.spring, t: t)
+        let t = transitionElapsed * (0.8 / max(activeDuration, 0.01))
+        return SpringCurve.value(spec: activeSpring, t: t)
     }
 
     var transitionSourceTab: PartTab? { transitionFrom }
 
-    func previewUnlock() {
-        guard !isTransitioning else { return }
-        transitionFrom = .locked
-        transitionTo = .unlock
+    private func beginTransition(from: PartTab, to: PartTab, isWake: Bool,
+                                 spring: SpringSpec, seconds: Double,
+                                 animatesOpacity: Bool, animatesLayout: Bool) {
+        transitionFrom = from
+        transitionTo = to
+        transitionIsWake = isWake
+        activeSpring = spring
+        activeDuration = seconds
+        activeAnimatesOpacity = animatesOpacity
+        activeAnimatesLayout = animatesLayout
         transitionElapsed = 0
         isTransitioning = true
     }
 
+    /// 预览开锁/回锁：用「解锁过渡」的类型、帧数与弹簧。
+    func previewUnlock() {
+        guard !isTransitioning else { return }
+        beginTransition(from: .locked, to: .unlock, isWake: false,
+                        spring: project.spring, seconds: project.transitionSeconds,
+                        animatesOpacity: project.transitionKind.animatesOpacity,
+                        animatesLayout: project.transitionKind.animatesLayout)
+    }
+
     func previewLock() {
         guard !isTransitioning else { return }
-        transitionFrom = .unlock
-        transitionTo = .locked
-        transitionElapsed = 0
-        isTransitioning = true
+        beginTransition(from: .unlock, to: .locked, isWake: false,
+                        spring: project.spring, seconds: project.transitionSeconds,
+                        animatesOpacity: project.transitionKind.animatesOpacity,
+                        animatesLayout: project.transitionKind.animatesLayout)
+    }
+
+    /// 预览开屏：从熄屏压暗态进入开屏画面，用「开屏入场」设置。
+    /// 入场类型为「无」时以极短时长直接切入（示意无动画）。
+    func previewWake() {
+        guard !isTransitioning, currentTab == .locked else { return }
+        let entrance = project.entrance
+        if entrance.kind == .none {
+            beginTransition(from: .locked, to: .locked, isWake: true,
+                            spring: entrance.spring, seconds: 0.05,
+                            animatesOpacity: true, animatesLayout: false)
+        } else {
+            beginTransition(from: .locked, to: .locked, isWake: true,
+                            spring: entrance.spring, seconds: entrance.seconds,
+                            animatesOpacity: true, animatesLayout: false)
+        }
     }
 
     private func finishTransition() {
         if let to = transitionTo { currentTab = to }
         transitionFrom = nil
         transitionTo = nil
+        transitionIsWake = false
         transitionElapsed = 0
         isTransitioning = false
     }
 
     // MARK: 当前帧下图层的有效摆位/透明度（画布用）
 
-    /// 有效摆位：过渡中在两部分之间按弹簧进度插值，否则取当前页签。
+    /// 某部分下图层应呈现的摆位（不含过渡插值）。背景特殊：两张
+    /// 都设时，每张只在自己那一部分可见（另一部分透明度 0，摆位
+    /// 取自己那套）；只设一张时共用，按各部分自己的摆位（老行为）。
+    func displayLayout(of layer: EditorLayer, for tab: PartTab) -> LayerLayout {
+        if let slot = project.backgroundSlot(of: layer), project.hasBothBackgrounds {
+            var layout = layer.layout(for: slot)
+            if tab != slot { layout.opacity = 0 }
+            return layout
+        }
+        return layer.layout(for: tab)
+    }
+
+    /// 背景图层在当前页签是否完全不可见（两张都设、且不是它自己
+    /// 的部分、且不在过渡中）——画布据此禁手势，免得拖到看不见的层。
+    func backgroundHiddenInCurrentTab(_ layer: EditorLayer) -> Bool {
+        guard !isTransitioning,
+              let slot = project.backgroundSlot(of: layer),
+              project.hasBothBackgrounds else { return false }
+        return slot != currentTab
+    }
+
+    /// 有效摆位：过渡中按当次过渡类型在两部分之间插值——挂了弹簧
+    /// 的属性（渐变→透明度、摆位弹簧→位置/大小）按弹簧进度走，
+    /// 没挂的直接取目标值（位置直接切换 / 透明度直接到位）。
+    /// 开屏预览时来源是熄屏压暗态（开屏摆位、透明度 ×0.5）。
     func effectiveLayout(of layer: EditorLayer) -> LayerLayout {
         if let progress = transitionProgress, let from = transitionFrom, let to = transitionTo {
-            let a = layer.layout(for: from)
-            let b = layer.layout(for: to)
+            var a = displayLayout(of: layer, for: from)
+            let b = displayLayout(of: layer, for: to)
+            if transitionIsWake { a.opacity *= 0.5 }
             return LayerLayout(
-                center: CGPoint(x: a.center.x + (b.center.x - a.center.x) * progress,
-                                y: a.center.y + (b.center.y - a.center.y) * progress),
-                size: CGSize(width: a.size.width + (b.size.width - a.size.width) * progress,
-                             height: a.size.height + (b.size.height - a.size.height) * progress),
-                opacity: a.opacity + (b.opacity - a.opacity) * progress)
+                center: activeAnimatesLayout
+                    ? CGPoint(x: a.center.x + (b.center.x - a.center.x) * progress,
+                              y: a.center.y + (b.center.y - a.center.y) * progress)
+                    : b.center,
+                size: activeAnimatesLayout
+                    ? CGSize(width: a.size.width + (b.size.width - a.size.width) * progress,
+                             height: a.size.height + (b.size.height - a.size.height) * progress)
+                    : b.size,
+                opacity: activeAnimatesOpacity
+                    ? a.opacity + (b.opacity - a.opacity) * progress
+                    : b.opacity)
         }
-        return layer.layout(for: currentTab)
+        return displayLayout(of: layer, for: currentTab)
+    }
+
+    /// 面板与画布拖动应写入哪一部分的摆位：两张背景都设时，背景
+    /// 图层只编自己那一部分；其余情况编当前页签。
+    func editingTab(for layer: EditorLayer) -> PartTab {
+        if let slot = project.backgroundSlot(of: layer), project.hasBothBackgrounds {
+            return slot
+        }
+        return currentTab
     }
 
     func loopPhase(frame: Double? = nil) -> Double {
@@ -170,16 +252,23 @@ final class EditorViewModel: ObservableObject {
 
     // MARK: 导入素材（PhotosPicker）
 
-    func importBackground(item: PhotosPickerItem?) async {
+    /// 导入背景图到指定部分（开屏/主屏各一张，互不覆盖）。
+    func importBackground(item: PhotosPickerItem?, into part: PartTab) async {
         guard let item, let data = try? await item.loadTransferable(type: Data.self),
               let image = UIImage(data: data) else { return }
         let size = Self.coverSize(pixelSize: image.size)
         let layout = LayerLayout.centered(size: size)
-        let layer = EditorLayer(name: "背景图", group: .background,
+        let layer = EditorLayer(name: part == .locked ? "开屏背景" : "主屏背景",
+                                group: .background,
                                 content: .photo(data: data, pixelSize: image.size),
                                 lockedLayout: layout, unlockLayout: layout)
-        project.background = layer
+        if part == .locked {
+            project.backgroundLocked = layer
+        } else {
+            project.backgroundUnlock = layer
+        }
         selectedLayerID = layer.id
+        currentTab = part
     }
 
     func importFloating(items: [PhotosPickerItem]) async {
@@ -275,8 +364,8 @@ final class EditorViewModel: ObservableObject {
     // MARK: 导出
 
     func exportPackage() {
-        guard project.background != nil else {
-            exportOutcome = .failure("先给背景组选一张底图，再导出。")
+        guard project.hasAnyBackground else {
+            exportOutcome = .failure("先选一张背景图（开屏或主屏任意一张），再导出。")
             return
         }
         do {

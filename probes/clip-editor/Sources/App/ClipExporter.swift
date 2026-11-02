@@ -19,10 +19,18 @@ import CoreGraphics
 //    每图层每状态 5 条 LKStateSetValue（position.x / position.y /
 //    bounds.size.width / bounds.size.height / opacity，值整数时
 //    type="integer" 否则 type="real"，与样本一致）；
-//    <stateTransitions> 6 条通配，每条含每图层一个
-//    LKStateTransitionElement（key="opacity"，内嵌 CASpringAnimation
-//    ——过渡只对 opacity 做，与样本一致，其余属性的状态切换由
-//    PosterBoard 按同弹簧插值这一行为属待真机验证项，见 README）。
+//    <stateTransitions> 6 条通配，过渡元素按对与类型生成（见下）。
+//  · 双背景（v2）：Background.ca 可含两张背景图层，靠状态透明度
+//    绑定分工——开屏背景 Locked=开屏摆位、Unlock=0、Sleep=×0.5；
+//    主屏背景 Locked=0、Unlock=主屏摆位、Sleep=0。切换时 opacity
+//    弹簧把两张交叉淡变（样本已验机制）。只设一张时退化为单图层
+//    老行为（两状态都可见、Sleep ×0.5）。
+//  · 过渡分工（v2）：「开屏入场」管 *→Locked / Locked→* 两条
+//    （帧数/弹簧独立；类型「无」时这两条不挂任何元素）；其余四条
+//    用「解锁过渡」设置，元素按类型挂：渐变=仅 opacity（样本已验
+//    路径）、摆位弹簧=仅 position/size（实验性，未真机验证）、
+//    渐变+摆位=五条全挂。元素形态与样本同（CASpringAnimation，
+//    mica_autorecalculatesDuration="1"，duration=帧数/60）。
 //  · 持续动画：镜像样本 Floating 的 CAKeyframeAnimation 写法
 //    （<animation type="CAKeyframeAnimation" …><values><real/></values>），
 //    只写 transform.*（分工不抢状态属性）。模板一圈 = 循环时长：
@@ -56,21 +64,50 @@ enum ClipExporter {
 
     // MARK: 素材解析
 
+    /// 背景图层在状态绑定里的角色：normal = 浮动/前景（老行为）；
+    /// shared = 只设了一张背景、两部分共用（老行为）；lockedSide /
+    /// unlockSide = 两张都设时各自只属于自己那一部分。
+    private enum BgRole {
+        case normal
+        case shared
+        case lockedSide
+        case unlockSide
+    }
+
     private struct ResolvedLayer {
         var layer: EditorLayer
         var camlID: String
         var assetName: String
         var assetData: Data
+        var bgRole: BgRole = .normal
     }
 
-    private static func resolve(_ project: ClipProject) throws -> (bg: ResolvedLayer, floating: [ResolvedLayer], foreground: [ResolvedLayer]) {
-        guard let background = project.background,
-              case .photo(let data, _) = background.content else {
+    private static func resolve(_ project: ClipProject) throws -> (backgrounds: [ResolvedLayer], floating: [ResolvedLayer], foreground: [ResolvedLayer]) {
+        var backgrounds: [ResolvedLayer] = []
+        if let lockedBg = project.backgroundLocked, let unlockBg = project.backgroundUnlock {
+            guard case .photo(let lockedData, _) = lockedBg.content,
+                  case .photo(let unlockData, _) = unlockBg.content else {
+                throw ExportError.missingBackground
+            }
+            backgrounds.append(ResolvedLayer(
+                layer: lockedBg, camlID: "ceBg0",
+                assetName: "background-locked." + ImageDataFormat.fileExtension(for: lockedData),
+                assetData: lockedData, bgRole: .lockedSide))
+            backgrounds.append(ResolvedLayer(
+                layer: unlockBg, camlID: "ceBg1",
+                assetName: "background-unlock." + ImageDataFormat.fileExtension(for: unlockData),
+                assetData: unlockData, bgRole: .unlockSide))
+        } else if let single = project.backgroundLocked ?? project.backgroundUnlock {
+            guard case .photo(let data, _) = single.content else {
+                throw ExportError.missingBackground
+            }
+            backgrounds.append(ResolvedLayer(
+                layer: single, camlID: "ceBg0",
+                assetName: "background." + ImageDataFormat.fileExtension(for: data),
+                assetData: data, bgRole: .shared))
+        } else {
             throw ExportError.missingBackground
         }
-        let bg = ResolvedLayer(layer: background, camlID: "ceBg0",
-                               assetName: "background." + ImageDataFormat.fileExtension(for: data),
-                               assetData: data)
 
         var floating: [ResolvedLayer] = []
         for (i, layer) in project.floating.enumerated() {
@@ -106,7 +143,7 @@ enum ClipExporter {
             foreground.append(ResolvedLayer(layer: layer, camlID: "ceFg\(i)",
                                             assetName: name, assetData: data))
         }
-        return (bg, floating, foreground)
+        return (backgrounds, floating, foreground)
     }
 
     // MARK: 主入口
@@ -135,13 +172,15 @@ enum ClipExporter {
             ("\(wp)/\(bgCA)/index.xml", Data(TendiesFormat.indexXML.utf8)),
             ("\(wp)/\(bgCA)/assetManifest.caml", Data(TendiesFormat.assetManifest.utf8)),
             ("\(wp)/\(bgCA)/main.caml",
-             Data(caml(rootID: "ceBgRoot", layers: [resolved.bg], project: project).utf8)),
-            ("\(wp)/\(bgCA)/assets/\(resolved.bg.assetName)", resolved.bg.assetData),
+             Data(caml(rootID: "ceBgRoot", layers: resolved.backgrounds, project: project).utf8)),
             ("\(wp)/\(flCA)/index.xml", Data(TendiesFormat.indexXML.utf8)),
             ("\(wp)/\(flCA)/assetManifest.caml", Data(TendiesFormat.assetManifest.utf8)),
             ("\(wp)/\(flCA)/main.caml",
              Data(caml(rootID: "ceFlRoot", layers: resolved.floating, project: project).utf8)),
         ]
+        for layer in resolved.backgrounds {
+            files.append(("\(wp)/\(bgCA)/assets/\(layer.assetName)", layer.assetData))
+        }
         for layer in resolved.floating {
             files.append(("\(wp)/\(flCA)/assets/\(layer.assetName)", layer.assetData))
         }
@@ -176,10 +215,16 @@ enum ClipExporter {
         CGPoint(x: p.x, y: ClipProject.canvasSize.height - p.y)
     }
 
+    /// 图层写进 CALayer 标签的模型摆位：取它「主可见」状态那套
+    /// （主屏背景取主屏摆位，其余取开屏摆位）。
+    private static func modelLayout(of item: ResolvedLayer) -> LayerLayout {
+        item.bgRole == .unlockSide ? item.layer.unlockLayout : item.layer.lockedLayout
+    }
+
     private static func caml(rootID: String, layers: [ResolvedLayer], project: ClipProject) -> String {
         var contentLayers = ""
         for item in layers {
-            let layout = item.layer.lockedLayout
+            let layout = modelLayout(of: item)
             let model = camlPoint(layout.center)
             contentLayers += """
                       <CALayer id="\(item.camlID)" name="\(item.assetName)" bounds="0 0 \(fmt(Double(layout.size.width))) \(fmt(Double(layout.size.height)))" position="\(fmt(Double(model.x))) \(fmt(Double(model.y)))" zPosition="0" geometryFlipped="0" masksToBounds="0" opacity="\(fmt(layout.opacity))" transform.rotation.z="0" transform.rotation.x="0" transform.rotation.y="0" transform="rotate(0deg) rotate(0deg, 0, 1, 0) rotate(0deg, 1, 0, 0)" cornerRadius="0" allowsEdgeAntialiasing="1" allowsGroupOpacity="1" contentsFormat="RGBA8" cornerCurve="circular">
@@ -293,17 +338,46 @@ enum ClipExporter {
 
     // MARK: 状态与过渡
 
-    /// 某图层在某状态下的五条属性值（Sleep = 开屏 × 0.5 透明度）。
-    private static func stateValues(of layer: EditorLayer, state: String) -> LayerLayout {
-        switch state {
-        case "Unlock":
-            return layer.unlockLayout
-        case "Sleep":
-            var sleep = layer.lockedLayout
-            sleep.opacity *= 0.5
-            return sleep
-        default:
-            return layer.lockedLayout
+    /// 某图层在某状态下的摆位（含状态透明度绑定）。
+    /// 背景按角色分工（见头部注释）：双背景时开屏背景在 Unlock
+    /// 透明度 0、主屏背景在 Locked 透明度 0、Sleep 只剩开屏背景
+    /// ×0.5；单背景共用与浮动/前景走老行为（Sleep = 开屏 ×0.5）。
+    private static func stateLayout(of item: ResolvedLayer, state: String) -> LayerLayout {
+        let layer = item.layer
+        switch item.bgRole {
+        case .lockedSide:
+            switch state {
+            case "Unlock":
+                var hidden = layer.lockedLayout
+                hidden.opacity = 0
+                return hidden
+            case "Sleep":
+                var sleep = layer.lockedLayout
+                sleep.opacity *= 0.5
+                return sleep
+            default:
+                return layer.lockedLayout
+            }
+        case .unlockSide:
+            switch state {
+            case "Unlock":
+                return layer.unlockLayout
+            default: // Locked / Sleep 均不可见
+                var hidden = layer.unlockLayout
+                hidden.opacity = 0
+                return hidden
+            }
+        case .normal, .shared:
+            switch state {
+            case "Unlock":
+                return layer.unlockLayout
+            case "Sleep":
+                var sleep = layer.lockedLayout
+                sleep.opacity *= 0.5
+                return sleep
+            default:
+                return layer.lockedLayout
+            }
         }
     }
 
@@ -323,12 +397,41 @@ enum ClipExporter {
         """
     }
 
+    /// 一条过渡（from→to）应使用的参数：入场对（*→Locked、
+    /// Locked→*）用入场设置，其余用解锁过渡设置；keyPaths 决定
+    /// 给每个图层挂哪些属性的弹簧元素（空 = 不挂，直接切换）。
+    private struct TransitionParams {
+        var duration: String
+        var spring: SpringSpec
+        var keyPaths: [String]
+    }
+
+    private static func transitionParams(from: String, to: String, project: ClipProject) -> TransitionParams {
+        let isEntrancePair = (from == "*" && to == "Locked") || (from == "Locked" && to == "*")
+        if isEntrancePair {
+            let entrance = project.entrance
+            if entrance.kind == .none {
+                return TransitionParams(duration: fmt(entrance.seconds),
+                                        spring: entrance.spring, keyPaths: [])
+            }
+            return TransitionParams(duration: fmt(entrance.seconds),
+                                    spring: entrance.spring, keyPaths: ["opacity"])
+        }
+        var keyPaths: [String] = []
+        if project.transitionKind.animatesOpacity { keyPaths.append("opacity") }
+        if project.transitionKind.animatesLayout {
+            keyPaths += ["position.x", "position.y", "bounds.size.width", "bounds.size.height"]
+        }
+        return TransitionParams(duration: fmt(project.transitionSeconds),
+                                spring: project.spring, keyPaths: keyPaths)
+    }
+
     private static func statesXML(layers: [ResolvedLayer], project: ClipProject) -> String {
         var states = ""
         for state in ["Locked", "Unlock", "Sleep"] {
             var elements = ""
             for item in layers {
-                let layout = stateValues(of: item.layer, state: state)
+                let layout = stateLayout(of: item, state: state)
                 let pos = camlPoint(layout.center)
                 elements += setValue(targetID: item.camlID, keyPath: "position.x", value: Double(pos.x)) + "\n"
                 elements += setValue(targetID: item.camlID, keyPath: "position.y", value: Double(pos.y)) + "\n"
@@ -345,8 +448,6 @@ enum ClipExporter {
             """
         }
 
-        let spring = project.spring
-        let duration = fmt(project.transitionSeconds)
         var transitions = ""
         let pairs: [(String, String)] = [
             ("*", "Locked"), ("Locked", "*"),
@@ -354,14 +455,17 @@ enum ClipExporter {
             ("*", "Sleep"), ("Sleep", "*"),
         ]
         for (from, to) in pairs {
+            let params = transitionParams(from: from, to: to, project: project)
             var elements = ""
             for item in layers {
-                elements += """
-                  <LKStateTransitionElement targetId="\(item.camlID)" key="opacity">
-                    <animation type="CASpringAnimation" damping="\(fmt(spring.damping))" mass="\(fmt(spring.mass))" stiffness="\(fmt(spring.stiffness))" velocity="0" duration="\(duration)" fillMode="backwards" keyPath="opacity" mica_autorecalculatesDuration="1"/>
-                  </LKStateTransitionElement>
+                for keyPath in params.keyPaths {
+                    elements += """
+                      <LKStateTransitionElement targetId="\(item.camlID)" key="\(keyPath)">
+                        <animation type="CASpringAnimation" damping="\(fmt(params.spring.damping))" mass="\(fmt(params.spring.mass))" stiffness="\(fmt(params.spring.stiffness))" velocity="0" duration="\(params.duration)" fillMode="backwards" keyPath="\(keyPath)" mica_autorecalculatesDuration="1"/>
+                      </LKStateTransitionElement>
 
-                """
+                    """
+                }
             }
             transitions += """
               <LKStateTransition fromState="\(from)" toState="\(to)">

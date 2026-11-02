@@ -11,15 +11,19 @@ import PhotosUI
 struct ContentView: View {
     @StateObject private var vm = EditorViewModel()
 
-    @State private var showBackgroundPicker = false
+    @State private var showLockedBgPicker = false
+    @State private var showUnlockBgPicker = false
     @State private var showFloatingPicker = false
-    @State private var backgroundSelection: PhotosPickerItem?
+    @State private var lockedBgSelection: PhotosPickerItem?
+    @State private var unlockBgSelection: PhotosPickerItem?
     @State private var floatingSelection: [PhotosPickerItem] = []
 
     @State private var showMaterialMenu = false
     @State private var showLayerList = false
     @State private var showStateSettings = false
     @State private var showAddText = false
+    @State private var showTransitionEditor = false
+    @State private var showEntranceEditor = false
     @State private var showResetConfirm = false
     @State private var showAbout = false
     @State private var showPickLayerHint = false
@@ -34,9 +38,11 @@ struct ContentView: View {
             CanvasView(vm: vm, displayHeight: 300)
                 .padding(.vertical, 8)
             controlsRow
+            animationChipsRow
             ClipTimelineView(vm: vm,
                              onAddLayer: { showMaterialMenu = true },
-                             onOpenLayers: { showLayerList = true })
+                             onOpenLayers: { showLayerList = true },
+                             onOpenTransition: { showTransitionEditor = true })
                 .frame(height: timelineHeight)
                 .padding(.top, 4)
             SelectionPanelView(vm: vm)
@@ -46,10 +52,14 @@ struct ContentView: View {
         }
         .background(Color.white)
         // 素材导入
-        .photosPicker(isPresented: $showBackgroundPicker, selection: $backgroundSelection, matching: .images)
+        .photosPicker(isPresented: $showLockedBgPicker, selection: $lockedBgSelection, matching: .images)
+        .photosPicker(isPresented: $showUnlockBgPicker, selection: $unlockBgSelection, matching: .images)
         .photosPicker(isPresented: $showFloatingPicker, selection: $floatingSelection, matching: .images)
-        .onChange(of: backgroundSelection) { item in
-            Task { await vm.importBackground(item: item); backgroundSelection = nil }
+        .onChange(of: lockedBgSelection) { item in
+            Task { await vm.importBackground(item: item, into: .locked); lockedBgSelection = nil }
+        }
+        .onChange(of: unlockBgSelection) { item in
+            Task { await vm.importBackground(item: item, into: .unlock); unlockBgSelection = nil }
         }
         .onChange(of: floatingSelection) { items in
             Task { await vm.importFloating(items: items); floatingSelection = [] }
@@ -58,9 +68,12 @@ struct ContentView: View {
         .sheet(isPresented: $showLayerList) { LayerListView(vm: vm) }
         .sheet(isPresented: $showStateSettings) { StateSettingsView(vm: vm) }
         .sheet(isPresented: $showAddText) { AddTextView(vm: vm) }
+        .sheet(isPresented: $showTransitionEditor) { TransitionEditorView(vm: vm) }
+        .sheet(isPresented: $showEntranceEditor) { EntranceEditorView(vm: vm) }
         .sheet(item: $vm.exportOutcome) { outcome in exportSheet(outcome) }
         .confirmationDialog("添加素材", isPresented: $showMaterialMenu, titleVisibility: .visible) {
-            Button("设为背景图（1 张）") { showBackgroundPicker = true }
+            Button("设为开屏背景") { showLockedBgPicker = true }
+            Button("设为主屏背景") { showUnlockBgPicker = true }
             Button("添加浮动图（可多选）") { showFloatingPicker = true }
             Button("取消", role: .cancel) {}
         }
@@ -75,7 +88,7 @@ struct ContentView: View {
         .alert("剪辑制作探针", isPresented: $showAbout) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text("把 .tendies 制作改成剪辑手感的第一版探针：开屏/主屏两套摆位、循环模板动画、48 帧弹簧开锁过渡，导出按真包结构生成三状态 .tendies，去 CocoWall 刷入验证。熄屏部分导出时自动生成。")
+            Text("把 .tendies 制作改成剪辑手感的探针：开屏/主屏各一张背景、两套摆位、循环模板动画；动画在时间轴上方加——「开屏入场」管亮屏淡入、「解锁过渡」管开锁时怎么变（默认渐变）。导出按真包结构生成三状态 .tendies，去 CocoWall 刷入验证。熄屏部分导出时自动生成。")
         }
         .alert("先选一个图层", isPresented: $showPickLayerHint) {
             Button("知道了", role: .cancel) {}
@@ -165,6 +178,9 @@ struct ContentView: View {
 
             Spacer()
 
+            if vm.currentTab == .locked {
+                previewButton(icon: "sun.max", title: "预览开屏", action: { vm.previewWake() })
+            }
             Button {
                 if vm.currentTab == .locked { vm.previewUnlock() } else { vm.previewLock() }
             } label: {
@@ -183,6 +199,60 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.top, 9)
+    }
+
+    private func previewButton(icon: String, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12.5, weight: .semibold))
+            }
+            .foregroundStyle(accent)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(Capsule().fill(Color(red: 0.91, green: 0.95, blue: 1)))
+        }
+        .disabled(vm.isTransitioning)
+    }
+
+    // MARK: 动画入口 chips（开屏入场 / 解锁过渡，摆在时间轴正上方）
+
+    private var animationChipsRow: some View {
+        HStack(spacing: 8) {
+            animationChip(
+                title: "开屏入场",
+                detail: vm.project.entrance.kind == .none
+                    ? "无" : "\(vm.project.entrance.kind.displayName) \(vm.project.entrance.frames)帧",
+                action: { showEntranceEditor = true })
+            animationChip(
+                title: "解锁过渡",
+                detail: "\(vm.project.transitionKind.displayName) \(vm.project.transitionFrames)帧",
+                action: { showTransitionEditor = true })
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+    }
+
+    private func animationChip(title: String, detail: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(white: 0.45))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color(white: 0.45))
+            }
+            .foregroundStyle(Color(white: 0.15))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 11).fill(capsuleFill))
+        }
     }
 
     // MARK: 播放控制行
