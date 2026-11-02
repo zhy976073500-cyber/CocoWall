@@ -189,81 +189,87 @@ func loopbackPresentation(phase: LoopbackPhase,
     }
 }
 
-/// 扇形横滑偏移上报（run #134）：内容 HStack 背景的
-/// GeometryReader 把自身在 "fanScroll" 坐标空间内的 minX
-/// 经此 key 上报给 TendiesView——iOS 17 兼容的偏移追踪法，
-/// 不依赖 iOS 18 的 onScrollGeometryChange。
-private struct FanScrollOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-/// 轮播单卡（run #136）：延迟轮盘式轮播的卡片子视图。
-/// 目标距离 d 由父视图 TendiesView 按 #134 偏移框架算好
-/// 传入（fanDistance），本视图自持 @State shownD、以弹簧
-/// 动画追赶 d，全部变换由 shownD 驱动——滑动时每卡按
-/// |d| 不同响应形成级联滞后，静止时 shownD 与 d 精确
-/// 一致、布局不漂移。#135 的 fanCard 方法因需自持状态
-/// 改为独立子视图；选中集与长按菜单仍归父视图管，
-/// 经回调回传。两侧卡保持正脸（无 3D 转侧），只
+/// 轮播单卡（run #136 独立子视图、#138 换底盘沿用）：
+/// 延迟轮盘式轮播的卡片子视图。#138 起父视图持连续
+/// 主位置 p（手势直驱），本视图自持弹簧化位置 p̃、以
+/// 「离焦点越远响应越慢」的弹簧追赶 p；显示距离
+/// d̃ = index − p̃ 同时决定本卡的布局横移（父以 ZStack
+/// 把卡心放在视口中心，本视图以 offset x = d̃×96
+/// 平移）与全部变换——滑动时近卡先行、远卡按距离
+/// 递增拖后，卡间距在运动中真实伸缩（级联核心）；
+/// 静止时 p̃ 与 p 精确一致、布局不漂移。选中集与
+/// 长按菜单仍归父视图管，经回调回传；长按按压态经
+/// onPressingChange 回报父视图，用于在长按识别期间
+/// 门控容器拖动。两侧卡保持正脸（无 3D 转侧），只
 /// 倾斜/下沉/变暗/轻微虚化，缩略图另带轻去色（#137）。
 private struct FanCardView: View {
     @EnvironmentObject var vm: AppViewModel
     let item: TendieItem
-    /// 目标距离（父算，fanDistance；正值在本卡位于视口
-    /// 中心右侧）。
-    let d: Double
+    /// 本卡在带内的序号。
+    let index: Int
+    /// 父视图的连续主位置 p（index 单位浮点；p 等于
+    /// 本卡序号时本卡居中）。
+    let position: Double
     /// 扫光触发 token：本卡为停稳聚焦卡时等于父视图的
     /// 递增计数、非聚焦卡为 0；跳到新的正值时播一次扫光。
     let sweepToken: Int
     let onTap: () -> Void
     let onLongPress: () -> Void
+    /// 长按按压态变化（按下未达识别时长即先报）：父
+    /// 视图据此在长按识别期间禁用容器拖动（见 TendiesView
+    /// 的 fanPressActive 与手势掩码）。
+    let onPressingChange: (Bool) -> Void
 
-    /// 弹簧滞后的显示距离：全部变换的唯一驱动量。
-    @State private var shownD: Double
+    /// 弹簧化位置 p̃：布局与全部变换的唯一驱动量来源。
+    @State private var pTilde: Double
     /// 扫光光带当前 x 偏移（pt）：停在 −155（旋转光带
     /// 完全出卡左界、被卡面裁掉不可见），触发时先瞬时
     /// 归位 −155、再动画扫到 +155。
     @State private var sweepX: CGFloat = -155
 
-    init(item: TendieItem, d: Double, sweepToken: Int,
+    init(item: TendieItem, index: Int, position: Double, sweepToken: Int,
          onTap: @escaping () -> Void,
-         onLongPress: @escaping () -> Void) {
+         onLongPress: @escaping () -> Void,
+         onPressingChange: @escaping (Bool) -> Void) {
         self.item = item
-        self.d = d
+        self.index = index
+        self.position = position
         self.sweepToken = sweepToken
         self.onTap = onTap
         self.onLongPress = onLongPress
-        // 首帧即以真实 d 呈现，不从 0 弹入。
-        _shownD = State(initialValue: d)
+        self.onPressingChange = onPressingChange
+        // 首帧即以真实 p 呈现，不从别处弹入。
+        _pTilde = State(initialValue: position)
     }
 
+    /// 显示距离 d̃（正值在本卡位于视口中心右侧）。
+    private var shownD: Double { Double(index) - pTilde }
+
     var body: some View {
-        // 延迟轮盘变换量（run #136 立、#137 修分层
-        // 曲线，全部由 shownD 推导）：绕底部锚点向外
-        // 倾斜 6.5°×clamp(shownD, ±2.2)；沿弧下沉
-        // 13×clamp(shownD, ±2.2)²；整卡压暗 −0.28×
-        // min(|shownD|/1.8, 1)（#137 加重，深度改由
-        // 变暗承担）；模糊只留轻微虚化——正中 ±0.55
-        // 内为 0、其后线性升至 1.6pt 封顶（#137 自
-        // 5.5 大砍）；缩略图另加轻去色 0.30 封顶
-        // （#137，只挂缩略图本体）；缩放 1.04 起、
-        // 随 |shownD| 收到 0.92；位置级联把滞后量
-        // (shownD − d) 转成横向偏移（见链尾）。
+        // 延迟轮盘变换量（曲线 #136 立、#137 修分层、
+        // #138 倾斜/下沉/缩放按原视频实测签名更新，
+        // 全部由 d̃ 推导）：绕底部锚点向外倾斜 9°×
+        // clamp(d̃, ±2.2)（实测约 9–10°/格、最远约
+        // 20°）；沿弧下沉 17×clamp(d̃, ±2)²（实测弧
+        // 陡，|d|=2 约卡高 1/3）；整卡压暗 −0.28×
+        // min(|d̃|/1.8, 1)（#137，深度主要靠变暗）；
+        // 模糊只留轻微虚化——正中 ±0.55 内为 0、其后
+        // 线性升至 1.6pt 封顶（#137）；缩略图另加轻
+        // 去色 0.30 封顶（#137，只挂缩略图本体）；
+        // 缩放 1.08 起、随 |d̃| 收到 0.94（#138 实测
+        // 口径）。布局横移即链尾 offset x = d̃×96
+        // 本身——#136 的 lagX 换算项退役：滞后现在就是
+        // 位置本身的滞后，不再二次换算。
         let s = shownD
         let asd = abs(s)
         let sClamped = min(2.2, max(-2.2, s))
-        let lagTilt = 6.5 * sClamped
-        let lagDropY = CGFloat(13 * sClamped * sClamped)
-        let lagScale = 1.04 - 0.06 * min(asd, 2)
+        let dropClamped = min(2, max(-2, s))
+        let lagTilt = 9 * sClamped
+        let lagDropY = CGFloat(17 * dropClamped * dropClamped)
+        let lagScale = 1.08 - 0.07 * min(asd, 2)
         let lagBrightness = -0.28 * min(asd / 1.8, 1)
         let lagBlur = CGFloat(1.6 * min(max(asd - 0.55, 0) / 1.45, 1))
         let lagSaturation = 1 - 0.30 * min(asd / 1.8, 1)
-        // 位置级联：滞后量 × pitch 96 × 0.45，钳制 ±30
-        // ——滑动中卡被横向挤压/拉伸，静止归零。
-        let lagX = CGFloat(min(30, max(-30, (s - d) * 96 * 0.45)))
         let lagZIndex = 100 - (asd * 10).rounded()
         // 阴影沿 #135 的 |d| 衰减口径，改由 shownD 驱动：
         // 近中心投影大而软、远端收紧。
@@ -341,31 +347,40 @@ private struct FanCardView: View {
         }
         .shadow(color: .black.opacity(0.22), radius: lagShadowRadius, x: 0, y: lagShadowY)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        // 点按选中 / 长按出菜单（run #130 手势口径沿用）：
-        // 只回调父视图，触觉与状态变更在父侧。
+        // 点按选中 / 长按出菜单（run #130 手势口径沿用、
+        // #138 加按压态回报）：只回调父视图，触觉与状态
+        // 变更在父侧；pressing 在识别时长到达前即先报
+        // 按下，父视图据此门控容器拖动（拖动 minimumDistance
+        // 4 的阈值也让轻触点按先于拖动成立）。
         .onTapGesture { onTap() }
-        .onLongPressGesture(minimumDuration: 0.45) { onLongPress() }
-        // 延迟轮盘几何（run #136）：倾斜绕底部锚点
-        // (0.5, 0.92) 向外倒；offset 叠位置级联 lagX 与
-        // 沿弧下沉 lagDropY；选中回弹 1.04 并入缩放
-        // （弹簧 .animation(value: isSelected) 沿用
-        // #130，只在选中态变化时触发，不干扰 shownD
+        .onLongPressGesture(minimumDuration: 0.45,
+                            pressing: { onPressingChange($0) },
+                            perform: { onLongPress() })
+        // 延迟轮盘几何（run #138）：倾斜绕底部锚点
+        // (0.5, 0.92) 向外倒；offset x = d̃×96 即卡的
+        // 布局横移本身（父以 ZStack 把卡心放在视口
+        // 中心），y 为沿弧下沉 lagDropY；选中回弹 1.04
+        // 并入缩放（弹簧 .animation(value: isSelected)
+        // 沿用 #130，只在选中态变化时触发，不干扰 p̃
         // 弹簧的逐帧追赶）。hit 区按未倾斜卡框判定
-        // （contentShape），倾斜最大约 14°、错位有限，
-        // 见 SPEC #136 未验证项。
+        // （contentShape），倾斜最大约 19.8°、错位有限，
+        // 见 SPEC #138 未验证项。
         .rotationEffect(.degrees(lagTilt), anchor: UnitPoint(x: 0.5, y: 0.92))
-        .offset(x: lagX, y: lagDropY)
+        .offset(x: CGFloat(s) * 96, y: lagDropY)
         .scaleEffect(lagScale * (item.isSelected ? 1.04 : 1.0))
         .animation(.spring(response: 0.3, dampingFraction: 0.55), value: item.isSelected)
         .zIndex(lagZIndex)
-        // 弹簧追赶（run #136 核心）：d 每变一次就以
-        // response 0.5 + 0.07×min(|d|, 2)、阻尼 0.86 的
-        // 弹簧重新瞄准——近卡反应快、远卡更迟缓，整带
-        // 滑动时呈级联跟随而非刚性齐动。
-        .onChange(of: d) { _, newD in
-            withAnimation(.spring(response: 0.5 + 0.07 * min(abs(newD), 2),
-                                  dampingFraction: 0.86)) {
-                shownD = newD
+        // 位置弹簧追赶（run #138 级联核心）：p 每变一次
+        // 就以 response 0.55 + 0.10×min(|index − p|, 2.5)、
+        // 阻尼 0.92 的弹簧重新瞄准 p̃——离焦点越远响应
+        // 越慢，整带滑动时近卡先行、远卡拖后，间距在
+        // 运动中伸缩；阻尼近临界，落位慢软、无可见
+        // 弹跳（约 0.8s 停稳主要由父视图的松手吸附
+        // 弹簧主导，本弹簧管逐卡跟随）。
+        .onChange(of: position) { _, newP in
+            withAnimation(.spring(response: 0.55 + 0.10 * min(abs(Double(index) - newP), 2.5),
+                                  dampingFraction: 0.92)) {
+                pTilde = newP
             }
         }
         // 扫光触发：token 跳到新正值（本卡刚成为停稳
@@ -391,21 +406,28 @@ struct TendiesView: View {
     @State private var selectedDetailItem: TendieItem? = nil
     @State private var isNeoSpringing = false
     @State private var showImportedPage = false
-    /// 扇形卡长按菜单的目标项（run #130）：非 nil 时扇形滚动
-    /// 冻结、页面根部弹 confirmationDialog 呈现「详情/删除」。
+    /// 扇形卡长按菜单的目标项（run #130）：非 nil 时轮播
+    /// 拖动门控禁用（run #138 手势掩码）、页面根部弹
+    /// confirmationDialog 呈现「详情/删除」。
     @State private var fanMenuTarget: TendieItem? = nil
-    /// 轮播带横滑偏移与视口宽（run #134 立、#135/#136
-    /// 沿用）：内容 HStack 左缘在 "fanScroll" 坐标空间
-    /// 内的 minX（经 FanScrollOffsetKey 上报，静止时为
-    /// 0、向左滑为负）与轮播 ScrollView 的宽度；每卡距
-    /// 视口中心的归一化距离由偏移与 index 换算（见
-    /// fanDistance），每卡的全部变换由该距离驱动。
-    @State private var fanContentMinX: CGFloat? = nil
-    @State private var fanViewportWidth: CGFloat = 0
-    /// 停稳聚焦 index 与扫光触发（run #136）：滚动偏移
-    /// 静止 300ms 后取 |d| 最小者为聚焦卡（见
-    /// scheduleFanFocusSettle）；聚焦真正换人（非首次
-    /// 出现）时 fanSweepToken 递增，只传给聚焦卡，
+    /// 轮播主位置 p（run #138 换底盘）：连续浮点、index
+    /// 单位，p = k 表示第 k 卡居中；由容器拖动手势直驱
+    /// （见 fanDragGesture），松手弹簧吸附到整格。各卡
+    /// 自持弹簧化位置 p̃ 追赶 p（见 FanCardView），其
+    /// 布局与变换全由 d̃ = index − p̃ 决定。初始 0
+    /// （首卡居中）；有限长条不绕圈（同 #135 起口径）。
+    @State private var fanPosition: Double = 0
+    /// 拖动起点的主位置：非 nil 表示拖动进行中；吸附
+    /// 投影与单次滑动格数上限都以它为基准。
+    @State private var fanDragStart: Double? = nil
+    /// 任一卡长按按压中（尚未达识别时长）：为真时容器
+    /// 拖动经手势掩码禁用（只留子手势），避免按压被
+    /// 拖动抢走；菜单打开期间另由 fanMenuTarget 门控。
+    @State private var fanPressActive: Bool = false
+    /// 停稳聚焦 index 与扫光触发（run #136 立、#138 换
+    /// 信号源）：p 静止 300ms 后取 round(p) 为聚焦格
+    /// （见 scheduleFanFocusSettle）；聚焦真正换人（非
+    /// 首次出现）时 fanSweepToken 递增，只传给聚焦卡，
     /// 触发它播一次扫光。
     @State private var fanFocusedIndex: Int? = nil
     @State private var fanSweepToken: Int = 0
@@ -545,10 +567,11 @@ struct TendiesView: View {
                 TendieDetailSheet(item: item)
             }
             // 扇形长按菜单（run #130）：不用 contextMenu——它挂在
-            // rotationEffect 后的卡片上、且横滑 ScrollView 惯性不被
-            // 打断，真机录屏里菜单浮空脱锚、卡片滑走。改长按手势
-            // 设 fanMenuTarget（扇形随之 scrollDisabled 冻结）后，
-            // 在此以 confirmationDialog 稳定呈现同一组动作。
+            // rotationEffect 后的卡片上、且轮播滑动不被打断，真机
+            // 录屏里菜单浮空脱锚、卡片滑走。改长按手势设
+            // fanMenuTarget（run #138 起轮播拖动随之门控冻结；
+            // #136 时为 ScrollView 的 scrollDisabled）后，在此以
+            // confirmationDialog 稳定呈现同一组动作。
             .confirmationDialog(
                 fanMenuTarget?.name ?? "",
                 isPresented: Binding(
@@ -622,7 +645,7 @@ struct TendiesView: View {
         .padding(.top, 10)
     }
 
-    // MARK: - 轮播壁纸区（run #136 由 3D 环形改 2D 延迟轮盘，内部符号仍沿用 fan 前缀）
+    // MARK: - 轮播壁纸区（run #138 换底盘：手势直驱 + 每卡位置弹簧，撤 ScrollView；内部符号仍沿用 fan 前缀）
 
     private var fanZone: some View {
         Group {
@@ -643,15 +666,29 @@ struct TendiesView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 30)
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    // 交叠量（run #136）：延迟轮盘参考里重叠
-                    // 更密、一屏约 5 张，间距 −44 → −54，
-                    // pitch = 150 − 54 = 96（#135 时为
-                    // −44/106、#134 时为 −34/116）。
-                    HStack(spacing: -54) {
-                        ForEach(Array(vm.tendieItems.enumerated()), id: \.element.id) { idx, item in
+                // 布局口径（run #138）：ZStack 把每卡的布局
+                // 中心放在带中心，卡的实际横向位置由其内部
+                // offset（d̃×96）决定。带高 256：卡心纵坐标
+                // 128 = 顶留 28（中心卡放大 1.08 的上沿
+                // 外溢）+ 半卡高 100；其下再垫 52，凑回
+                // #136 的总高 308（= 28 + 200 + 底留 80）：
+                // 下沉最大值 17×2² = 68，卡底 228 + 68 =
+                // 296，距带底 308 留约 12——下沉的卡不被
+                // 裁掉、也不压到下方已选行（本区不裁剪，
+                // 尺寸核算只为防视觉重叠）。pitch 保持
+                // #136 的 96、卡 150×200。
+                ZStack {
+                    ForEach(Array(vm.tendieItems.enumerated()), id: \.element.id) { idx, item in
+                        // 渲染剔除：目标 |d| > 3.4 的卡必然在
+                        // 屏外（视口半宽约 215pt + 半卡宽 75
+                        // = 290 < 3.4×96 = 326），不进视图树，
+                        // 省 blur/阴影的逐帧开销；再入场时
+                        // p̃ 以当前 p 初始化（见 FanCardView），
+                        // 以正确变换直接出现在边缘、无弹入。
+                        if abs(Double(idx) - fanPosition) <= 3.4 {
                             FanCardView(item: item,
-                                        d: fanDistance(index: idx),
+                                        index: idx,
+                                        position: fanPosition,
                                         sweepToken: idx == fanFocusedIndex ? fanSweepToken : 0,
                                         onTap: {
                                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -660,98 +697,111 @@ struct TendiesView: View {
                                         onLongPress: {
                                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                             fanMenuTarget = item
+                                        },
+                                        onPressingChange: { pressing in
+                                            fanPressActive = pressing
                                         })
                         }
                     }
-                    .padding(.horizontal, 24)
-                    // 底部内边距（run #136）：下沉最大值
-                    // 13×2.2² ≈ 63pt，底部留 63 + 约 17 安全
-                    // 量 = 80，下沉的卡不被 ScrollView 裁掉、
-                    // 也不压到下方已选行；顶部保持 28（中心
-                    // 卡缩放 1.04 的上沿外溢约 4pt 在其内）。
-                    .padding(.top, 28)
-                    .padding(.bottom, 80)
-                    .scrollTargetLayout()
-                    // 横滑偏移上报（run #134）：背景 GeometryReader
-                    // 读内容在 "fanScroll" 坐标空间内的 minX，
-                    // 经 FanScrollOffsetKey 交给 fanDistance
-                    // 换算每卡距视口中心的距离。
-                    .background {
-                        GeometryReader { geo in
-                            Color.clear
-                                .preference(key: FanScrollOffsetKey.self,
-                                            value: geo.frame(in: .named("fanScroll")).minX)
-                        }
-                    }
                 }
-                .coordinateSpace(name: "fanScroll")
-                .onPreferenceChange(FanScrollOffsetKey.self) { newValue in
-                    // 0.5pt 死区防抖：变化小于阈值不写状态，
-                    // 避免滚动中无谓的重渲染抖动。
-                    if let old = fanContentMinX, abs(old - newValue) < 0.5 { return }
-                    fanContentMinX = newValue
-                    // 偏移一变就重排停稳判定（run #136）：
-                    // 静止满 300ms 才更新聚焦 index。
+                .frame(maxWidth: .infinity)
+                .frame(height: 256)
+                .padding(.bottom, 52)
+                // 整带（含下垫）都是拖动命中区：卡间空隙与
+                // 卡下方留白也能起拖。
+                .contentShape(Rectangle())
+                // 手势门控：长按按压中或菜单打开期间，掩码
+                // 只留子手势——容器拖动禁用、卡的点按/长按
+                // 照常；其余时候拖动与子手势全开。
+                .gesture(fanDragGesture,
+                         including: (fanMenuTarget == nil && !fanPressActive) ? .all : .subviews)
+                // p 一变就重排停稳判定（run #138）：静止满
+                // 300ms 才更新聚焦格（扫光信号源由 #136 的
+                // 滚动偏移换成 p；手势共存与仲裁见 SPEC
+                // #138 未验证项）。
+                .onChange(of: fanPosition) { _, _ in
                     scheduleFanFocusSettle()
                 }
-                // 导入/删除使卡数变化时同样重排停稳判定，
-                // 避免聚焦 index 停在已删或错位的位置。
-                .onChange(of: vm.tendieItems.count) { _, _ in
+                // 导入/删除使卡数变化：主位置钳回新范围、
+                // 聚焦 index 越界失效，并重排停稳判定，
+                // 避免聚焦停在已删或错位的位置。
+                .onChange(of: vm.tendieItems.count) { _, newCount in
+                    let maxP = Double(max(newCount - 1, 0))
+                    if fanPosition > maxP { fanPosition = maxP }
+                    if let f = fanFocusedIndex, f >= newCount { fanFocusedIndex = nil }
                     scheduleFanFocusSettle()
                 }
-                // 视口宽度（run #134）：fanDistance 换算视口中心用。
-                .background {
-                    GeometryReader { geo in
-                        Color.clear
-                            .onAppear { fanViewportWidth = geo.size.width }
-                            .onChange(of: geo.size.width) { _, newWidth in
-                                fanViewportWidth = newWidth
-                            }
-                    }
+                // 自空态切回时 onChange 不补发，进场先钳位
+                // 并排一次停稳判定（首次定聚焦不扫光）。
+                .onAppear {
+                    let maxP = Double(max(vm.tendieItems.count - 1, 0))
+                    if fanPosition > maxP { fanPosition = maxP }
+                    scheduleFanFocusSettle()
                 }
-                // 停下时弹簧式吸附到整卡（run #130，苹果信息式 Q 弹）。
-                .scrollTargetBehavior(.viewAligned)
-                // 长按菜单呈现期间冻结扇形（run #130），惯性不再
-                // 带着卡片在菜单背后滑走。
-                .scrollDisabled(fanMenuTarget != nil)
             }
         }
     }
 
-    /// 本卡距视口中心的归一化距离（run #134 立框架，
-    /// #135/#136 沿用）：卡中心 x 由内容偏移（HStack 左缘
-    /// minX）+ 左内边距 24 + index×pitch + 半卡宽 75
-    /// 推得，减视口中心后除以 pitch 归一化；正值在视口
-    /// 中心右侧。pitch = 卡宽 150 − 交叠 54 = 96
-    /// （run #136 随轮盘间距收紧，#135 时为 106、
-    /// #134 时为 116）。
-    /// 符号自洽：向左滑时内容 minX 变负，右侧卡的中心随之
-    /// 左移趋向视口中心、d 趋 0。视口宽尚未测得时回 0。
-    private func fanDistance(index: Int) -> Double {
-        guard fanViewportWidth > 0 else { return 0 }
-        let pitch: CGFloat = 96
-        let cardCenter = (fanContentMinX ?? 0) + 24 + CGFloat(index) * pitch + 75
-        return Double((cardCenter - fanViewportWidth / 2) / pitch)
+    /// 容器拖动（run #138）：DragGesture(minimumDistance: 4)
+    /// ——未达阈值的轻触仍走子卡点按。拖动中 p 实时跟手
+    /// （p = 起点 p − translation.width/96：向左拖 p 增大、
+    /// 带向左走，与 #136 的 ScrollView 滑动方向一致），
+    /// 超出 [0, n−1] 的部分由 fanRubberBanded 按 0.35
+    /// 橡皮筋。松手以 predictedEndTranslation 投影落点、
+    /// 四舍五入到整格（相对起点取整最多 ±4 格——单次
+    /// 滑动上限，可调旋钮，见 SPEC #138），再钳到
+    /// [0, n−1]，以 response 0.8 / 阻尼 0.95 的弹簧把
+    /// p 动画过去——慢软落位对齐实测约 0.8s 停稳、无
+    /// 可见弹跳。
+    private var fanDragGesture: some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                if fanDragStart == nil { fanDragStart = fanPosition }
+                let start = fanDragStart ?? fanPosition
+                let raw = start - Double(value.translation.width) / 96
+                fanPosition = fanRubberBanded(raw)
+            }
+            .onEnded { value in
+                let start = fanDragStart ?? fanPosition
+                fanDragStart = nil
+                let count = vm.tendieItems.count
+                guard count > 0 else { return }
+                let projected = start - Double(value.predictedEndTranslation.width) / 96
+                var target = projected.rounded()
+                let startRounded = start.rounded()
+                target = min(max(target, startRounded - 4), startRounded + 4)
+                target = min(max(target, 0), Double(count - 1))
+                withAnimation(.spring(response: 0.8, dampingFraction: 0.95)) {
+                    fanPosition = target
+                }
+                scheduleFanFocusSettle()
+            }
     }
 
-    /// 停稳聚焦推导（run #136）：偏移或卡数一变就取消
-    /// 上一轮判定、重排一个 300ms 的静默计时；满 300ms
-    /// 无新变化视为滚动停稳，取 |d| 最小者为聚焦 index。
-    /// 聚焦相对上一次真正换人（且非首次出现）时递增
-    /// fanSweepToken——token 只传给聚焦卡，触发其扫光；
-    /// 首次定聚焦不递增、不扫光。
+    /// 橡皮筋（run #138）：[0, n−1] 内 1:1 跟手，超出
+    /// 部分只走 35%。
+    private func fanRubberBanded(_ p: Double) -> Double {
+        let maxP = Double(max(vm.tendieItems.count - 1, 0))
+        if p < 0 { return p * 0.35 }
+        if p > maxP { return maxP + (p - maxP) * 0.35 }
+        return p
+    }
+
+    /// 停稳聚焦推导（run #136 立、#138 换信号源）：p 或
+    /// 卡数一变就取消上一轮判定、重排一个 300ms 的静默
+    /// 计时；满 300ms 无新变化视为停稳，聚焦格 =
+    /// round(p)（钳到有效范围）。聚焦相对上一次真正
+    /// 换人（且非首次出现）时递增 fanSweepToken——token
+    /// 只传给聚焦卡，触发其扫光；首次定聚焦不递增、
+    /// 不扫光。
     private func scheduleFanFocusSettle() {
         fanSettleTask?.cancel()
         fanSettleTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 300_000_000)
             if Task.isCancelled { return }
-            guard !vm.tendieItems.isEmpty else { return }
-            var best = 0
-            var bestAbs = Double.greatestFiniteMagnitude
-            for i in vm.tendieItems.indices {
-                let a = abs(fanDistance(index: i))
-                if a < bestAbs { bestAbs = a; best = i }
-            }
+            let count = vm.tendieItems.count
+            guard count > 0 else { return }
+            let best = min(max(Int(fanPosition.rounded()), 0), count - 1)
             if let prev = fanFocusedIndex, prev != best {
                 fanSweepToken += 1
             }
