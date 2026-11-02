@@ -3173,3 +3173,103 @@ Sage 真机验 #144 反馈：「这一版更硬了」——高速
   （数组回退目标 p 呈现）无飞入复核。
 - 遗留：斜滑纵向仲裁、长按门控与点按吞没、
   #133 展开页对齐，随本包一并复验。
+
+## 改动登记 · 刷入/清理分段计时埋点（run #146，2026-11-03，纯埋点、零行为变更）
+
+背景：Sage 真机反馈刷入与清理慢，拍板先出计时版——他刷
+一次、清一次回日志定位瓶颈，再定优化轮。本轮只埋点：不改
+流程、不加/减 await 语义、不动任何常数与观感。
+
+### 方法
+
+- 单调时钟 DispatchTime；计时只做「记录到达时刻 + 事后格
+  式化输出」，不开新线程，开销可忽略。
+- 单个 FFI 调用内部的阶段，用 rust 核心既有阶段标记日志
+  行到达 Swift 回调的时刻切分（标记首次到达胜出）；标记缺
+  失的段不输出、绝不估算。rust-core 零改动；刷入事务的日志
+  回调 ctx（原传 nil）改传计时盒，仅观察，日志转发内容与
+  原样一致。输出全部走现有刷入日志通道（设置页底部「刷入
+  日志」），每行前缀 `[计时]`，毫秒数千分位分组。
+
+### 刷入链埋点（TendiesEngine + AppViewModel + PosterRefreshHelper）
+
+每事务（al_exploit_flash_transaction，标记源自 exploit.rs
+既有日志）：
+
+- `[计时] 刷入·建连` = FFI 起点 → `airlift: AFC client
+  connected`（含读配对文件、connect_tunnel 隧道/RSD 握手
+  与配对校验、AFC 建连——每事务重连一次，多包连刷时逐事务
+  各出一行，是否每包一轮从日志直接可读）
+- `[计时] 刷入·暂存传输` = `folder archive size: N bytes`
+  → `staged folder verified in AFC`；归档字节数 N 自该行
+  解析、随行输出
+- `[计时] 刷入·等同步落位` = staged verified →
+  `airlift.install.descriptor.completed`（含写 Books
+  .plist、ATC 会话与 settle 等待、暂存清理）
+- `[计时] 刷入·写刷新偏好` = `airlift.preferences
+  .combined.begin` → `airlift.install.preferences
+  .primary.end`（phase 2 自身含其暂存 + 同步）
+
+每包：`[计时] 刷入·单包合计`（本地解包/定位/标识重写 +
+该包全部事务）。合计（成功路径，flashTendies 尾）：建连
+合计 / 暂存合计（归档总字节）/ 等同步合计 / 写刷新偏好合
+计 / 引擎合计。AppViewModel：`[计时] 刷入·容器检测`（仅
+未缓存容器时出现）、`[计时] 刷入·整轮总计`（不含
+poster_refresh；失败路径带（中途失败））。
+PosterRefreshHelper：`[计时] 刷新·poster_refresh`
+（attemptRefresh 整段，刷入与清理两处调用共用一行口径）。
+
+### 清理链埋点（PosterStoreHelper + AppViewModel）
+
+检测（al_poster_store_list，标记源自 poster_store.rs
+既有日志）：
+
+- `[计时] 清理·建连` = FFI 起点 → 首个 `airlift
+  .poster_store.audit.session`（含读配对文件、RSD 隧道、
+  DVT 会话建立）
+- `[计时] 清理·枚举` = session → FFI 返回（枚举发生重
+  试时该行带（含失败重试））
+- `[计时] 清理·检测总计`（带条数）
+
+删除（al_poster_store_delete）：
+
+- `[计时] 清理·建连`（同上口径）
+- `[计时] 清理·枚举（前置审计）` = session → 首个
+  `airlift.delete.operation.begin`（phase A 前置审计）
+- `[计时] 清理·删除移隔离`（带张数） = operation.begin
+  → `airlift.delete.commit.connection=fresh`（phase B
+  逐目标 ATC 移隔离；每目标 operation 在 rust 内部自带
+  连接，计入本段）
+- `[计时] 清理·复查（新连接）` = commit.connection 标
+  记 → FFI 返回
+- `[计时] 清理·删除总计`（带张数）
+
+AppViewModel：`[计时] 清理·整轮总计`（删除 + 删后重检
+测，不含 poster_refresh；失败路径带（失败））。
+
+### 复查连接事实（代码核实，poster_store.rs store_delete phase C）
+
+删除后的 commit audit 走一条全新连接：phase C 重新
+connect_device_info（新隧道 + 新 DVT 会话）后逐目标复查
+路径 absent，日志标记 `airlift.delete.commit.connection
+=fresh after_restore=true`；复查段即以此标记为起点。审
+计不可用（commit.audit unavailable）时无此标记，复查段
+不输出、删除段延伸到 FFI 返回。
+
+### 边界与口径
+
+- 配对校验与隧道/RSD 握手在 rust connect_tunnel 内融
+  合，Swift 边界不可分，合并为「建连」一段（刷入/清理同
+  口径）；要拆开必须改 rust，本轮按红线不改。
+- 枚举的 DVT 往返次数 rust 未透出，只记枚举总耗时。
+- 分段不保证求和等于合计：未分段部分（刷入的本地打包、
+  Books 快照与还原、清理 FFI 前的读文件等）只计入合计/
+  总计。
+- 合计类行只在成功路径输出；失败时以整轮总计（失败标
+  注）兜底，已完成事务的单段行仍留在日志中。
+
+### 未验证（归 Sage 真机）
+
+- 刷一次 + 清一次后回传设置页刷入日志，按 [计时] 行定
+  位瓶颈段，再定优化轮（连接复用 / 枚举并发 / 合并同步
+  的取舍以这份数据为准）。

@@ -38,6 +38,8 @@ public enum PosterRefreshHelper {
         completion: @escaping (_ confirmed: Bool, _ status: String) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async {
+            // Run #146: whole-call stage timing (see SPEC #146).
+            let refreshStart = DispatchTime.now()
             let box = LogBox(log)
             let ctx = Unmanaged.passRetained(box).toOpaque()
             var outStatus: UnsafeMutablePointer<CChar>?
@@ -46,6 +48,7 @@ public enum PosterRefreshHelper {
                 al_poster_refresh(pC, posterRefreshLogThunk, ctx, &outStatus, &outError)
             }
             Unmanaged<LogBox>.fromOpaque(ctx).release()
+            log("[计时] 刷新·poster_refresh \(cwStageText(cwStageMS(refreshStart, DispatchTime.now()))) ms")
 
             let status = outStatus.map { String(cString: $0) }
                 ?? (rc == 0 ? "confirmed" : "connectFailed")

@@ -271,6 +271,10 @@ public final class TendiesEngine {
 
         let totalItems = Double(items.count)
 
+        // Run #146: round stage timing (see SPEC #146).
+        let engineStart = DispatchTime.now()
+        let stageTotals = FlashStageTotals()
+
         // Reload-preferences payload, staged once up front. As of run
         // #112 it is written inside each descriptor's install
         // transaction (Walllive shape: primary spot + combined
@@ -313,6 +317,8 @@ public final class TendiesEngine {
         let mobilePrefDir = "/var/mobile/Library/Preferences"
 
         for (itemIndex, item) in items.enumerated() {
+            // Run #146: per-package wall time （本地准备 + 全部事务）.
+            let itemStart = DispatchTime.now()
             log("\n📦 [\(itemIndex + 1)/\(items.count)] Processing '\(item.name)'…")
 
             let tempStageDir = FileManager.default.temporaryDirectory
@@ -360,6 +366,8 @@ public final class TendiesEngine {
                     prefTargetA: targetPrefDir,
                     prefTargetB: mobilePrefDir,
                     pairingPath: pairingPath,
+                    packageLabel: item.name,
+                    stageTotals: stageTotals,
                     log: log
                 )
 
@@ -386,12 +394,24 @@ public final class TendiesEngine {
                 }
             }
 
+            // Run #146: per-package total （本地解包/定位/改标识 + 事务）.
+            log("[计时] 刷入·单包合计 \(cwStageText(cwStageMS(itemStart, DispatchTime.now()))) ms（\(item.name)）")
+
             progress(Double(itemIndex + 1) / (totalItems + 1))
         }
 
         // Run #112: the reload preferences are no longer a separate
         // phase — each descriptor's install transaction writes them
         // combined (both targets, one sync) before its Books restore.
+
+        // Run #146: round totals from the per-transaction stage timers.
+        if stageTotals.transactions > 0 {
+            log("[计时] 刷入·建连合计 \(cwStageText(stageTotals.connectMS)) ms")
+            log("[计时] 刷入·暂存合计 \(cwStageText(stageTotals.stageMS)) ms（归档共 \(cwStageText(stageTotals.stageBytes)) 字节）")
+            log("[计时] 刷入·等同步合计 \(cwStageText(stageTotals.syncMS)) ms")
+            log("[计时] 刷入·写刷新偏好合计 \(cwStageText(stageTotals.preferencesMS)) ms")
+        }
+        log("[计时] 刷入·引擎合计 \(cwStageText(cwStageMS(engineStart, DispatchTime.now()))) ms（\(items.count) 包）")
 
         progress(1.0)
         log("\n🎉 All wallpapers injected successfully! Open Lock Screen settings or long-press lockscreen to choose your new wallpaper.")
@@ -821,6 +841,63 @@ public final class TendiesEngine {
         }
     }
 
+    // MARK: - Run #146 flash-transaction stage timing (diagnostic only)
+
+    /// Records when the Rust flash transaction's stage-marker log
+    /// lines reach the FFI callback, so the stages inside the single
+    /// FFI call （建连/暂存/等同步/写偏好） can be bracketed from
+    /// Swift without touching the core. First occurrence wins; a
+    /// stage whose markers never arrive yields no segment — numbers
+    /// are never fabricated. Written only from the FFI-calling thread
+    /// while the call is in flight, read after it returns there.
+    final class FlashTransactionStageTimer {
+        let start = DispatchTime.now()
+        private(set) var afcConnected: DispatchTime?
+        private(set) var archiveSized: DispatchTime?
+        private(set) var archiveBytes: Int?
+        private(set) var stagedVerified: DispatchTime?
+        private(set) var descriptorDone: DispatchTime?
+        private(set) var preferencesBegin: DispatchTime?
+        private(set) var preferencesEnd: DispatchTime?
+
+        func observe(_ line: String) {
+            let now = DispatchTime.now()
+            if afcConnected == nil, line.contains("airlift: AFC client connected") {
+                afcConnected = now
+            }
+            if archiveSized == nil, line.contains("airlift: folder archive size: ") {
+                archiveSized = now
+                if let range = line.range(of: "folder archive size: ") {
+                    archiveBytes = Int(line[range.upperBound...].prefix { $0.isNumber })
+                }
+            }
+            if stagedVerified == nil, line.contains("airlift: staged folder verified in AFC") {
+                stagedVerified = now
+            }
+            if descriptorDone == nil, line.contains("airlift.install.descriptor.completed") {
+                descriptorDone = now
+            }
+            if preferencesBegin == nil, line.contains("airlift.preferences.combined.begin") {
+                preferencesBegin = now
+            }
+            if preferencesEnd == nil, line.contains("airlift.install.preferences.primary.end") {
+                preferencesEnd = now
+            }
+        }
+    }
+
+    /// Running totals across one flashTendies round, fed by each
+    /// transaction's stage timer; the round's 合计 lines print from
+    /// these.
+    final class FlashStageTotals {
+        var connectMS = 0
+        var stageMS = 0
+        var stageBytes = 0
+        var syncMS = 0
+        var preferencesMS = 0
+        var transactions = 0
+    }
+
     // MARK: - Primary Transaction Injector (Walllive shape, run #112)
 
     /// One Walllive-shaped install transaction in the Rust core:
@@ -835,12 +912,18 @@ public final class TendiesEngine {
         prefTargetA: String,
         prefTargetB: String,
         pairingPath: String,
+        packageLabel: String,
+        stageTotals: FlashStageTotals,
         log: @escaping (String) -> Void
     ) async throws {
         log("  📦 Injecting '\(destName)' into \(targetParentDir)…")
         var errDesc: String? = nil
         let ok: Bool = await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
+                // Run #146: stage timer rides the FFI log callback's
+                // ctx (previously unused) — observation only.
+                let stageTimer = FlashTransactionStageTimer()
+                let stageTimerCtx = Unmanaged.passRetained(stageTimer).toOpaque()
                 var outError: UnsafeMutablePointer<CChar>? = nil
                 let rc = pairingPath.withCString { pairC in
                     folderURL.path.withCString { folderC in
@@ -857,14 +940,17 @@ public final class TendiesEngine {
                                                 prefC,
                                                 aC,
                                                 bC,
-                                                { _, msg in
+                                                { ctx, msg in
                                                     guard let msg = msg else { return }
                                                     let line = String(cString: msg)
+                                                    if let ctx = ctx {
+                                                        Unmanaged<FlashTransactionStageTimer>.fromOpaque(ctx).takeUnretainedValue().observe(line)
+                                                    }
                                                     DispatchQueue.main.async {
                                                         AppViewModel.shared?.tendiesFlashLog.append("    " + line)
                                                     }
                                                 },
-                                                nil,
+                                                stageTimerCtx,
                                                 &outError
                                             )
                                         }
@@ -878,6 +964,38 @@ public final class TendiesEngine {
                     errDesc = String(cString: p)
                     al_string_free(p)
                 }
+
+                // Run #146: per-transaction stage-timing report on the
+                // caller's log channel; segments whose markers never
+                // arrived are skipped, never estimated.
+                Unmanaged<FlashTransactionStageTimer>.fromOpaque(stageTimerCtx).release()
+                stageTotals.transactions += 1
+                if let afc = stageTimer.afcConnected {
+                    let ms = cwStageMS(stageTimer.start, afc)
+                    stageTotals.connectMS += ms
+                    log("[计时] 刷入·建连 \(cwStageText(ms)) ms（\(packageLabel)）")
+                }
+                if let sized = stageTimer.archiveSized, let staged = stageTimer.stagedVerified {
+                    let ms = cwStageMS(sized, staged)
+                    stageTotals.stageMS += ms
+                    if let bytes = stageTimer.archiveBytes {
+                        stageTotals.stageBytes += bytes
+                        log("[计时] 刷入·暂存传输 \(cwStageText(ms)) ms（\(packageLabel)，归档 \(cwStageText(bytes)) 字节）")
+                    } else {
+                        log("[计时] 刷入·暂存传输 \(cwStageText(ms)) ms（\(packageLabel)）")
+                    }
+                }
+                if let staged = stageTimer.stagedVerified, let done = stageTimer.descriptorDone {
+                    let ms = cwStageMS(staged, done)
+                    stageTotals.syncMS += ms
+                    log("[计时] 刷入·等同步落位 \(cwStageText(ms)) ms（\(packageLabel)）")
+                }
+                if let begin = stageTimer.preferencesBegin, let end = stageTimer.preferencesEnd {
+                    let ms = cwStageMS(begin, end)
+                    stageTotals.preferencesMS += ms
+                    log("[计时] 刷入·写刷新偏好 \(cwStageText(ms)) ms（\(packageLabel)）")
+                }
+
                 cont.resume(returning: rc == 0)
             }
         }

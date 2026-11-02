@@ -977,10 +977,17 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        // Run #146: round stage timing (see SPEC #146). The container
+        // detection only runs when no container is cached; its line is
+        // appended after the log reset below so it survives.
+        let roundStart = DispatchTime.now()
+        var containerDetectMS: Int? = nil
         var container = posterBoardContainer.trimmingCharacters(in: .whitespacesAndNewlines)
         if container.isEmpty {
             do {
+                let detectStart = DispatchTime.now()
                 container = try await TendiesEngine.shared.detectPosterBoardContainer(pairingPath: pairingPath)
+                containerDetectMS = cwStageMS(detectStart, DispatchTime.now())
                 self.posterBoardContainer = container
                 UserDefaults.standard.set(container, forKey: "aircard.posterboard_container")
             } catch {
@@ -992,6 +999,9 @@ final class AppViewModel: ObservableObject {
         tendiesFlashPhase = .running
         tendiesFlashProgress = 0
         tendiesFlashLog = []
+        if let containerDetectMS {
+            tendiesFlashLog.append("[计时] 刷入·容器检测 \(cwStageText(containerDetectMS)) ms")
+        }
 
         do {
             try await TendiesEngine.shared.flashTendies(
@@ -1019,6 +1029,9 @@ final class AppViewModel: ObservableObject {
                     }
                 }
             )
+            // Run #146: round total; poster_refresh reports its own
+            // [计时] line when it finishes (it runs async from here).
+            tendiesFlashLog.append("[计时] 刷入·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（不含 poster_refresh）")
             tendiesFlashPhase = .done(ok: true)
             tendiesFlashProgress = 1.0
             tendiesFlashLog.append("🎉 壁纸应用成功！")
@@ -1042,6 +1055,7 @@ final class AppViewModel: ObservableObject {
                 }
             }
         } catch {
+            tendiesFlashLog.append("[计时] 刷入·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（中途失败）")
             tendiesFlashLog.append("❌ 错误：\(error.localizedDescription)")
             tendiesFlashPhase = .done(ok: false)
         }
@@ -1382,6 +1396,8 @@ final class AppViewModel: ObservableObject {
         guard !isCleaningDevicePosters else { return }
         let targets = devicePosters.filter { devicePosterSelection.contains($0.id) }
         guard !targets.isEmpty else { return }
+        // Run #146: round stage timing (see SPEC #146).
+        let roundStart = DispatchTime.now()
         guard let ctx = await posterStoreContext() else { return }
 
         isCleaningDevicePosters = true
@@ -1412,6 +1428,9 @@ final class AppViewModel: ObservableObject {
             if r.failed > 0 { message += "，失败 \(r.failed) 条" }
             message += "。"
             await detectDevicePosters(clearStatus: false)
+            // Run #146: round total （删除 + 删后重检测）; poster_refresh
+            // reports its own [计时] line when it finishes.
+            tendiesFlashLog.append("[计时] 清理·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（不含 poster_refresh）")
             devicePosterStatus = message
             isCleaningDevicePosters = false
             // Removal only takes effect once PosterBoard re-reads its
@@ -1433,6 +1452,7 @@ final class AppViewModel: ObservableObject {
                 }
             }
         case .failure(let err):
+            tendiesFlashLog.append("[计时] 清理·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（失败）")
             isCleaningDevicePosters = false
             devicePosterStatus = "清理失败：\(err.localizedDescription)"
         }
