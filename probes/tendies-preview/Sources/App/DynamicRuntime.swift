@@ -134,6 +134,45 @@ enum Dyn {
         return Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue()
     }
 
+    /// + (id)packageWithContentsOfURL:(NSURL *)type:(id)options:(id)error:(NSError **)
+    /// and - (id)_initWithContentsOfURL:type:options:error: on CAPackage —
+    /// the REAL CAPackage factory shape (iOS 10–17 runtime headers agree;
+    /// the two-argument "...:error:" form this probe tried first does not
+    /// exist, which is why every CAPackage attempt logged 无结果).
+    /// The error out-pointer is captured through a raw slot so the caller
+    /// can log the NSError the package loader actually produced.
+    /// Returns (object, errorDescription, selectorExists).
+    static func callPackageFactory(_ receiver: AnyObject, selector name: String,
+                                   url: URL, type: String?)
+        -> (object: AnyObject?, error: String?, selectorExists: Bool) {
+        let sel = NSSelectorFromString(name)
+        guard receiver.responds(to: sel) else { return (nil, nil, false) }
+        typealias Fn = @convention(c) (AnyObject, Selector, NSURL, NSString?, AnyObject?,
+                                       UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
+        let imp = receiver.method(for: sel)
+        let fn = unsafeBitCast(imp, to: Fn.self)
+        // The error slot is a raw pointer, NOT a strong AnyObject?: the
+        // callee writes a +0 (autoreleased) NSError* there, and letting
+        // ARC manage the slot would add a spurious release.
+        var errorRaw: UnsafeMutableRawPointer? = nil
+        let typeObject: NSString? = type.map { $0 as NSString }
+        let raw = withUnsafeMutablePointer(to: &errorRaw) { slot in
+            fn(receiver, sel, url as NSURL, typeObject, nil,
+               UnsafeMutableRawPointer(slot))
+        }
+        var errorText: String? = nil
+        if let errorRaw {
+            let obj = Unmanaged<AnyObject>.fromOpaque(errorRaw).takeUnretainedValue()
+            if let err = obj as? NSError {
+                errorText = "\(err.domain) \(err.code): \(err.localizedDescription)"
+            } else {
+                errorText = "非 NSError 错误对象: \(String(describing: obj))"
+            }
+        }
+        guard let raw else { return (nil, errorText, true) }
+        return (Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue(), errorText, true)
+    }
+
     /// - (void)setInitialStatesOfLayer:(CALayer *)transitionSpeed:(double)
     /// fallback for CAStateController when the one-argument form is absent.
     @discardableResult

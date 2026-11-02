@@ -199,6 +199,18 @@ final class PreviewViewModel: ObservableObject {
         log("路径: \(info.dir.path)")
         log("index.xml rootDocument: \(info.rootDocumentName)；壁纸包: \(info.wallpaperName.isEmpty ? "(无)" : info.wallpaperName)；逻辑尺寸: \(Int(info.logicalSize.width))×\(Int(info.logicalSize.height))")
 
+        // Text-mined diagnostics FIRST (round-2 lesson): when loading
+        // fails, these lines are the only map of what the package
+        // contains — they must be in the log either way, not only on
+        // the success path as in round 1.
+        log("CAML 文本挖掘: 状态(\(info.stateNamesFromCAML.count)): \(info.stateNamesFromCAML.isEmpty ? "无" : info.stateNamesFromCAML.joined(separator: " | "))")
+        log("CAML 文本挖掘: 过渡≈\(info.transitionCountFromCAML)；assets(\(info.assetFiles.count)): \(info.assetFiles.isEmpty ? "无" : info.assetFiles.joined(separator: ", "))")
+        if !info.jsAssets.isEmpty {
+            log("JS 资产(只登记不执行): \(info.jsAssets.joined(separator: ", "))")
+        }
+        log("CAML 引用 src(\(info.referencedSrcs.count)): \(info.referencedSrcs.isEmpty ? "无" : info.referencedSrcs.joined(separator: ", "))")
+        log("缺失资源: \(info.missingSrcs.isEmpty ? "无" : info.missingSrcs.joined(separator: ", "))")
+
         let result = PrivateCALoader.load(info: info)
         for line in result.log { log(line) }
 
@@ -224,14 +236,6 @@ final class PreviewViewModel: ObservableObject {
         }
         let liveTransitions = StateBridge.transitionCount(of: layer)
         log("过渡条数: layer.stateTransitions=\(liveTransitions.map(String.init) ?? "读不到") / CAML 文本计数≈\(info.transitionCountFromCAML)")
-
-        // Assets inventory.
-        log("assets(\(info.assetFiles.count)): \(info.assetFiles.isEmpty ? "无" : info.assetFiles.joined(separator: ", "))")
-        if !info.jsAssets.isEmpty {
-            log("JS 资产(只登记不执行): \(info.jsAssets.joined(separator: ", "))")
-        }
-        log("CAML 引用 src(\(info.referencedSrcs.count)): \(info.referencedSrcs.isEmpty ? "无" : info.referencedSrcs.joined(separator: ", "))")
-        log("缺失资源: \(info.missingSrcs.isEmpty ? "无" : info.missingSrcs.joined(separator: ", "))")
 
         // State controller + initial states.
         let (controller, controllerLog) = StateBridge.makeController(for: layer)
