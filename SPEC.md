@@ -3604,3 +3604,104 @@ static 硬编码改为按 scheme 取双值的 token。红线：light 分
 - 深色模式下 sheet 全套对比（尤其状态条三段小字与瓷砖副文
   案）；浅色模式与改前逐值一致需肉眼过一遍。
 - 深色下刷入进行中条与错误横幅的呈现。
+
+## 改动登记 · 轮播残影 S2 + S1/S3 结构重构（run #150，2026-11-03，Sage 拍板一步到位；纯 Swift 侧，rust 零改动）
+
+承 #149：简版/全卡位置源统一后 Sage 真机仍报快滑残影。
+先行只读审计（全文 ~/workspace/cocowall-design/ghost-audit-150.md）
+排除同帧双渲染，定三项机制：S1 TimelineView + onChange 两遍求
+值使呈现帧在旧/新物理间漂移、合并 tick 时呈现位置跳 2–3 帧；
+S2 分区键（目标距离）与位置键（shownD）不一致，高速滞后下出
+现处理倒置带与边界 pop 闪烁场；S3 物理状态住页级 @State、每
+tick 整页 body 两遍重演（#144 审计留置的最大项），是 S1 掉帧
+的概率来源。本轮按审计修法一次做齐 S2 + S1 + S3；S4（飞行期
+阴影逐帧重绘）与 #145 的取舍冲突，按任务书不动。
+
+### 一、S2 分区改按 shownD + ±0.15 迟滞
+
+FanPhysicsIntegrator 新增 zones 数组（2 全卡 / 1 简版 / 0 不进
+树，与 positions 同序同长）：分区判定从 fanStrip 内的目标距离
+（adTarget）改为积分后的弹簧距离 shownD，升/降级阈值带 ±0.15
+迟滞——升全卡 |d̃| ≤ 3.25、降简版 > 3.55、入树 ≤ 4.35、剔除
+> 4.65，跨界直达按同组阈值一次到位。窗口宽度不变（全卡
+3.4、简版外沿 4.5，沿 #144）；新卡初始分区与数组未同步时的
+回退按无迟滞基础分区（plainZone）现算。分区与位置同源后，审
+计 S2 的处理倒置带（简版锐卡被滞后拉进 |shownD|≈2.2 的活跃
+区、全卡被推到 ≈5.7）与边界 pop 场（v=10 格/s 时约 20 次/秒
+的换分支事件）在机制上消除；临界卡的橡皮筋尾段 strobe 由迟
+滞兜住。
+
+### 二、S1 积分搬进 TimelineView 求值（引用型积分器）
+
+新 FanPhysicsIntegrator（final class, ObservableObject 仅作持
+有形态、无 @Published）：持有 positions/velocities/settledFrames/
+lastStepDate/zones，advance(to:target:count:) 一步推进并返回停
+稳上升沿。FanStripView 的 TimelineView 内容求值改为：先以本帧
+日期 advance、紧接着以刚算出的 p̃ 渲染本帧（stripFrame 读
+integrator）——每 tick 只成像一次，#145 的 onChange(of:
+timeline.date) 两遍模式（旧物理先成一帧、状态写回后再成一
+帧）就此删除。dt 钳制（0.05）与 >1/40 两步积分子步口径逐项
+沿 #145。停稳上升沿的副作用（置 fanIsSettled、deriveFanFocus）
+是视图状态写回、不能在求值内做：经主队列异步收口（收口前若
+已被唤醒则放弃，等下一个上升沿）——较 #145 的 onChange 内同
+步收口晚一个主队列轮次（亚帧级），聚焦/扫光的触发条件与口
+径不变。
+
+### 三、S3 卡带独立成 FanStripView
+
+新 private struct FanStripView 自持：integrator（@StateObject）、
+fanPosition、fanDragStart、fanFocusedIndex、fanSweepToken、
+fanIsSettled；原 TendiesView 的 fanStrip/fanTilde/fanDragGesture/
+fanRubberBanded/syncFanPhysicsCount/wakeFanPhysics/stepFanPhysics/
+deriveFanFocus/toggleSelection 与空态占位整体迁入（手势与积分
+逻辑逐字沿用，仅 fanMenuTarget 改经 Binding、syncCount 改调
+integrator）。TendiesView 侧只剩 fanZone = FanStripView(menuTarget:
+$fanMenuTarget) 一行；页与卡带的接口只有这一个 Binding——菜单
+confirmationDialog 仍挂页面根部（呈现源与拖动冻结判定不变），
+条目/选中态经 vm 直达（页面已选行读同一 vm），聚焦变化不出
+卡带。物理 tick 的失效范围收进 TimelineView 内容，TendiesView
+.body 对卡带只剩一次不透明子视图求值。卡数变化/进场的钳位、
+数组对齐、唤醒改挂 FanStripView 根部（不随空/非空分支存亡，
+语义与原挂 TimelineView 等价）。
+
+### 不变清单（逐项自查）
+
+- #137/#138 观感曲线与常数：倾斜 9°×clamp(d̃,±2.2)、下沉
+  17×clamp(d̃,±2)²、压暗 −0.28、blur 曲线（±0.55 内 0、1.6 封
+  顶、0.5 量化）、去色 0.30、缩放 1.08−0.07、pitch 96、卡
+  150×200、带高 256+52——FanCardView/FanCardGhostView 本轮零改动。
+- 弹簧参数：response 梯度 0.55+0.10×min(dist,2.5)、ζ 0.92、
+  ω/k/c 换算、半隐式欧拉、dt 钳 0.05 与两步积分——advance 与
+  #145 stepFanPhysics 逐项一致。
+- snap：predictedEndTranslation 投影、相对起点 ±4 格上限、
+  [0, n−1] 钳位、response 0.8/阻尼 0.95 的 withAnimation、
+  橡皮筋 0.35——手势代码逐字迁入。
+- 扫光：物理停稳判定（全卡 |v| 与 |p−p̃| < 0.005 连续 5 帧）、
+  deriveFanFocus 的 round(p) 聚焦、换人递增 token、首次不播——
+  判定与推导逐字沿用；仅收口时点改为异步（见二）。
+- wakeFanPhysics 三处防冻唤醒（手势松手/卡数变化/进场）全在，
+  语义不变（清零停稳帧数 + 置未停稳）。
+- syncFanPhysicsCount 按 index 对齐、新卡以当前 p 初始化、删
+  中间卡位置不跳——迁入 integrator.syncCount，另同步 zones。
+- #139 手势接线：simultaneousGesture(DragGesture(minimumDistance: 4))
+  常开、菜单打开期间回调开头判定冻结——逐字沿用（判定对象改
+  Binding menuTarget）。
+- #148：排序后 tendieItems 同序共用（卡带仍读 vm.tendieItems
+  枚举）；预览推迟信号仍为「未停稳」——取值由 #145 的
+  fanIsSettled @State 改为 integrator.isSettled 求值内直读（判
+  定口径不变、同帧生效，较旧写回路径提前至多一 tick）。
+- S4 飞行期阴影：shadowStatic 仍仅拖动期（fanDragStart != nil），
+  动态阴影公式未动。
+- #149 成果：简版卡 shownD 同源（现经 integrator.tilde）、壁纸
+  页深色 token 全保留；#146 计时、#147 rust 改动、#148 五件套
+  均未触碰。
+
+### 未验证（归 Sage 真机）
+
+- 快滑（连甩/反向甩）残影是否消失（本轮成败判据）：S1 的呈
+  现抖动与 S2 的倒置带均已按机制消除，若仍有残影，按审计判
+  别口径回看 S4/S5（飞行期阴影/反向深叠压）。
+- 停稳收口改异步后扫光时机与聚焦切换观感（应无可感差异）。
+- 分区改按 shownD 后高速时全卡数量短暂多于旧口径的帧率表现；
+  带尾橡皮筋段临界卡是否还有可感闪烁（迟滞应已兜住）。
+- 排序切换后回壁纸页的聚焦位置（#148 遗留确认项，机制未变）。
