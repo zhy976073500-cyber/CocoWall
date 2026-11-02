@@ -1,0 +1,49 @@
+name: Build TendiesPreview IPA
+
+on:
+  push:
+    branches: [tendies-preview-probe]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    defaults:
+      run:
+        working-directory: probes/tendies-preview
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Record toolchain
+        run: |
+          mkdir -p build
+          { xcodebuild -version; echo; xcrun swift --version; echo; xcodegen --version; } > build/toolchain.txt
+          cat build/toolchain.txt
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build (unsigned)
+        run: |
+          xcodebuild build \
+            -project TendiesPreview.xcodeproj \
+            -scheme TendiesPreview \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: Package IPA
+        run: |
+          mkdir -p build/Payload
+          cp -R build/DerivedData/Build/Products/Release-iphoneos/TendiesPreview.app build/Payload/
+          cp build/toolchain.txt build/Payload/TendiesPreview.app/toolchain.txt
+          cd build && zip -qr TendiesPreview-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TendiesPreview-iOS-IPA
+          path: probes/tendies-preview/build/TendiesPreview-unsigned.ipa
