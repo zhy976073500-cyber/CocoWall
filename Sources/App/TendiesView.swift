@@ -209,11 +209,12 @@ struct TendiesView: View {
     /// 扇形卡长按菜单的目标项（run #130）：非 nil 时扇形滚动
     /// 冻结、页面根部弹 confirmationDialog 呈现「详情/删除」。
     @State private var fanMenuTarget: TendieItem? = nil
-    /// 扇形横滑偏移与视口宽（run #134）：内容 HStack 左缘在
-    /// "fanScroll" 坐标空间内的 minX（经 FanScrollOffsetKey
-    /// 上报，静止时为 0、向左滑为负）与扇形 ScrollView 的
-    /// 宽度；每卡距视口中心的归一化距离由偏移与 index 换算
-    /// （见 fanDistance），弧度几何不再走 scrollTransition。
+    /// 轮播带横滑偏移与视口宽（run #134 立、run #135
+    /// 沿用）：内容 HStack 左缘在 "fanScroll" 坐标空间
+    /// 内的 minX（经 FanScrollOffsetKey 上报，静止时为
+    /// 0、向左滑为负）与轮播 ScrollView 的宽度；每卡距
+    /// 视口中心的归一化距离由偏移与 index 换算（见
+    /// fanDistance），每卡的环形变换全由该距离驱动。
     @State private var fanContentMinX: CGFloat? = nil
     @State private var fanViewportWidth: CGFloat = 0
 
@@ -428,7 +429,7 @@ struct TendiesView: View {
         .padding(.top, 10)
     }
 
-    // MARK: - 扇形壁纸区
+    // MARK: - 环形轮播壁纸区（run #135 由扇形改 3D 环形，内部符号仍沿用 fan 前缀）
 
     private var fanZone: some View {
         Group {
@@ -450,21 +451,23 @@ struct TendiesView: View {
                 .padding(.vertical, 30)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    // 交叠量（run #132）：-62 → -34，150pt 宽卡每张
-                    // 露出约 116pt（三分之二强），画面与卡名不再
-                    // 被邻卡大面积盖住。
-                    HStack(spacing: -34) {
+                    // 交叠量（run #135）：随环形轮播收紧，间距
+                    // -34 → -44，pitch = 150 − 44 = 106，屏内
+                    // 能排下更多转侧的卡（#132 时为 -34/116、
+                    // #134 沿用）。
+                    HStack(spacing: -44) {
                         ForEach(Array(vm.tendieItems.enumerated()), id: \.element.id) { idx, item in
                             fanCard(item: item, index: idx)
                         }
                     }
                     .padding(.horizontal, 24)
-                    // 底部内边距（run #134）：原上下各 28 的基础
-                    // 上再留 16pt 给弧线下沉（最大约 32pt，含
-                    // jitter），下沉的卡不被 ScrollView 裁掉、
-                    // 也不压到下方已选行。
+                    // 底部内边距（run #135）：环形下沉最大值
+                    // 9×2.2² ≈ 44pt，底部留 44 + 约 16 安全量，
+                    // 下沉的卡不被 ScrollView 裁掉、也不压到
+                    // 下方已选行；顶部保持 28（中心卡放大
+                    // 1.10 的上沿外溢约 10pt 在其内）。
                     .padding(.top, 28)
-                    .padding(.bottom, 44)
+                    .padding(.bottom, 60)
                     .scrollTargetLayout()
                     // 横滑偏移上报（run #134）：背景 GeometryReader
                     // 读内容在 "fanScroll" 坐标空间内的 minX，
@@ -504,36 +507,53 @@ struct TendiesView: View {
         }
     }
 
-    /// 本卡距视口中心的归一化距离（run #134）：卡中心 x 由
-    /// 内容偏移（HStack 左缘 minX）+ 左内边距 24 + index×pitch
-    /// + 半卡宽 75 推得，减视口中心后除以 pitch 归一化；
-    /// 正值在视口中心右侧。pitch = 卡宽 150 − 交叠 34 = 116。
+    /// 本卡距视口中心的归一化距离（run #134 立框架，
+    /// run #135 沿用）：卡中心 x 由内容偏移（HStack 左缘
+    /// minX）+ 左内边距 24 + index×pitch + 半卡宽 75
+    /// 推得，减视口中心后除以 pitch 归一化；正值在视口
+    /// 中心右侧。pitch = 卡宽 150 − 交叠 44 = 106
+    /// （run #135 随环形间距收紧，#134 时为 116）。
     /// 符号自洽：向左滑时内容 minX 变负，右侧卡的中心随之
     /// 左移趋向视口中心、d 趋 0。视口宽尚未测得时回 0。
     private func fanDistance(index: Int) -> Double {
         guard fanViewportWidth > 0 else { return 0 }
-        let pitch: CGFloat = 116
+        let pitch: CGFloat = 106
         let cardCenter = (fanContentMinX ?? 0) + 24 + CGFloat(index) * pitch + 75
         return Double((cardCenter - fanViewportWidth / 2) / pitch)
     }
 
     private func fanCard(item: TendieItem, index: Int) -> some View {
-        // 偏移驱动的扇形变换量（run #134）：d 为本卡距视口
-        // 中心的归一化距离（见 fanDistance），钳到 ±1.6。
-        // jitter 按 index 确定性伪随机（渲染间稳定），且乘
-        // min(|d|, 1) 向中心收干净——吸附到正中的卡永远端正。
+        // 环形轮播变换量（run #135，偏移驱动框架沿用
+        // #134）：d 为本卡距视口中心的归一化距离（见
+        // fanDistance），各变换量由 d 连续推导——不再有
+        // #134 的 2D 旋转/底部支点锚/凌乱 jitter：3D
+        // 转侧 40°×clamp(d, ±2)（rotation3DEffect，
+        // perspective 0.35）；缩放中心 1.10 向远端收到
+        // 约 0.90；纵向 9×clamp(d, ±2.2)² 沿弧下沉；
+        // 缩略图层去色压暗、远端轻微透、阴影随 |d|
+        // 收紧，都在此算好套用。吸附到正中的卡（|d|
+        // 最小者）即聚焦卡，靠缩放/饱和天然成立，
+        // 不另设状态。
         let d = fanDistance(index: index)
-        let dc = min(1.6, max(-1.6, d))
-        let ad = abs(dc)
-        let near = min(ad, 1.0)
-        let jitterAngle = Double(((index * 37) % 5) - 2) * near
-        let jitterY = Double(((index * 53) % 9) - 4) * near
-        let fanRotation = 10.5 * dc + jitterAngle
-        let fanYOffset = 11 * dc * dc + jitterY
-        let fanScale = 1 + 0.06 * (1 - ad / 1.6)
-        let fanZIndex = 100 - (ad * 10).rounded()
+        let ad = abs(d)
+        let ringRotation = 40 * min(2.0, max(-2.0, d))
+        let ringScale = 1.10 - 0.09 * min(ad, 2.2)
+        let ringDOff = min(2.2, max(-2.2, d))
+        let ringYOffset = 9 * ringDOff * ringDOff
+        let ringOpacity = 1 - 0.08 * min(max(ad - 1, 0), 1.2) / 1.2
+        let ringZIndex = 100 - (ad * 10).rounded()
+        let ringSaturation = 1 - 0.92 * min(ad / 1.7, 1)
+        let ringBrightness = -0.04 * min(ad, 2)
+        let ringNear = 1 - min(ad, 1)
+        let ringShadowRadius = 6 + 14 * ringNear
+        let ringShadowY = 4 + 6 * ringNear
         return ZStack(alignment: .bottomLeading) {
+            // 去色/压暗只作用于缩略图层（run #135）：远端
+            // 卡趋向灰调（贴参考视频的磨砂灰），其上的卡名
+            // 与勾选徽章不受滤镜、保持清晰。
             TendieThumbnailView(item: item)
+                .saturation(ringSaturation)
+                .brightness(ringBrightness)
                 .frame(width: 150, height: 200)
                 .clipped()
             LinearGradient(colors: [.clear, .black.opacity(0.38)],
@@ -570,11 +590,14 @@ struct TendiesView: View {
                     .stroke(Color.blue, lineWidth: 3)
             }
         }
-        .shadow(color: .black.opacity(0.18), radius: 12, x: 0, y: 6)
+        // 阴影（run #135）：黑 0.22，半径/纵偏随 |d| 衰减
+        // ——近中心卡投影大而软、远端收紧（19 张全挂动态
+        // 阴影的性能取舍，量在卡头算好）。
+        .shadow(color: .black.opacity(0.22), radius: CGFloat(ringShadowRadius), x: 0, y: CGFloat(ringShadowY))
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        // 选中回弹（run #130 的 1.04 + 弹簧）自 run #134 起
-        // 并入链尾的偏移变换 scaleEffect，不再是独立修饰符
-        // （见下方扇形几何注释）。
+        // 选中回弹（run #130 的 1.04 + 弹簧）并入链尾的
+        // 偏移变换 scaleEffect，不再是独立修饰符（见下方
+        // 环形几何注释）。
         // 点按选中（run #130：手势实现取代原 Button+contextMenu，
         // 附一次轻触觉，沿用 App 内 UIImpactFeedbackGenerator 口径）。
         .onTapGesture {
@@ -587,26 +610,28 @@ struct TendiesView: View {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             fanMenuTarget = item
         }
-        // 扇形几何（run #134，偏移量驱动，弃 scrollTransition）：
-        // 根因——scrollTransition 的 phase 按卡片进出滚动
-        // 视口「边缘」计量，完全在屏内的卡 phase≈0；屏上
-        // 常驻的三张卡全在 identity 区，#133 真机三卡角度
-        // 恒为 0、无弧度。现改由本卡距视口中心的连续距离
-        // d 驱动（fanDistance，由滚动偏移与 index 换算，与
-        // 边缘无关）：旋转 10.5°×clamp(d, ±1.6) 绕底部支点
-        // anchor(0.5, 1.15)（run #132 定）上张下收；纵向
-        // 11×d² 下沉成弧——中心高、两侧沿弧下沉（|d|=1 约
-        // +11、|d|=1.6 约 +28）；缩放中心 1.06 向两侧收至
-        // 1.0；zIndex 按 |d| 就近在上。凌乱 jitter（角度
-        // ±2°、纵向 ±4pt）叠加在卡头算好，此处直接套用。
-        // 选中回弹并入缩放：fanScale × 1.04，弹簧
+        // 环形几何（run #135）：整带由 2D 扇形换成 3D
+        // 环形（圆柱）轮播——每卡绕自身中心 Y 轴转侧
+        // （rotation3DEffect，perspective 0.35），角度
+        // 40°×clamp(d, ±2)：正中卡正对 viewer，两侧像
+        // 贴在圆柱面上依次转过去，并沿弧下沉（offset
+        // 9×clamp(d, ±2.2)²，|d|=1 约 +9、|d|=2.2 约
+        // +44）、缩放由中心 1.10 收到远端约 0.90、远端
+        // 轻微透（opacity 至 0.92）。驱动量仍是 #134
+        // 的连续距离 d（fanDistance），与滚动边缘无关，
+        // 停稳时屏内每张卡都有确定的转侧与下沉。
+        // 选中回弹并入缩放：ringScale × 1.04，弹簧
         // .animation(value: isSelected) 只在选中态变化时
         // 触发，不干扰偏移驱动的逐帧变换。
-        .rotationEffect(.degrees(fanRotation), anchor: UnitPoint(x: 0.5, y: 1.15))
-        .offset(y: fanYOffset)
-        .scaleEffect(fanScale * (item.isSelected ? 1.04 : 1.0))
+        // 已知取舍：3D 旋转后点按/长按的 hit 区仍按未
+        // 旋转的卡框判定（contentShape），转侧大时点感
+        // 与视觉轮廓不完全一致，见 SPEC #135 未验证项。
+        .rotation3DEffect(.degrees(ringRotation), axis: (x: 0, y: 1, z: 0), perspective: 0.35)
+        .offset(y: ringYOffset)
+        .scaleEffect(ringScale * (item.isSelected ? 1.04 : 1.0))
+        .opacity(ringOpacity)
         .animation(.spring(response: 0.3, dampingFraction: 0.55), value: item.isSelected)
-        .zIndex(fanZIndex)
+        .zIndex(ringZIndex)
         .task {
             // 已存预览缺失或解码失败时，从包内重新提取（与旧列表行同口径）。
             vm.regenerateTendiePreview(itemID: item.id)

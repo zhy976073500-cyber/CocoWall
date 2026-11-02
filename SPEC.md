@@ -2171,3 +2171,85 @@ sheet、其他页面、TendieThumbnailView 一概未动。
   是否对上定稿图、滚动中扇形随偏移连续变形的顺滑度、
   viewAligned 吸附后正中卡是否端正、长按冻结与点选
   回弹回归。
+
+## 改动登记 · 扇形区整体换成 3D 环形（圆柱）轮播（run #135，2026-11-02，Sage 参考视频定的方向）
+
+只动 TendiesView.swift 的 fanZone/fanCard（内部符号
+仍沿用 fan 前缀），在远程 head 65ab499（#134）之上。
+展开页（#133 定稿）、底部 sheet、其他页面、
+TendieThumbnailView 本体一概未动。
+
+### 背景
+
+Sage 发来 3D 环形轮播的参考视频（网页 demo：卡片像
+贴在圆柱面上，正中卡正对 viewer、原色、最大、带
+辉光，两侧依次转侧、后退、变灰，整条带是弯的），
+并认可了主线按其几何做的演示（carousel-ring.html /
+carousel-ring-demo.mp4，存 cocowall-design/）：
+「想要视频里这样的卡片轮播效果」。#134 的 2D 扇形
+（底部支点旋转＋下沉＋jitter）整套由本轮的 3D 环形
+取代；演示与真机的剩余差距（半透明磨砂质感、聚焦
+彩色辉光）属参数/材质层，不在本轮结构内。
+
+### 改法
+
+- 底盘沿用 #134：横向 ScrollView + viewAligned
+  吸附 + coordinateSpace "fanScroll" + PreferenceKey
+  连续偏移追踪（fanContentMinX/fanViewportWidth）+
+  fanDistance 每卡归一化距离 d。仅 pitch 随间距
+  收紧改 116 → 106（卡仍 150×200，HStack spacing
+  −34 → −44），fanZone 内容底部 padding 44 → 60
+  （新下沉最大值 9×2.2² ≈ 44 + 约 16 安全量；顶部
+  保持 28）。
+- 每卡变换全部由 d 连续驱动（删 #134 的 2D
+  rotationEffect/anchor(0.5,1.15)/凌乱 jitter）：
+
+| 量 | 公式 | 中心（d=0） | 远端 |
+|---|---|---|---|
+| 3D 转侧 | rotation3DEffect 40°×clamp(d, ±2)，axis (0,1,0)，perspective 0.35 | 0° 正对 | ±80° 封顶（\|d\|=1 时 ±40°） |
+| 缩放 | 1.10 − 0.09×min(\|d\|, 2.2)（再 ×选中回弹 1.04，沿用 #130 弹簧） | 1.10 | \|d\|=2.2 时约 0.90 |
+| 纵向下沉 | 9×clamp(d, ±2.2)² | 0 | \|d\|=1 约 +9、\|d\|=2.2 约 +44 |
+| 缩略图饱和 | 1 − 0.92×min(\|d\|/1.7, 1)，仅缩略图层 | 1.0 原色 | \|d\|≥1.7 时 0.08 近灰 |
+| 缩略图亮度 | −0.04×min(\|d\|, 2)，仅缩略图层 | 0 | −0.08 |
+| 不透明度 | 1 − 0.08×min(max(\|d\|−1, 0), 1.2)/1.2 | 1.0 | \|d\|≥2.2 时 0.92 |
+| 阴影 | 黑 0.22，radius = 6+14×(1−min(\|d\|,1))，y = 4+6×(1−min(\|d\|,1)) | radius 20 / y 10 | radius 6 / y 4 |
+| zIndex | 100 − round(\|d\|×10) | 100 | 随 \|d\| 递减 |
+
+- 聚焦卡不另设状态：吸附后 |d| 最小者靠缩放 1.10
+  与饱和 1.0 天然成为焦点。
+- 去色/压暗只挂在 TendieThumbnailView 上（.saturation
+  /.brightness）；卡名、底部渐变与勾选徽章在缩略图
+  之上不受滤镜，保持清晰。
+- 交互保留：点按切换选中（与展开页共用同一选择集）、
+  勾选徽章、点选轻触觉、选中回弹并入 scaleEffect
+  （弹簧 .animation(value: isSelected) 沿用）；长按
+  ＝#130 手势 + scrollDisabled 冻结 + 页面根部
+  confirmationDialog（详情/删除）；已选行、展开钮、
+  空态文案、底部 sheet 全部不动。
+
+### 有意取舍（Sage 已知，验收后再议）
+
+- **有限长条，不做无限环形绕圈**：参考演示是环
+  （卡从一侧绕回另一侧），真实 19 张本轮先做有限
+  长条 + viewAligned 吸附，两端就是首/尾卡，不绕圈。
+- **不做自动巡航**：演示里的自动巡航（闲置自动转）
+  本轮不做，App 内只做手势驱动。
+
+### 未动与未验证
+
+- 展开页、sheet、其他页面、TendieThumbnailView 本体、
+  AppViewModel、引擎、rust 树、受保护文件、CI
+  workflow 未动；工作区其余既存脏改动未带入本轮。
+- 本地核查：TendiesView.swift swiftc -parse
+  （Swift 6.1）通过；旧 fanRotation/fanScale/jitter
+  标识已无残留；最终以推送后 CI 真 Xcode 26 编译
+  为准。
+- 未验证项（归 Sage 真机）：①3D 转侧的立体感与
+  perspective 0.35 的近大远小是否对上参考视频；
+  ②停稳时聚焦卡（缩放/原色）是否够突出、两侧去色
+  下沉成弧是否成「弯带」；③滚动中 19 张动态阴影
+  （半径随 |d| 衰减）的帧率；④**hit 区已知取舍**：
+  3D 旋转后点按/长按判定仍按未旋转的卡框
+  （contentShape），转侧大的卡点感与视觉轮廓不
+  完全一致，误触/漏触手感待真机评估；⑤长按冻结、
+  点选回弹、与展开页共用选择集的回归。
