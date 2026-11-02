@@ -136,7 +136,13 @@ enum PrivateCALoader {
         // parser has no delegate outlet this is a soft miss — parsing
         // continues without resource vending.
         let delegate = CAMLResourceDelegate(packageDir: info.dir)
-        delegate.onEvent = { log.append("CAMLParser delegate: \($0)") }
+        // NOTE: `log` is inout, so an escaping closure (the delegate's
+        // onEvent) cannot capture it directly — Swift rejects that
+        // ("escaping closure captures 'inout' parameter"). Capture a
+        // reference-type sink instead and flush it into `log` after
+        // each synchronous parse call, preserving event order.
+        let eventSink = CAMLDelegateEventSink()
+        delegate.onEvent = { eventSink.lines.append("CAMLParser delegate: \($0)") }
         // Keep the delegate alive for the whole parse (the parser holds
         // delegates weakly, like most Cocoa parsers).
         objc_setAssociatedObject(parser, &delegateAssociationKey, delegate,
@@ -150,6 +156,7 @@ enum PrivateCALoader {
         // B1: -parseContentsOfURL: — preferred because the document URL
         // anchors relative src="assets/..." resolution to the .ca dir.
         if let ok = Dyn.callBool(parser, selector: "parseContentsOfURL:", arg: camlURL as NSURL) {
+            log.append(contentsOf: eventSink.lines); eventSink.lines.removeAll()
             log.append("CAMLParser/-parseContentsOfURL: 返回 \(ok)")
             if ok, let layer = Dyn.getObject(parser, selector: "result") as? CALayer {
                 return CALoadResult(layer: layer, method: "CAMLParser/-parseContentsOfURL:", log: log)
@@ -164,6 +171,7 @@ enum PrivateCALoader {
         // diagnostics panel will show any contents that stayed empty.
         if let data = try? Data(contentsOf: camlURL) {
             if let ok = Dyn.callBool(parser, selector: "parseData:", arg: data as NSData) {
+                log.append(contentsOf: eventSink.lines); eventSink.lines.removeAll()
                 log.append("CAMLParser/-parseData: 返回 \(ok) (\(data.count) 字节)")
                 if ok, let layer = Dyn.getObject(parser, selector: "result") as? CALayer {
                     return CALoadResult(layer: layer, method: "CAMLParser/-parseData:", log: log)
@@ -175,11 +183,19 @@ enum PrivateCALoader {
         } else {
             log.append("CAMLParser: 读取 \(info.rootDocumentName) 失败，跳过 -parseData:")
         }
+        log.append(contentsOf: eventSink.lines); eventSink.lines.removeAll()
         return nil
     }
 }
 
 private var delegateAssociationKey: UInt8 = 0
+
+/// Reference-type holder for CAMLParser delegate events (see the
+/// escaping-closure note in loadViaCAMLParser): a class instance can be
+/// captured by an escaping closure, an inout [String] cannot.
+private final class CAMLDelegateEventSink {
+    var lines: [String] = []
+}
 
 /// CAMLParser delegate (private protocol, matched by selector).
 ///
