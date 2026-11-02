@@ -189,6 +189,17 @@ func loopbackPresentation(phase: LoopbackPhase,
     }
 }
 
+/// 扇形横滑偏移上报（run #134）：内容 HStack 背景的
+/// GeometryReader 把自身在 "fanScroll" 坐标空间内的 minX
+/// 经此 key 上报给 TendiesView——iOS 17 兼容的偏移追踪法，
+/// 不依赖 iOS 18 的 onScrollGeometryChange。
+private struct FanScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 struct TendiesView: View {
     @EnvironmentObject var vm: AppViewModel
     @State private var showFilePicker = false
@@ -198,6 +209,13 @@ struct TendiesView: View {
     /// 扇形卡长按菜单的目标项（run #130）：非 nil 时扇形滚动
     /// 冻结、页面根部弹 confirmationDialog 呈现「详情/删除」。
     @State private var fanMenuTarget: TendieItem? = nil
+    /// 扇形横滑偏移与视口宽（run #134）：内容 HStack 左缘在
+    /// "fanScroll" 坐标空间内的 minX（经 FanScrollOffsetKey
+    /// 上报，静止时为 0、向左滑为负）与扇形 ScrollView 的
+    /// 宽度；每卡距视口中心的归一化距离由偏移与 index 换算
+    /// （见 fanDistance），弧度几何不再走 scrollTransition。
+    @State private var fanContentMinX: CGFloat? = nil
+    @State private var fanViewportWidth: CGFloat = 0
 
     private var selectedCount: Int {
         vm.tendieItems.filter { $0.isSelected }.count
@@ -437,12 +455,45 @@ struct TendiesView: View {
                     // 被邻卡大面积盖住。
                     HStack(spacing: -34) {
                         ForEach(Array(vm.tendieItems.enumerated()), id: \.element.id) { idx, item in
-                            fanCard(item: item, index: idx, count: vm.tendieItems.count)
+                            fanCard(item: item, index: idx)
                         }
                     }
                     .padding(.horizontal, 24)
-                    .padding(.vertical, 28)
+                    // 底部内边距（run #134）：原上下各 28 的基础
+                    // 上再留 16pt 给弧线下沉（最大约 32pt，含
+                    // jitter），下沉的卡不被 ScrollView 裁掉、
+                    // 也不压到下方已选行。
+                    .padding(.top, 28)
+                    .padding(.bottom, 44)
                     .scrollTargetLayout()
+                    // 横滑偏移上报（run #134）：背景 GeometryReader
+                    // 读内容在 "fanScroll" 坐标空间内的 minX，
+                    // 经 FanScrollOffsetKey 交给 fanDistance
+                    // 换算每卡距视口中心的距离。
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear
+                                .preference(key: FanScrollOffsetKey.self,
+                                            value: geo.frame(in: .named("fanScroll")).minX)
+                        }
+                    }
+                }
+                .coordinateSpace(name: "fanScroll")
+                .onPreferenceChange(FanScrollOffsetKey.self) { newValue in
+                    // 0.5pt 死区防抖：变化小于阈值不写状态，
+                    // 避免滚动中无谓的重渲染抖动。
+                    if let old = fanContentMinX, abs(old - newValue) < 0.5 { return }
+                    fanContentMinX = newValue
+                }
+                // 视口宽度（run #134）：fanDistance 换算视口中心用。
+                .background {
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear { fanViewportWidth = geo.size.width }
+                            .onChange(of: geo.size.width) { _, newWidth in
+                                fanViewportWidth = newWidth
+                            }
+                    }
                 }
                 // 停下时弹簧式吸附到整卡（run #130，苹果信息式 Q 弹）。
                 .scrollTargetBehavior(.viewAligned)
@@ -453,11 +504,34 @@ struct TendiesView: View {
         }
     }
 
-    private func fanCard(item: TendieItem, index: Int, count: Int) -> some View {
-        // zIndex 仍按与列表中点的距离排（近中点在上）；旋转、
-        // 缩放、上浮已改由滚动相位驱动（run #133-B，见下方
-        // scrollTransition），不再有 index 循环的静态角度。
-        let center = Double(count - 1) / 2.0
+    /// 本卡距视口中心的归一化距离（run #134）：卡中心 x 由
+    /// 内容偏移（HStack 左缘 minX）+ 左内边距 24 + index×pitch
+    /// + 半卡宽 75 推得，减视口中心后除以 pitch 归一化；
+    /// 正值在视口中心右侧。pitch = 卡宽 150 − 交叠 34 = 116。
+    /// 符号自洽：向左滑时内容 minX 变负，右侧卡的中心随之
+    /// 左移趋向视口中心、d 趋 0。视口宽尚未测得时回 0。
+    private func fanDistance(index: Int) -> Double {
+        guard fanViewportWidth > 0 else { return 0 }
+        let pitch: CGFloat = 116
+        let cardCenter = (fanContentMinX ?? 0) + 24 + CGFloat(index) * pitch + 75
+        return Double((cardCenter - fanViewportWidth / 2) / pitch)
+    }
+
+    private func fanCard(item: TendieItem, index: Int) -> some View {
+        // 偏移驱动的扇形变换量（run #134）：d 为本卡距视口
+        // 中心的归一化距离（见 fanDistance），钳到 ±1.6。
+        // jitter 按 index 确定性伪随机（渲染间稳定），且乘
+        // min(|d|, 1) 向中心收干净——吸附到正中的卡永远端正。
+        let d = fanDistance(index: index)
+        let dc = min(1.6, max(-1.6, d))
+        let ad = abs(dc)
+        let near = min(ad, 1.0)
+        let jitterAngle = Double(((index * 37) % 5) - 2) * near
+        let jitterY = Double(((index * 53) % 9) - 4) * near
+        let fanRotation = 10.5 * dc + jitterAngle
+        let fanYOffset = 11 * dc * dc + jitterY
+        let fanScale = 1 + 0.06 * (1 - ad / 1.6)
+        let fanZIndex = 100 - (ad * 10).rounded()
         return ZStack(alignment: .bottomLeading) {
             TendieThumbnailView(item: item)
                 .frame(width: 150, height: 200)
@@ -498,9 +572,9 @@ struct TendiesView: View {
         }
         .shadow(color: .black.opacity(0.18), radius: 12, x: 0, y: 6)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        // 选中态弹簧缩放回弹（run #130）。
-        .scaleEffect(item.isSelected ? 1.04 : 1.0)
-        .animation(.spring(response: 0.3, dampingFraction: 0.55), value: item.isSelected)
+        // 选中回弹（run #130 的 1.04 + 弹簧）自 run #134 起
+        // 并入链尾的偏移变换 scaleEffect，不再是独立修饰符
+        // （见下方扇形几何注释）。
         // 点按选中（run #130：手势实现取代原 Button+contextMenu，
         // 附一次轻触觉，沿用 App 内 UIImpactFeedbackGenerator 口径）。
         .onTapGesture {
@@ -513,28 +587,26 @@ struct TendiesView: View {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             fanMenuTarget = item
         }
-        .zIndex(-abs(Double(index) - center))
-        // 扇形几何（run #133-B 二次校正，取代 #130/#132 的
-        // 「index 静态 base 角度 + 回正抵消」）：旧实现保留了
-        // ±8/±4 的 index 循环角度阶梯，角度不由卡片在屏幕上
-        // 的位置决定，停稳时邻卡倾斜看运气，达不到定稿图
-        // （底部支点、邻卡明显张开约 ±11°、中心卡主导）的
-        // 对称扇开。现旋转/缩放/上浮全部改由 scrollTransition
-        // 相位驱动，卡片静止角度一律 0：角度 =
-        // 13°×clamp(phase.value, -1, 1)，中心卡回正、越往
-        // 两侧倾斜越大封顶 13°（停稳时邻卡 |phase|≈0.77
-        // 对应约 ±10°，与定稿图一致），绕底部支点
-        // anchor(0.5, 1.15)（run #132 定）上张下收；缩放
-        // 1+0.06×(1-|phase|)、上浮 -6×(1-|phase|) 同源
-        // 驱动，中心卡放大上浮主导，滚动时连续扇动。
-        .scrollTransition(.interactive) { content, phase in
-            let v = min(1.0, max(-1.0, phase.value))
-            let a = abs(v)
-            return content
-                .scaleEffect(1 + 0.06 * (1 - a))
-                .offset(y: -6 * (1 - a))
-                .rotationEffect(.degrees(13 * v), anchor: UnitPoint(x: 0.5, y: 1.15))
-        }
+        // 扇形几何（run #134，偏移量驱动，弃 scrollTransition）：
+        // 根因——scrollTransition 的 phase 按卡片进出滚动
+        // 视口「边缘」计量，完全在屏内的卡 phase≈0；屏上
+        // 常驻的三张卡全在 identity 区，#133 真机三卡角度
+        // 恒为 0、无弧度。现改由本卡距视口中心的连续距离
+        // d 驱动（fanDistance，由滚动偏移与 index 换算，与
+        // 边缘无关）：旋转 10.5°×clamp(d, ±1.6) 绕底部支点
+        // anchor(0.5, 1.15)（run #132 定）上张下收；纵向
+        // 11×d² 下沉成弧——中心高、两侧沿弧下沉（|d|=1 约
+        // +11、|d|=1.6 约 +28）；缩放中心 1.06 向两侧收至
+        // 1.0；zIndex 按 |d| 就近在上。凌乱 jitter（角度
+        // ±2°、纵向 ±4pt）叠加在卡头算好，此处直接套用。
+        // 选中回弹并入缩放：fanScale × 1.04，弹簧
+        // .animation(value: isSelected) 只在选中态变化时
+        // 触发，不干扰偏移驱动的逐帧变换。
+        .rotationEffect(.degrees(fanRotation), anchor: UnitPoint(x: 0.5, y: 1.15))
+        .offset(y: fanYOffset)
+        .scaleEffect(fanScale * (item.isSelected ? 1.04 : 1.0))
+        .animation(.spring(response: 0.3, dampingFraction: 0.55), value: item.isSelected)
+        .zIndex(fanZIndex)
         .task {
             // 已存预览缺失或解码失败时，从包内重新提取（与旧列表行同口径）。
             vm.regenerateTendiePreview(itemID: item.id)

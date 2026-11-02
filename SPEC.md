@@ -2088,3 +2088,86 @@ viewAligned 吸附、点选弹簧+触觉、长按冻结+根部菜单、
 - 未验证项（归 Sage 真机）：格子是否全行等高对齐（本轮
   核心验收点）、3:4 裁切观感、扇形停稳时邻卡张开角度与
   定稿图的接近程度、长按菜单与滚动冻结回归。
+
+## 改动登记 · 扇形弧度重构（run #134，2026-11-02，第三次动扇形几何）
+
+只动 TendiesView.swift 的 fanZone/fanCard，在远程
+head a860a4d（#133）之上。展开页（#133 定稿）、底部
+sheet、其他页面、TendieThumbnailView 一概未动。
+
+### 症状 → 根因 → 改法
+
+症状：#133 交付后 Sage 真机截图（13:49）质疑「为什么
+还是没有弧度，不够凌乱」——屏上三张卡全部端正、无
+倾斜、无弧线下沉，与定稿图（fan2：底部支点、邻卡明显
+张开、中心高两侧低）仍对不上。
+
+根因：#133 的驱动量选错了计量口径。scrollTransition
+的 phase 是按卡片进出滚动视口**边缘**计量的过渡进度：
+卡片完全进入视口后 phase 即回到 0（identity）。屏上
+常驻的三张卡全程都在 identity 区，于是旋转/缩放/上浮
+恒为 0——只有正滑出屏幕边缘的那张卡才歪。弧度本质上
+要的是「每张卡按它离视口中心有多远来变形」，与边缘
+无关，phase 天然给不了。
+
+改法（主线定死方案，偏移量驱动，弃 scrollTransition）：
+
+- 连续追踪横向滚动偏移（iOS 17 兼容，不用 iOS 18 的
+  onScrollGeometryChange 作唯一手段）：ScrollView 加
+  `.coordinateSpace(name: "fanScroll")`，内容 HStack
+  背景挂 GeometryReader，把自身在该坐标空间内的 minX
+  经 FanScrollOffsetKey（PreferenceKey）上报，
+  onPreferenceChange 写 @State fanContentMinX（变化
+  <0.5pt 不写，死区防抖）；ScrollView 背景另挂
+  GeometryReader 测视口宽 fanViewportWidth。
+- 每卡距离：d =（卡中心 x − 视口中心 x）/ pitch，
+  pitch = 116（卡宽 150 − 交叠 34）；卡中心 x 由偏移
+  推导 = minX + 左内边距 24 + index×116 + 半卡宽 75。
+  符号自洽：向左滑 minX 变负，右侧卡中心左移趋向
+  视口中心、d 趋 0。
+- 变换（d 先钳到 ±1.6，锚点保持 UnitPoint(0.5, 1.15)）：
+  - 旋转 rotation = 10.5° × d ＋ jitterAngle（|d|=1.6
+    时 16.8°＋jitter）；
+  - 纵向下沉 yOffset = 11 × d² ＋ jitterY（向下为正，
+    成弧：|d|=1 约 +11、|d|=1.6 约 +28，中心最高、
+    两侧沿弧下沉）；
+  - 缩放 scale = 1 + 0.06 ×（1 − |d|/1.6）（中心 1.06
+    → 远端 1.0）；
+  - zIndex = 100 − round(|d| × 10)（越近中心越在上，
+    取代 #128 起按列表中点距离排的旧法）。
+- 凌乱 jitter（按 index 的确定性伪随机、渲染间稳定）：
+  jitterAngle = ((index×37) % 5) − 2 ∈ −2..2°，
+  jitterY = ((index×53) % 9) − 4 ∈ −4..4pt；两者都乘
+  min(|d|, 1)——越接近中心越收干净，吸附到正中的卡
+  角度、下沉、jitter 全归 0，永远端正。
+- 扇区留量：内容底部内边距 28 → 44（+16 给下沉；
+  最大下沉约 32pt 含 jitter，仍在内边距内，下沉的卡
+  不被 ScrollView 裁掉、不压下方已选行）；顶部保持 28。
+
+### 保留与取舍
+
+- 保留：viewAligned 吸附、交叠 −34、卡 150×200、
+  卡名限宽 110、长按冻结滚动（scrollDisabled）+ 页面
+  根部 confirmationDialog、点按选中（勾选徽章 + 轻
+  触觉）。
+- 点选动画取舍：#130 的选中回弹（scaleEffect 1.04 +
+  spring(response 0.3, damping 0.55)）原为独立修饰符，
+  本轮并入偏移变换的同一个 scaleEffect
+  （fanScale ×（isSelected ? 1.04 : 1.0）），弹簧
+  .animation(value: isSelected) 保留——只在选中态变化
+  时触发，不干扰偏移驱动的逐帧旋转/下沉；回弹观感
+  与原先一致，未单独删除。
+
+### 未动与未验证
+
+- 展开页、sheet、其他页面、TendieThumbnailView、
+  AppViewModel、引擎、rust 树、受保护文件、CI
+  workflow 未动；工作区其余既存脏改动未带入本轮。
+- 本地核查：TendiesView.swift swiftc -parse
+  （Swift 6.1）通过；scrollTransition 已从 fanCard
+  移除（仅注释中提及）；最终以推送后 CI 真 Xcode 26
+  编译为准。
+- 未验证项（归 Sage 真机）：停稳时三卡的弧度与凌乱度
+  是否对上定稿图、滚动中扇形随偏移连续变形的顺滑度、
+  viewAligned 吸附后正中卡是否端正、长按冻结与点选
+  回弹回归。
