@@ -211,6 +211,11 @@ private struct FanCardView: View {
     /// 扫光触发 token：本卡为停稳聚焦卡时等于父视图的
     /// 递增计数、非聚焦卡为 0；跳到新的正值时播一次扫光。
     let sweepToken: Int
+    /// 拖动进行中标记（run #143 渲染减负）：父视图以
+    /// fanDragStart != nil 传入；为真期间近中心卡直跟
+    /// p、全卡阴影切静态值（见 interactiveFace 与
+    /// activeShadow* 口径）。
+    let isDragging: Bool
     let onTap: () -> Void
     let onLongPress: () -> Void
 
@@ -222,12 +227,14 @@ private struct FanCardView: View {
     @State private var sweepX: CGFloat = -155
 
     init(item: TendieItem, index: Int, position: Double, sweepToken: Int,
+         isDragging: Bool,
          onTap: @escaping () -> Void,
          onLongPress: @escaping () -> Void) {
         self.item = item
         self.index = index
         self.position = position
         self.sweepToken = sweepToken
+        self.isDragging = isDragging
         self.onTap = onTap
         self.onLongPress = onLongPress
         // 首帧即以真实 p 呈现，不从别处弹入。
@@ -261,8 +268,14 @@ private struct FanCardView: View {
     private var lagScale: Double { 1.08 - 0.07 * min(abs(shownD), 2) }
     /// 整卡压暗量。
     private var lagBrightness: Double { -0.28 * min(abs(shownD) / 1.8, 1) }
-    /// 模糊组虚化半径（pt）。
-    private var lagBlur: CGFloat { CGFloat(1.6 * min(max(abs(shownD) - 0.55, 0) / 1.45, 1)) }
+    /// 模糊组虚化半径（pt）。run #143：半径先量化到
+    /// 0.5pt 台阶再施加——逐帧连续变化的半径会让模糊
+    /// 每帧换一套光栅化参数、徒增开销；曲线本体（#137
+    /// 口径）不变，只是输出取整到最近 0.5。
+    private var lagBlur: CGFloat {
+        let raw = 1.6 * min(max(abs(shownD) - 0.55, 0) / 1.45, 1)
+        return CGFloat((raw * 2).rounded() / 2)
+    }
     /// 缩略图去色后的饱和度。
     private var lagSaturation: Double { 1 - 0.30 * min(abs(shownD) / 1.8, 1) }
     /// 层级（近中心压远端）。
@@ -273,6 +286,16 @@ private struct FanCardView: View {
     private var lagShadowRadius: CGFloat { CGFloat(6 + 14 * (1 - min(abs(shownD), 1))) }
     /// 阴影纵向偏移（pt）。
     private var lagShadowY: CGFloat { CGFloat(4 + 6 * (1 - min(abs(shownD), 1))) }
+    // 拖动中的阴影（run #143）：拖动期间全卡改用一组
+    // 静态值（radius 10 / y 6 / opacity 0.18），免去阴影
+    // 随 d̃ 逐帧重算；停稳（松手）后恢复上面随 |d̃|
+    // 衰减的动态口径，数值与切换时机都不改观感常数。
+    /// 当前生效的阴影半径（pt）。
+    private var activeShadowRadius: CGFloat { isDragging ? 10 : lagShadowRadius }
+    /// 当前生效的阴影纵向偏移（pt）。
+    private var activeShadowY: CGFloat { isDragging ? 6 : lagShadowY }
+    /// 当前生效的阴影不透明度。
+    private var activeShadowOpacity: Double { isDragging ? 0.18 : 0.22 }
 
     /// 模糊组（run #140 自 body 拆出）：缩略图 + 底部
     /// 渐变 + 卡名——模糊只作用于此组，勾选徽章在其
@@ -299,6 +322,9 @@ private struct FanCardView: View {
                 .padding(.bottom, 9)
                 .padding(.trailing, item.isSelected ? 34 : 10)
         }
+        // run #143：先 compositingGroup 把卡面拍平，
+        // 模糊只对拍平结果算一次，不再逐子层重复采样。
+        .compositingGroup()
         .blur(radius: lagBlur)
     }
 
@@ -382,7 +408,7 @@ private struct FanCardView: View {
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(selectionRing)
             .overlay(sweepOverlay)
-            .shadow(color: .black.opacity(0.22), radius: lagShadowRadius, x: 0, y: lagShadowY)
+            .shadow(color: .black.opacity(activeShadowOpacity), radius: activeShadowRadius, x: 0, y: activeShadowY)
     }
 
     /// 链段二（修饰符 7–12）：命中形状/点按/长按 +
@@ -426,9 +452,19 @@ private struct FanCardView: View {
             // 弹跳（约 0.8s 停稳主要由父视图的松手吸附
             // 弹簧主导，本弹簧管逐卡跟随）。
             .onChange(of: position) { _, newP in
-                withAnimation(.spring(response: 0.55 + 0.10 * min(abs(Double(index) - newP), 2.5),
-                                      dampingFraction: 0.92)) {
+                // run #143：拖动进行中，近中心卡（|目标 d|
+                // < 1.5）p̃ 直跟 p、不走弹簧——拖动时弹簧被
+                // 逐帧重启追赶既费渲染又有相位滞后，是滑动
+                // 「不丝滑」的主因；远卡弹簧照常保留拖尾
+                // 级联。松手后 isDragging 转假，全体恢复本
+                // 弹簧口径走吸附级联（弹簧常数 #138 原样）。
+                if isDragging, abs(Double(index) - newP) < 1.5 {
                     pTilde = newP
+                } else {
+                    withAnimation(.spring(response: 0.55 + 0.10 * min(abs(Double(index) - newP), 2.5),
+                                          dampingFraction: 0.92)) {
+                        pTilde = newP
+                    }
                 }
             }
             // 扫光触发：token 跳到新正值（本卡刚成为停稳
@@ -740,6 +776,7 @@ struct TendiesView: View {
                                         index: idx,
                                         position: fanPosition,
                                         sweepToken: idx == fanFocusedIndex ? fanSweepToken : 0,
+                                        isDragging: fanDragStart != nil,
                                         onTap: {
                                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                             toggleSelection(itemID: item.id)
