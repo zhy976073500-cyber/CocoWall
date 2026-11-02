@@ -15,13 +15,6 @@ struct ContentView: View {
     @EnvironmentObject var vm: PreviewViewModel
     @State private var showImporter = false
 
-    private var importTypes: [UTType] {
-        // .tendies has no system UTI; accept it via the exported type
-        // declared in Info.plist, plus generic zip/archive/data so the
-        // picker never greys a real package out.
-        [UTType(filenameExtension: "tendies") ?? .data, .zip, .archive, .data]
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -33,14 +26,13 @@ struct ContentView: View {
             }
             .padding(12)
         }
-        .fileImporter(isPresented: $showImporter,
-                      allowedContentTypes: importTypes,
-                      allowsMultipleSelection: false) { result in
-            switch result {
-            case .success(let urls):
+        // UIKit picker, NOT SwiftUI .fileImporter — fileImporter greys
+        // out .tendies files with dynamic UTIs on Sage's iOS no matter
+        // how the types are widened (CocoWall #9 lesson, fixed there by
+        // switching to UIDocumentPickerViewController + asCopy).
+        .sheet(isPresented: $showImporter) {
+            DocumentPickerView { urls in
                 if let url = urls.first { vm.importFrom(url: url) }
-            case .failure(let error):
-                vm.log("文件选择失败: \(error.localizedDescription)")
             }
         }
     }
@@ -54,12 +46,21 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button {
-                showImporter = true
-            } label: {
-                Label("导入 .tendies", systemImage: "square.and.arrow.down")
+            VStack(alignment: .trailing, spacing: 6) {
+                Button {
+                    showImporter = true
+                } label: {
+                    Label("导入 .tendies", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.borderedProminent)
+                Button {
+                    vm.scanDocumentsForTendies()
+                } label: {
+                    Label("扫描文稿目录", systemImage: "folder.badge.gearshape")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.borderedProminent)
             .disabled(vm.isBusy)
         }
     }

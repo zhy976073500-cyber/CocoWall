@@ -159,6 +159,30 @@ final class PreviewViewModel: ObservableObject {
         }
     }
 
+    /// Fallback import path (mirrors CocoWall): scan the app's Documents
+    /// folder (root + Inbox) for .tendies files the user dropped in via
+    /// the Files app (UIFileSharingEnabled is on) and import the first.
+    func scanDocumentsForTendies() {
+        let fm = FileManager.default
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            log("✗ 扫描失败: 找不到 Documents 目录")
+            return
+        }
+        var found: [URL] = []
+        for dir in [docs, docs.appendingPathComponent("Inbox", isDirectory: true)] {
+            guard let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { continue }
+            found.append(contentsOf: items.filter { $0.pathExtension.lowercased() == "tendies" })
+        }
+        found.sort { $0.lastPathComponent < $1.lastPathComponent }
+        log("扫描文稿目录: 找到 \(found.count) 个 .tendies")
+        for url in found { log("  · \(url.lastPathComponent)") }
+        guard let first = found.first else {
+            log("把 .tendies 放进「文件 ▸ 我的 iPhone ▸ 壁纸预览探针」后，再点扫描。")
+            return
+        }
+        importFrom(url: first)
+    }
+
     private func clearCanvas() {
         for pkg in loaded { pkg.fitLayer.removeFromSuperlayer() }
         loaded = []
