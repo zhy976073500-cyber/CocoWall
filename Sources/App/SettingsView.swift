@@ -15,6 +15,7 @@ struct SettingsView: View {
                         authorEntry
                         proEntry
                         pairingEntry
+                        supportEntry
                     }
                     .padding(20)
                 }
@@ -99,6 +100,32 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
+    /// 「支持系统」入口（run #155）：点进支持范围说明页。
+    /// 沿用 entryRow，自动继承 #153 的整行命中修复。
+    private var supportEntry: some View {
+        NavigationLink {
+            SupportedSystemsView()
+        } label: {
+            entryRow {
+                ZStack {
+                    Circle().fill(Color.green.opacity(0.12))
+                    Image(systemName: "iphone.gen3")
+                        .foregroundStyle(.green)
+                }
+                .frame(width: 40, height: 40)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("支持系统")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text("查看支持的 iOS 版本")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
     private var pairingEntry: some View {
         Button {
             showPairingPage = true
@@ -123,4 +150,78 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
+}
+
+/// 支持系统说明页（run #155）：把刷入与配对的版本口径一次讲清，
+/// 末尾给出本机当前系统的判定。判定复用
+/// `AppViewModel.systemSupportLevel(version:)`，不另写一套。
+struct SupportedSystemsView: View {
+    private var deviceVersion: String { UIDevice.current.systemVersion }
+
+    private var deviceLevel: SystemSupportLevel {
+        AppViewModel.systemSupportLevel(version: deviceVersion)
+    }
+
+    private var deviceVerdict: (text: String, color: Color) {
+        switch deviceLevel {
+        case .supported: return ("支持", .green)
+        case .patchedRisk: return ("暂不支持", .orange)
+        case .tooOld: return ("不支持", .red)
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                factCard(
+                    title: "动态壁纸刷入",
+                    lines: [
+                        "支持 iOS 17.0 – 27.0.1。",
+                        "iOS 27.2 起，苹果已修复相关通道，暂不支持；升级到 27.2 或更高版本后将无法刷入。",
+                        "低于 iOS 17.0 不支持。"
+                    ]
+                )
+                factCard(
+                    title: "配对方式",
+                    lines: [
+                        "本机配对（在系统设置中输入配对码）仅 iOS 27 可用。",
+                        "iOS 17 – 26 需要导入配对文件；其中 iOS 26.4 起旧配对文件失效，需要 RPPairing 格式的新配对文件。"
+                    ]
+                )
+
+                HStack(spacing: 10) {
+                    Image(systemName: "iphone.gen3")
+                        .foregroundStyle(.secondary)
+                    Text("本机系统：iOS \(deviceVersion)")
+                        .font(.subheadline.bold())
+                    Spacer()
+                    Text(deviceVerdict.text)
+                        .font(.subheadline.bold())
+                        .foregroundStyle(deviceVerdict.color)
+                }
+                .padding(16)
+                .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            }
+            .padding(20)
+        }
+        .background(Color(UIColor.systemBackground))
+        .navigationTitle("支持系统")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func factCard(title: String, lines: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+            ForEach(lines, id: \.self) { line in
+                Text(line)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
 }

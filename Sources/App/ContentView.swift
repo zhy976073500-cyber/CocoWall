@@ -3,15 +3,6 @@ import UIKit
 import PhotosUI
 import UniformTypeIdentifiers
 
-// MARK: - Shared helpers
-
-func logLineColor(_ line: String) -> Color {
-    if line.contains("✅") || line.contains("🎉") { return .green }
-    if line.contains("❌") { return .red }
-    if line.contains("⚠️") { return .orange }
-    return .secondary
-}
-
 // MARK: - Share Sheet for Exporting .passthm
 
 struct ShareSheet: UIViewControllerRepresentable {
@@ -699,88 +690,6 @@ struct PairingGuideSheet: View {
     }
 }
 
-// MARK: - Compact Scrollable Log View with 1-Click Copy
-
-struct CompactLogView: View {
-    let title: String
-    let lines: [String]
-    var onClear: (() -> Void)? = nil
-    @State private var copied: Bool = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title)
-                    .font(.caption.bold())
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if let onClear = onClear, !lines.isEmpty {
-                    Button(action: onClear) {
-                        Image(systemName: "trash")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.borderless)
-                    .padding(.trailing, 6)
-                }
-                Button {
-                    UIPasteboard.general.string = lines.joined(separator: "\n")
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    var t = Transaction()
-                    t.disablesAnimations = true
-                    withTransaction(t) {
-                        copied = true
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                        var t2 = Transaction()
-                        t2.disablesAnimations = true
-                        withTransaction(t2) {
-                            copied = false
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 11, weight: .bold))
-                        Text(copied ? "已复制" : "复制")
-                            .font(.system(size: 11, weight: .bold))
-                    }
-                    .foregroundStyle(copied ? .green : .blue)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .glassSurface(Capsule(), interactive: true)
-                }
-                .buttonStyle(.borderless)
-                .transaction { $0.animation = nil }
-            }
-
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(lines.enumerated()), id: \.offset) { idx, line in
-                            Text(line)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(logLineColor(line))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .id(idx)
-                        }
-                    }
-                    .padding(8)
-                }
-                .frame(maxHeight: 180)
-                .glassSurface(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .onChange(of: lines.count) { _, _ in
-                    if !lines.isEmpty {
-                        proxy.scrollTo(lines.count - 1, anchor: .bottom)
-                    }
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}
-
 // MARK: - Native Document Picker
 
 struct DocumentPickerView: UIViewControllerRepresentable {
@@ -907,6 +816,9 @@ struct PairingTab: View {
     @State private var showDeleteConfirm = false
     @State private var showFilePicker = false
     @State private var showPairingGuide = false
+    // run #155: 导出配对文件的分享面板（临时副本 URL）。
+    @State private var pairingExportURL: URL?
+    @State private var showPairingExport = false
     // run #151: WiFi 监听只在配对页在场时活（onAppear 起、
     // onDisappear 停），驱动页顶横幅。
     @StateObject private var wifiMonitor = WiFiMonitor()
@@ -1039,6 +951,24 @@ struct PairingTab: View {
                         }
                     }
 
+                    // 导出配对文件（run #155）：仅已配对时出现。
+                    // 把 App 已保存的配对文件原样复制为临时副本
+                    // CocoWall_pairing.plist 再走系统分享面板——
+                    // 字节与原件一致，不做任何改写。
+                    if vm.hasPairingFile {
+                        Button {
+                            exportPairingFile()
+                        } label: {
+                            HStack {
+                                Spacer()
+                                Image(systemName: "square.and.arrow.up")
+                                Text("导出配对文件")
+                                Spacer()
+                            }
+                            .font(.subheadline.bold())
+                        }
+                    }
+
                     if vm.hasPairingFile {
                         Button(role: .destructive) {
                             showDeleteConfirm = true
@@ -1135,7 +1065,7 @@ struct PairingTab: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack(spacing: 8) {
                                     ProgressView().scaleEffect(0.85)
-                                    Text(vm.pairingStatus.isEmpty ? "正在启动本机配对服务…" : vm.pairingStatus)
+                                    Text(vm.pairingStatus.isEmpty ? "正在启动本机配对服务…" : Self.localizedPairingStatus(vm.pairingStatus))
                                         .font(.subheadline)
                                         .foregroundStyle(.secondary)
                                 }
@@ -1198,7 +1128,7 @@ struct PairingTab: View {
                         } else {
                             VStack(spacing: 12) {
                                 if !vm.pairingStatus.isEmpty && vm.pairingStatus != "idle" {
-                                    Text(vm.pairingStatus)
+                                    Text(Self.localizedPairingStatus(vm.pairingStatus))
                                         .font(.subheadline.weight(.medium))
                                         .foregroundStyle(
                                             vm.pairingStatus.contains("✅") ? .green :
@@ -1271,6 +1201,12 @@ struct PairingTab: View {
                     }
                 }
             }
+            // 导出配对文件的系统分享面板（run #155）。
+            .sheet(isPresented: $showPairingExport) {
+                if let url = pairingExportURL {
+                    ShareSheet(items: [url])
+                }
+            }
             .onAppear {
                 vm.refreshNetworkStatus()
                 vm.refreshPairingFile()
@@ -1300,6 +1236,58 @@ struct PairingTab: View {
         } else if let fallback = URL(string: UIApplication.openSettingsURLString) {
             UIApplication.shared.open(fallback, options: [:], completionHandler: nil)
         }
+    }
+
+    /// 导出配对文件（run #155）：把存储原件逐字节复制到临时目录
+    /// 并命名 CocoWall_pairing.plist，再拉起系统分享面板。
+    /// 复制不转码、不重写，导出字节与原件一致。
+    private func exportPairingFile() {
+        let source = PairingController.pairingFilePath()
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CocoWall_pairing.plist")
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(atPath: source, toPath: dest.path)
+            pairingExportURL = dest
+            showPairingExport = true
+        } catch {
+            pairingExportURL = nil
+        }
+    }
+
+    /// 配对状态文案中文化（run #155）：`vm.pairingStatus` 的原始串
+    /// 来自受保护文件 PairingController（英文引导串写在那边，
+    /// 按红线不动），在这里做呈现层映射——已知英文引导/结果串
+    /// 换成中文，其余（已是中文、vm 自己写的状态）原样透传。
+    /// 颜色判定仍读原始串，不受映射影响。
+    static func localizedPairingStatus(_ raw: String) -> String {
+        let guide = "请前往 设置 › 隐私与安全 › 开发者模式，选择 CocoWall 进行配对"
+        switch raw {
+        case "Starting local host…":
+            return "正在启动本机配对服务…"
+        case "Broadcasting… open Settings to pair",
+             "Advertising — open Settings › Privacy & Security › Developer Mode":
+            return guide
+        case "Cancelled":
+            return "已取消"
+        default:
+            break
+        }
+        if raw.hasPrefix("Enter PIN ") {
+            // "Enter PIN 123456 in Settings › …" — 把码带进中文引导。
+            let rest = raw.dropFirst("Enter PIN ".count)
+            let pin = rest.split(separator: " ").first.map(String.init) ?? ""
+            return pin.isEmpty ? guide : "\(guide)，并输入配对码 \(pin)"
+        }
+        if raw.hasPrefix("Paired: ") {
+            return "配对成功：" + String(raw.dropFirst("Paired: ".count))
+        }
+        if raw.hasPrefix("Failed: ") {
+            return "配对失败：" + String(raw.dropFirst("Failed: ".count))
+        }
+        return raw
     }
 }
 
@@ -1455,16 +1443,8 @@ struct PasscodeThemeTab: View {
                     ThemeCreatorSection()
                 }
 
-                // Flash log
-                if !vm.passthmFlashLog.isEmpty {
-                    Section {
-                        CompactLogView(
-                            title: "刷入日志（\(vm.passthmFlashLog.count) 行）",
-                            lines: vm.passthmFlashLog,
-                            onClear: { vm.passthmFlashLog.removeAll() }
-                        )
-                    }
-                }
+                // 刷入日志窗口已按 run #155 移除（与 #154 同口径：
+                // 只删 UI 呈现，vm.passthmFlashLog 的底层收集保留）。
             }
             .safeAreaInset(edge: .bottom) {
                 Color.clear.frame(height: 60)

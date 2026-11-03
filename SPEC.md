@@ -3969,3 +3969,102 @@ RespringHelper / rust-core）零改动。
 何日志窗口且页面收尾自然；清理壁纸时进度条仍按阶段推进
 （底层日志通道保留的回归验证）；密码盘页刷入日志照常
 显示（未误删的回归验证）。
+
+## 改动登记 · 支持系统入口 + 配对引导中文化 + 导出配对文件 + 灵动岛配对码 + 显示名审计 + 密码盘日志窗删除（run #155，2026-11-03，Sage 六条指令；纯 Swift 侧，rust 零改动）
+
+### 一、设置页「支持系统」入口与说明页（SettingsView.swift）
+
+设置页用既有 entryRow 模式新增一行「支持系统」（自动继承 #153
+的整行命中修复），NavigationLink 点进新说明页
+SupportedSystemsView。页面口径（Sage 已核实，照写）：动态壁纸
+刷入支持 iOS 17.0–27.0.1；iOS 27.2 起苹果已修复相关通道、暂
+不支持，升级后无法刷入；本机配对（设置里输码）仅 iOS 27 可
+用；iOS 17–26 需导入配对文件，其中 26.4 起旧配对文件失效、
+需 RPPairing 格式的新文件；低于 17.0 不支持。页面末尾加当前
+设备状态行：本机系统版本 + 是否支持，判定复用
+AppViewModel.systemSupportLevel(version:)，不另写一套。
+
+### 二、配对中引导文案中文化（ContentView.swift 呈现层映射）
+
+字符串来源结论：点配对后的英文引导串来自受保护文件
+PairingController.swift——startAdvertising 写入
+「Advertising — open Settings › Privacy & Security ›
+Developer Mode」，presentPin 写入「Enter PIN … in Settings
+› …」，另有 start 的「Broadcasting… open Settings to
+pair」与「Starting local host…」、softCancel 的
+「Cancelled」。按红线不动受保护文件，改在 Swift 呈现层做
+状态→文案映射：PairingTab.localizedPairingStatus(_:) 应用于
+配对页两处状态显示（配对进行中状态行、空闲态状态行）；颜
+色判定仍读原始串，不受映射影响。定稿文案为 Sage 原话
+「请前往 设置 › 隐私与安全 › 开发者模式，选择 CocoWall
+进行配对」（路径以 › 呈现）；PIN 状态串映射为同句加
+「，并输入配对码 X」；Paired:/Failed: 前缀串映射为
+「配对成功：…」「配对失败：…」兜底，其余状态原样透传。
+
+### 三、导出配对文件按钮（ContentView.swift 配对页）
+
+配对页「当前配对」区状态行下方新增「导出配对文件」按钮：
+未配对（vm.hasPairingFile 为假）时不显示，已配对才出现。
+点击把 PairingController.pairingFilePath() 指向的 App 已保
+存配对文件逐字节复制到临时目录、命名 CocoWall_pairing.plist，
+经既有 ShareSheet 拉起系统分享面板。复制不转码不重写，导出
+字节与存储原件一致；原件不移动、不改名。
+
+### 四、灵动岛显示配对码（Sage 指令偏离登记）
+
+【偏离登记】Live Activity 文件（PairingActivityAttributes /
+PairingLiveActivityWidget / PairingLiveActivityController）
+属上游受保护范围；本条是 Sage 本人明确指令的定点偏离，按
+最小改动执行并在此显式登记。
+
+码可达性审计结论：6 位配对码经 rust 回调进入
+PairingController.pairingPIN（@Published），完全到达管理活
+动的 Swift 层；ContentState 本已带 pin 字段，
+PairingLiveActivityController 本已有 pinReady(_:) 更新通
+道，扩展渲染本已具备——展开岛 .bottom 区 36pt 大字、锁屏
+横幅 24pt、紧凑态 trailing 均读 ContentState.pin。据此三
+个受保护 Live Activity 文件本轮无需改动。
+
+实际定点改动在送达路径（AppViewModel.swift，非受保护文
+件）：原先码送达活动只靠 startPairing 内 0.2s 轮询顺带转
+发，时机系于轮询节拍。本轮在配对期间直订
+PairingController.$pairingPIN，码一发布即经 pinReady 送进
+ContentState；成功/取消/失败三条收尾路径与 cancelPairing
+均撤销订阅。轮询保留（状态文案同步仍走它）。Sage 截图中岛
+上只有「配对中」对应活动尚处 .pairing 阶段（码未生成时
+段）；码生成后是否如期切到 pinReady 大字显示，归真机复测。
+
+### 五、软件显示名改 CocoWall（审计清单，核验无改）
+
+- 主 App Info.plist：CFBundleDisplayName 字面值即
+  「CocoWall」；CFBundleName = $(PRODUCT_NAME)，PRODUCT_NAME
+  为 target 名 CocoWall（project.yml）。主屏幕图标下名称为
+  CocoWall ✓，无改动。
+- 用户可见名称逐项核验：配对页导航标题与页头「CocoWall」、
+  系统配对提示主机名「CocoWall」（#91 已改）、Live Activity
+  标签与横幅「CocoWall」——均为 CocoWall ✓。
+- 两个扩展的 CFBundleDisplayName 是功能描述名（配对灵动
+  岛 / 内置回环），不是软件名、不影响主屏幕名称，未动。
+- 内部标识残留（非显示名，本条未动）：UTI
+  com.aircard.passthm / com.aircard.tendies、Bonjour 服务
+  _aircardprobe._tcp、@main 结构体名 AirCardApp、探针服务名
+  AirCardProbe、配对文件存储名 aircard_pairing.plist（在
+  「当前配对」行以文件名形式可见；改存储名牵动既有配对凭
+  据与导入兼容，不在本条范围）。
+
+### 六、密码盘页刷入日志窗删除（追加条，Sage 16:15 指令）
+
+与 #154 同口径：删 PasscodeThemeTab 中以 CompactLogView 呈
+现 vm.passthmFlashLog 的刷入日志 Section，只删 UI 呈现；
+passthmFlashLog 的底层收集与全部写入点保留不动，密码盘页
+自此以模式内容自然收尾。CompactLogView 至此无任何调用点，
+连同其专属辅助函数 logLineColor 一并删除（均为纯 UI 呈现
+代码）。
+
+未验证项（归 Sage 真机）：设置页「支持系统」行一次点中、
+说明页口径与本机状态行判定正确；点配对后状态行全程中文
+（含 PIN 出现后的引导句）；已配对时「导出配对文件」按钮
+出现、未配对时不出现，导出的 CocoWall_pairing.plist 可被
+其他工具正常导入（字节一致）；配对时灵动岛展开态与锁屏
+横幅在码生成后显示 6 位大字码；密码盘页不再出现刷入日志
+窗且刷入功能照常（底层日志保留的回归验证）。

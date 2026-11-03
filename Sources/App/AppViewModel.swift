@@ -2,6 +2,7 @@ import Foundation
 import UIKit
 import SwiftUI
 import ImageIO
+import Combine
 import AirliftFFI
 
 // MARK: - Flash registry entry (run #124)
@@ -107,6 +108,9 @@ final class AppViewModel: ObservableObject {
     @Published var hasPairingFile: Bool = false
     @Published var pairingFileName: String = ""
     @Published var pairingPhase: PairingPhase = .idle
+    /// run #155: 配对期间把 PairingController 的 PIN 直订转发给
+    /// Live Activity 的订阅（码一发布就送达，不只靠轮询顺带）。
+    private var pairingPINForwarding: AnyCancellable?
     @Published var documentsPlistFiles: [String] = []
 
     enum PairingPhase: Equatable {
@@ -418,11 +422,25 @@ final class AppViewModel: ObservableObject {
 
         let ctrl = PairingController.shared
 
+        // run #155: PIN 直达灵动岛——订阅 PairingController 的
+        // pairingPIN，码一发布立刻经 ContentState 送进 Live
+        // Activity（展开态大字与锁屏横幅都读这个字段）。原先码只
+        // 靠下方 0.2s 轮询顺带转发，送达时机系于轮询节拍；轮询
+        // 本身保留（状态文案同步仍走它）。订阅在配对收尾时撤销。
+        pairingPINForwarding = ctrl.$pairingPIN
+            .sink { pin in
+                guard let pin else { return }
+                Task { @MainActor in
+                    PairingLiveActivityController.shared.pinReady(pin)
+                }
+            }
+
         Task {
             do {
                 let path = try await ctrl.startAndWait()
                 await MainActor.run {
                     self.pairingPhase = .idle
+                    self.pairingPINForwarding = nil
                     self.refreshPairingFile()
                     self.pairingStatus = "配对成功！✅"
                     self.log.append("配对完成：\(path)")
@@ -430,10 +448,12 @@ final class AppViewModel: ObservableObject {
                 }
             } catch is CancellationError {
                 self.pairingPhase = .idle
+                self.pairingPINForwarding = nil
                 self.pairingStatus = "已取消。"
                 PairingLiveActivityController.shared.failed(message: "配对已取消")
             } catch {
                 self.pairingPhase = .idle
+                self.pairingPINForwarding = nil
                 self.pairingStatus = ""
                 self.errorMessage = "配对失败：\(error.localizedDescription)"
                 PairingLiveActivityController.shared.failed(message: "配对失败")
@@ -459,6 +479,7 @@ final class AppViewModel: ObservableObject {
     func cancelPairing() {
         PairingController.shared.softCancel()
         pairingPhase = .idle
+        pairingPINForwarding = nil
         pairingStatus = ""
         PairingLiveActivityController.shared.failed(message: "配对已取消")
     }
