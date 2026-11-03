@@ -4359,3 +4359,51 @@ RemoteConfig.swift:84:22: error: cannot use optional chaining on non-optional va
 - 89 行 wallpapers 同型：`(boxes ?? []).map(\.value)` → `boxes.map(\.value)`。
 
 解码行为与兜底语义零变更：键缺失时 decodeIfPresent 返回 nil、if-let 不进入，属性保持结构体默认值（Announcement()/AppInfo()/[]，与原 `?? 默认` 的兜底目标一致）；键存在时取 box.value 的逐字段容错解码结果，与原意相同。swiftc -parse 通过。
+
+## 改动登记 · 发布收尾二期：资源完整性校验（run #160，2026-11-03，发布防盗方案「资源完整性校验」条；纯 Swift 侧，rust 零改动，受保护文件零改动，清单不进仓库）
+
+发布收尾第二轮（#159 登记时明确的留项）。本轮只做 App 代码侧的「验」：刷入前同步校验包内关键数据文件的完整性。清单的生成与签名在发布打包环节由主线离线完成（见「注入流程」），不进仓库、不进 CI。最终发布包须 #159 + 本轮齐备。
+
+### 校验设计
+
+- 新增 `Sources/App/ResourceIntegrity.swift`：`ResourceIntegrity.verifyBundleResources() -> Bool`，同步执行，三步：
+  1. 读 .app 根目录的 `integrity-manifest.json` 与 `integrity-manifest.sig`：任一缺失、验签失败、清单解析失败（JSON 不合法 / version ≠ 1 / files 为空）→ 不通过；
+  2. 逐个按清单相对路径读文件、算 SHA-256 与清单值比对：任一缺失或不一致 → 不通过（清单已验签，路径形态检查只是纵深防御）；
+  3. 全部通过 → 静默放行。
+- 验签与 #159 配置签名同约定（Ed25519、签原始字节、签名文件内容为 base64），且复用同一验签入口 `RemoteConfigService.verify`——同一把发布公钥、唯一常量来源，不另抄一份。为此该纯函数加 `nonisolated` 标注（RemoteConfig.swift 仅签名行 + 注释，函数体零变更），供本校验的同步上下文调用。
+- 清单格式：`{"version":1,"files":{相对路径: sha256 十六进制}}`，路径相对 .app 根。
+
+### 校验对象（文件集，定案）
+
+最终 .app 包内 7 个数据文件：`authorAvatar.jpg.b64`、`officialAccountQR.jpg.b64`、`rewardCode.jpg.b64`、`icon-1024.b64`、`Assets.car`、`AppIcon60x60@2x.png`、`AppIcon76x76@2x~ipad.png`。
+
+不参与（防正版误伤，零误伤是红线）：
+- 主二进制与两个 appex 可执行文件——侧载重签会改变它们；
+- 一切 Info.plist、PkgInfo——签名工具可能动元数据。
+
+App 侧不写死这份文件集：清单里列什么就验什么，文件集是打包环节生成清单时的契约（见注入流程）。
+
+### 拦截语义（落点）
+
+挂 VM 层，TendiesEngine 本体零改动。AppViewModel 的两个刷入入口在前置条件通过后、任何引擎工作开始前各加一道同步闸（`guard ResourceIntegrity.verifyBundleResources()`），不通过即置 `errorMessage = "资源完整性校验未通过，已停止刷入"` 并返回：
+- 壁纸页刷入：`flashSelectedTendies()`（选中与配对文件检查之后、容器检测之前）；
+- 密码盘刷入：`flashPassthm()`（按键集检查之后、阶段置 running 之前）。密码盘四个按钮调用点都经此同一函数，两条独立刷入路径全覆盖。
+
+校验必须同步得出结论才允许刷入，没有异步先行、事后补验的路径。清理、导入等非刷入操作不受此闸。
+
+### 注入流程（发布打包环节，主线执行，不在本轮代码内）
+
+1. 取最终 IPA，解压得 Payload/*.app；
+2. 对上列 7 个文件逐个算 SHA-256，生成 integrity-manifest.json（格式如上）；
+3. 用配置签名私钥（与 config.sig 同一把，离线保管于主线）对清单原始字节做 Ed25519 签名，base64 写入 integrity-manifest.sig；
+4. 两文件放入 .app 根目录，重新打包为分发 IPA。
+
+### 预期行为（免误判）
+
+- **CI 产物本身不含清单**：直接安装 CI 包，打开、浏览、导入、清理均正常，但点刷入会被拦截并提示「资源完整性校验未通过，已停止刷入」——这是设计预期，不是 bug。正式分发包须经上述注入流程才完整。
+- 正版用户经 SideStore / 轻松签等重签安装：重签只动可执行文件签名与元数据，不动上列 7 个数据文件，校验照常通过，零误伤。
+
+### 未验证项
+
+- 代码侧逻辑未在真机/模拟器实跑（施工环境无 iOS 运行时）：注入清单的分发包刷入放行、篡改任一被验文件后刷入被拦截，待发布打包环节出包后由主线/Sage 验；
+- 文件集的 7 个路径以最终 IPA 内实际布局为准，注入时由主线逐个核对存在性（个别生成文件名随工具链变化时以实际为准，属打包环节契约，不影响本轮代码）。

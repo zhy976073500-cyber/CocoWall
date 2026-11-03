@@ -344,7 +344,10 @@ final class RemoteConfigService: ObservableObject {
     /// Ed25519 验签：公钥为原始 32 字节的 base64；签名文件
     /// 内容是「config.json 原始字节的签名」的 base64（可能
     /// 带结尾空白，先 trim 再解码）。验不过一律整份丢弃。
-    static func verify(configData: Data, signatureText: String) -> Bool {
+    /// 本函数是纯函数，run #160 资源完整性校验复用同一入口
+    /// 验清单签名（同一把公钥的唯一常量来源），故标
+    /// nonisolated 供同步上下文调用。
+    nonisolated static func verify(configData: Data, signatureText: String) -> Bool {
         let trimmed = signatureText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let signature = Data(base64Encoded: trimmed), signature.count == 64,
               let keyData = Data(base64Encoded: "zYU8LDldMafck0ya4KumaNpVJbYeERGJSXVPYarRqaw="),

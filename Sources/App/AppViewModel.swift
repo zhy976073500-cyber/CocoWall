@@ -689,6 +689,14 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        // Run #160: resource-integrity gate (see SPEC #160).
+        // Synchronous: flashing only starts after verification
+        // has concluded; failure stops the flash here.
+        guard ResourceIntegrity.verifyBundleResources() else {
+            errorMessage = "资源完整性校验未通过，已停止刷入"
+            return
+        }
+
         passthmFlashPhase    = .running
         passthmFlashProgress = 0
         passthmFlashLog.removeAll()
@@ -1227,6 +1235,14 @@ final class AppViewModel: ObservableObject {
         let pairingPath = PairingController.pairingFilePath()
         guard FileManager.default.fileExists(atPath: pairingPath) else {
             errorMessage = "没有生效的配对文件。请先配对设备。"
+            return
+        }
+
+        // Run #160: resource-integrity gate (see SPEC #160).
+        // Synchronous: flashing only starts after verification
+        // has concluded; failure stops the flash here.
+        guard ResourceIntegrity.verifyBundleResources() else {
+            errorMessage = "资源完整性校验未通过，已停止刷入"
             return
         }
 
