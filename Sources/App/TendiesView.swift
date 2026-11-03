@@ -815,21 +815,7 @@ private struct FanStripView: View {
     /// pitch 保持 #136 的 96、卡 150×200。
     private var stripTimeline: some View {
         TimelineView(.animation(paused: fanIsSettled && fanDragStart == nil)) { timeline in
-            let settledEdge = integrator.advance(to: timeline.date,
-                                                 target: fanPosition,
-                                                 count: vm.tendieItems.count)
-            if settledEdge {
-                // 停稳收口：视图状态不能在 body 求值内
-                // 写回，异步到主队列下一轮置真 + 推导聚
-                // 焦；收口前若已被唤醒（integrator 已转
-                // 未停稳）则放弃本次收口，等下一个上升沿。
-                DispatchQueue.main.async {
-                    guard integrator.isSettled else { return }
-                    fanIsSettled = true
-                    deriveFanFocus()
-                }
-            }
-            stripFrame()
+            fanTickFrame(date: timeline.date)
         }
         .frame(maxWidth: .infinity)
         .frame(height: 256)
@@ -844,6 +830,33 @@ private struct FanStripView: View {
         // 期间的冻结改由拖动回调开头判定
         // menuTarget 后忽略更新。
         .simultaneousGesture(fanDragGesture)
+    }
+
+    /// 每 tick 的成像入口（普通函数、刻意不走
+    /// @ViewBuilder）：先以本帧日期推进积分器，停稳上
+    /// 升沿（advance 返回）在此把收口分发到主队列异
+    /// 步执行，然后返回本帧卡带（stripFrame）——每
+    /// tick 一次成像不变（S1）。副作用必须留在普通
+    /// 函数体里：停稳收口的 Void 异步分发若直接写在
+    /// TimelineView 内容闭包的 builder 上下文，会污
+    /// 染 Content 泛型推断（CI run 41528091292 实
+    /// 证：817 行 'Content' could not be inferred）。
+    private func fanTickFrame(date: Date) -> some View {
+        let settledEdge = integrator.advance(to: date,
+                                             target: fanPosition,
+                                             count: vm.tendieItems.count)
+        if settledEdge {
+            // 停稳收口：视图状态不能在 body 求值内
+            // 写回，异步到主队列下一轮置真 + 推导聚
+            // 焦；收口前若已被唤醒（integrator 已转
+            // 未停稳）则放弃本次收口，等下一个上升沿。
+            DispatchQueue.main.async {
+                guard integrator.isSettled else { return }
+                fanIsSettled = true
+                deriveFanFocus()
+            }
+        }
+        return stripFrame()
     }
 
     /// 轮播卡带本体：ZStack 把每卡的布局中心放在带中

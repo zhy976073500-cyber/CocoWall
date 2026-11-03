@@ -3705,3 +3705,14 @@ confirmationDialog 仍挂页面根部（呈现源与拖动冻结判定不变）�
 - 分区改按 shownD 后高速时全卡数量短暂多于旧口径的帧率表现；
   带尾橡皮筋段临界卡是否还有可感闪烁（迟滞应已兜住）。
 - 排序切换后回壁纸页的聚焦位置（#148 遗留确认项，机制未变）。
+
+### #150 修复记录（CI 编译错定点修，2026-11-03）
+
+首轮 CI（run 41528091292）唯一一条 error：TendiesView.swift:817
+TimelineView 内容闭包 'Content' could not be inferred——停稳收
+口的 Void 异步分发以 `if` 语句形态混入 @ViewBuilder 上下文，
+污染泛型推断。修法：闭包仅调用新增的普通函数 fanTickFrame
+(date:)（非 @ViewBuilder），advance + 停稳上升沿的 async 收口
+（执行前复查 integrator.isSettled 防过期）+ stripFrame() 全部
+在普通函数体内完成，语义与时序逐项不变；其余结构与不变清单
+一字未动。
