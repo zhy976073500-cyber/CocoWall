@@ -1035,6 +1035,22 @@ struct PairingTab: View {
                         }
                         .buttonStyle(.plain)
 
+                        // iOS 26 生成配对文件教程（run #158）：系统浏览器
+                        // 打开外部教程，与「获取更多壁纸」同款 open 方式。
+                        Button {
+                            if let url = URL(string: "https://drive.uc.cn/s/2f63634667a44?public=1") {
+                                UIApplication.shared.open(url)
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "book.pages")
+                                Text("iOS 26 生成配对文件教程")
+                            }
+                            .font(.footnote)
+                            .foregroundStyle(.blue)
+                        }
+                        .buttonStyle(.plain)
+
                         Text("支持从 SideStore、iLoader、AltStore、Jitterbug 或 Mac/PC 导出的 .mobiledevicepairing、.plist、.mobilepair 文件。")
                             .font(.caption)
                             .foregroundStyle(.secondary)

@@ -4241,3 +4241,46 @@ Sage 2026-11-03 17:37 追加指令：壁纸页「获取更多壁纸」
   璃/阴影）、深色模式一致；网格滚到底最后一行不被悬浮
   栏遮挡；删除/完成行为与禁用态不变；
 - 壁纸页「获取更多壁纸」瓷砖副标题显示「持续更新」。
+
+## 改动登记 · App 图标换定稿黑团子 + 两处「iOS 26 生成配对文件教程」入口（run #158，2026-11-03，Sage 主 chat 定稿图标、本 chat 亲口确认用黑团子白底版 + 教程链接指令；资源/Swift 侧，rust 零改动，受保护文件零改动）
+
+### 一、App 图标换定稿黑团子白底版（Sources/App/icon-1024.b64）
+
+Sage 在主 chat 定稿的吉祥物图标（黑团子白底：左眼白色
+C 形、右眼白椭圆、右上双惊叹号）替换主 App 的 AppIcon。
+机制不变：图标本体以 base64 文本存仓
+（Sources/App/icon-1024.b64），project.yml 的
+preBuildScript「Generate AppIcon from base64」在构建时
+解码进 AppIcon.appiconset/icon-1024.png（单张 1024
+universal，其余尺寸系统生成）。本轮只换 .b64 的内容，
+生成逻辑一字未动。定稿文件
+goals/cocowall-vellum/files/cocowall-mascot-final-1024.png：
+1024×1024、RGB 无 alpha；换入后回读校验——新 .b64
+解码结果 sha256
+8d1b781c3ea57839df8b22a707c0387283c35be65cdc4f0ae82b31c9e4e0ac45
+与定稿文件逐字一致。两个扩展（配对灵动岛 / 内置回环）
+的名字与图标不在本轮范围。
+
+### 二、两处加「iOS 26 生成配对文件教程」按钮
+
+Sage 指定链接（逐字使用，参数不改写）：
+https://drive.uc.cn/s/2f63634667a44?public=1
+两处均为点击后系统浏览器打开，与壁纸页「获取更多壁纸」
+同款 UIApplication.shared.open 方式：
+
+- 配对页「配对文件」区（ContentView.swift PairingTab）：
+  在「导入配对文件…」与「SideStore / LiveContainer 的
+  配对文件在哪？」之后，加同款 footnote 蓝色链接行
+  （book.pages 图标 + 「iOS 26 生成配对文件教程」），
+  与导入入口语义相邻。
+- 设置页「支持系统」说明页（SettingsView.swift
+  SupportedSystemsView）：在「配对方式」事实卡之后、
+  本机系统行之前，加与本机系统行同款的玻璃行
+  （book.pages + 文案 + chevron），整行可点。
+
+### 未验证项（归 Sage 真机）
+
+- 主屏幕图标已换成黑团子白底版（重装后桌面与设置内
+  图标均为新图）；
+- 配对页与支持系统页的教程按钮点击后，系统浏览器
+  正确打开 UC 链接、页面可正常访问。

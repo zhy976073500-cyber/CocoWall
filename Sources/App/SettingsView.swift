@@ -189,6 +189,29 @@ struct SupportedSystemsView: View {
                     ]
                 )
 
+                // iOS 26 生成配对文件教程（run #158）：与本机系统行
+                // 同款玻璃行，系统浏览器打开外部教程。
+                Button {
+                    if let url = URL(string: "https://drive.uc.cn/s/2f63634667a44?public=1") {
+                        UIApplication.shared.open(url)
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "book.pages")
+                            .foregroundStyle(.blue)
+                        Text("iOS 26 生成配对文件教程")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(16)
+                    .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
                 HStack(spacing: 10) {
                     Image(systemName: "iphone.gen3")
                         .foregroundStyle(.secondary)
