@@ -13,6 +13,7 @@ struct SettingsView: View {
                 GlassGroup {
                     VStack(spacing: 16) {
                         authorEntry
+                        proEntry
                         pairingEntry
                         logSection
                     }
@@ -55,6 +56,31 @@ struct SettingsView: View {
                         .font(.headline)
                         .foregroundStyle(.primary)
                     Text("作者")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 「解锁 Pro」入口（run #151）：纯展示页，无任何功能门禁。
+    private var proEntry: some View {
+        NavigationLink {
+            ProView()
+        } label: {
+            entryRow {
+                ZStack {
+                    Circle().fill(Color.orange.opacity(0.12))
+                    Image(systemName: "crown.fill")
+                        .foregroundStyle(.orange)
+                }
+                .frame(width: 40, height: 40)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("解锁 Pro")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text("成为永久会员")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

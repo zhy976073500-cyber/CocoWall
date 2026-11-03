@@ -6,40 +6,29 @@ enum AuthorInfo {
     static let douyinURL = URL(string: "https://v.douyin.com/nioInoa-a18/")!
 }
 
-/// 作者头像占位：真实头像到位后把本体换成图片即可，调用处不用动。
+/// 作者头像（run #151 起用真实素材 authorAvatar，沿现有圆形裁切
+/// 呈现；结构体名与调用处不变，设置页 40pt 小头像共用同一张图）。
 struct AuthorAvatarPlaceholder: View {
     var size: CGFloat = 96
 
     var body: some View {
-        Circle()
-            .fill(LinearGradient(
-                colors: [Color.blue.opacity(0.75), Color.purple.opacity(0.75)],
-                startPoint: .topLeading, endPoint: .bottomTrailing))
+        Image("authorAvatar")
+            .resizable()
+            .scaledToFill()
             .frame(width: size, height: size)
-            .overlay {
-                Image(systemName: "person.crop.circle.fill")
-                    .font(.system(size: size * 0.55))
-                    .foregroundStyle(.white.opacity(0.9))
-            }
+            .clipShape(Circle())
     }
 }
 
-/// 公众号二维码占位：真实二维码到位后把本体换成图片即可。
+/// 公众号二维码（run #151 起用真实素材 officialAccountQR 原图，
+/// 保持原占位卡的 180×180 圆角呈现）。
 struct AuthorQRPlaceholder: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .fill(Color(UIColor.secondarySystemBackground))
+        Image("officialAccountQR")
+            .resizable()
+            .scaledToFit()
             .frame(width: 180, height: 180)
-            .overlay {
-                VStack(spacing: 8) {
-                    Image(systemName: "qrcode")
-                        .font(.system(size: 56))
-                        .foregroundStyle(.secondary)
-                    Text("公众号二维码")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 

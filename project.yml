@@ -59,6 +59,25 @@ targets:
           if [ ! -f "$ICON_DIR/icon-1024.png" ]; then
             base64 -D -i "$SRCROOT/Sources/App/icon-1024.b64" -o "$ICON_DIR/icon-1024.png" || openssl base64 -d -in "$SRCROOT/Sources/App/icon-1024.b64" -out "$ICON_DIR/icon-1024.png"
           fi
+      - name: Generate author images from base64
+        script: |
+          # Same trick as the app icon (run #151): the author avatar,
+          # official-account QR and reward-code jpgs live in the repo
+          # as .b64 text (the push channel only carries text), decode
+          # them into their imagesets here.
+          ASSETS_DIR="$SRCROOT/Sources/App/Assets.xcassets"
+          AVATAR_JPG="$ASSETS_DIR/authorAvatar.imageset/authorAvatar.jpg"
+          if [ ! -f "$AVATAR_JPG" ]; then
+            base64 -D -i "$SRCROOT/Sources/App/authorAvatar.jpg.b64" -o "$AVATAR_JPG" || openssl base64 -d -in "$SRCROOT/Sources/App/authorAvatar.jpg.b64" -out "$AVATAR_JPG"
+          fi
+          QR_JPG="$ASSETS_DIR/officialAccountQR.imageset/officialAccountQR.jpg"
+          if [ ! -f "$QR_JPG" ]; then
+            base64 -D -i "$SRCROOT/Sources/App/officialAccountQR.jpg.b64" -o "$QR_JPG" || openssl base64 -d -in "$SRCROOT/Sources/App/officialAccountQR.jpg.b64" -out "$QR_JPG"
+          fi
+          REWARD_JPG="$ASSETS_DIR/rewardCode.imageset/rewardCode.jpg"
+          if [ ! -f "$REWARD_JPG" ]; then
+            base64 -D -i "$SRCROOT/Sources/App/rewardCode.jpg.b64" -o "$REWARD_JPG" || openssl base64 -d -in "$SRCROOT/Sources/App/rewardCode.jpg.b64" -out "$REWARD_JPG"
+          fi
   PairingLiveActivity:
     type: app-extension
     platform: iOS

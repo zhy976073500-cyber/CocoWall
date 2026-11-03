@@ -907,6 +907,9 @@ struct PairingTab: View {
     @State private var showDeleteConfirm = false
     @State private var showFilePicker = false
     @State private var showPairingGuide = false
+    // run #151: WiFi 监听只在配对页在场时活（onAppear 起、
+    // onDisappear 停），驱动页顶横幅。
+    @StateObject private var wifiMonitor = WiFiMonitor()
 
     private var isIOS27OrNewer: Bool {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
@@ -922,6 +925,28 @@ struct PairingTab: View {
     var body: some View {
         NavigationStack {
             Form {
+                // WiFi 提示横幅（run #151，页最顶端）：未连 WiFi
+                // 时醒目警告，已连时给平静的已连接状态。
+                Section {
+                    if wifiMonitor.isWiFiConnected {
+                        HStack(spacing: 8) {
+                            Image(systemName: "wifi")
+                                .foregroundStyle(.green)
+                            Text("已连接 WiFi")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text("请确保设备连接wifi后再进行使用！")
+                                .font(.subheadline.bold())
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                }
+
                 // Header
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
@@ -960,6 +985,22 @@ struct PairingTab: View {
                 // Network / VPN Status
                 Section("网络") {
                     VPNStatusRow(vm: vm)
+
+                    // run #151: 去系统设置里开 VPN 的直达按钮
+                    // （prefs 深链跳 VPN 页，跳不通兜底本 App 设置页）。
+                    Button {
+                        openSystemVPNSettings()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "gearshape.fill")
+                            Text("去系统设置开启 VPN")
+                            Spacer()
+                            Image(systemName: "arrow.up.forward.app")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .font(.subheadline.bold())
+                    }
                 }
 
                 // Pairing Status
@@ -1242,11 +1283,31 @@ struct PairingTab: View {
             .onAppear {
                 vm.refreshNetworkStatus()
                 vm.refreshPairingFile()
+                wifiMonitor.start()
+            }
+            .onDisappear {
+                wifiMonitor.stop()
             }
             .refreshable {
                 vm.refreshNetworkStatus()
                 vm.refreshPairingFile()
             }
+        }
+    }
+
+    /// 跳系统设置的 VPN 页（run #151）：先试 prefs 深链
+    /// （App-prefs 已在 Info.plist 的 LSApplicationQueriesSchemes
+    /// 里登记，RespringHelper 的壁纸设置跳转同走 prefs 一系），
+    /// 打开失败再兜底到本 App 的系统设置页。
+    private func openSystemVPNSettings() {
+        if let url = URL(string: "App-prefs:root=VPN") {
+            UIApplication.shared.open(url, options: [:]) { success in
+                if !success, let fallback = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(fallback, options: [:], completionHandler: nil)
+                }
+            }
+        } else if let fallback = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(fallback, options: [:], completionHandler: nil)
         }
     }
 }
@@ -1503,7 +1564,10 @@ struct ApplyThemeSection: View {
                 .glassButton()
             }
 
-            PasscodeTargetSection()
+            // run #151: 「刷入与语言目标」整卡已删——三个选择器
+            // 背后的 vm 存储值/默认值与刷入读取路径原样保留
+            // （现行解析 TelephonyUI-10 / 检测语言 / 通用字重），
+            // 只是不再有 UI 可改。
 
             Section {
                 VStack(spacing: 12) {
@@ -1576,94 +1640,6 @@ struct ApplyThemeSection: View {
     }
 }
 
-// MARK: - Passcode Target Section (matching AirCard macOS)
-
-struct PasscodeTargetSection: View {
-    @EnvironmentObject var vm: AppViewModel
-
-    var body: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    Image(systemName: "bolt.badge.clock")
-                        .foregroundColor(.blue)
-                        .font(.headline)
-                    Text("刷入与语言目标")
-                        .font(.headline)
-                }
-
-                // 1. Target System
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("系统缓存")
-                        .font(.caption.bold())
-                        .foregroundColor(.secondary)
-                    Picker("系统缓存", selection: $vm.targetTelephonyVersion) {
-                        Text("TelephonyUI-10（iOS 18+）").tag("TelephonyUI-10")
-                        Text("TelephonyUI-9（iOS 16–17）").tag("TelephonyUI-9")
-                        Text("TelephonyUI-8（iOS 14–15）").tag("TelephonyUI-8")
-                        Text("通用（全部）").tag("all")
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                }
-
-                Divider()
-
-                // 2. System Language
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("系统语言")
-                        .font(.caption.bold())
-                        .foregroundColor(.secondary)
-                    Picker("系统语言", selection: $vm.passcodeLanguageTarget) {
-                        ForEach(PasscodeLanguageTarget.allCases) { item in
-                            Text(item.rawValue).tag(item)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                }
-
-                Divider()
-
-                // 3. Font Weight / Style
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("字重 / 样式")
-                        .font(.caption.bold())
-                        .foregroundColor(.secondary)
-                    Picker("字重 / 样式", selection: $vm.passcodeBoldTarget) {
-                        ForEach(PasscodeBoldTarget.allCases) { item in
-                            Text(item.rawValue).tag(item)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                }
-
-                // Dynamic hint
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: vm.passcodeLanguageTarget == .all && vm.passcodeBoldTarget == .both ? "globe" : "bolt.fill")
-                        .font(.caption)
-                        .foregroundColor(vm.passcodeLanguageTarget == .all && vm.passcodeBoldTarget == .both ? .secondary : .orange)
-                        .padding(.top, 1)
-
-                    if vm.passcodeLanguageTarget == .all && vm.passcodeBoldTarget == .both {
-                        Text("通用模式会为全部语言与粗体文本刷入约 600 个文件。选择具体语言（如乌克兰语）可大幅加快刷入。")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        Text("已选快速模式：只刷入 \(vm.passcodeLanguageTarget.rawValue)，\(vm.passcodeBoldTarget.rawValue)。")
-                            .font(.caption2)
-                            .foregroundColor(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-            .padding(.vertical, 4)
-        }
-    }
-}
-
 // MARK: Theme Creator section
 
 struct ThemeCreatorSection: View {
@@ -1702,7 +1678,7 @@ struct ThemeCreatorSection: View {
                 .listRowBackground(Color.clear)
         }
 
-        PasscodeTargetSection()
+        // （「刷入与语言目标」卡已随 run #151 整卡删除，见上。）
 
         // Action Section
         Section {

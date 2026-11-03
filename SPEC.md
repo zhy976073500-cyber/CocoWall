@@ -3716,3 +3716,93 @@ TimelineView 内容闭包 'Content' could not be inferred——停稳收
 （执行前复查 integrator.isSettled 防过期）+ stripFrame() 全部
 在普通函数体内完成，语义与时序逐项不变；其余结构与不变清单
 一字未动。
+
+## 改动登记 · 作者素材落地 + 解锁 Pro + 配对页 WiFi 横幅/VPN 设置跳转 + 密码盘目标卡删除 + 壁纸页目标行隐藏（run #151，2026-11-03，Sage 指令六项；纯 Swift 侧 + 三张图片资源，rust 零改动）
+
+### 一、作者页真实素材（作者页 + 设置页小头像）
+
+Sage 2026-11-03 提供的三张原图按工程现有图片资源方式落地
+（与 AppIcon/旧图库图同一套路：推送通道只走文本，原图存
+.b64 文本、构建时由 project.yml 的 preBuildScript「Generate
+author images from base64」解码进 imageset，jpg 本体不进
+仓）：authorAvatar.jpg.b64（蓝底卡通头像 1254×1254）、
+officialAccountQR.jpg.b64（公众号二维码 430×430）、
+rewardCode.jpg.b64（微信赞赏码整图 1152×1152，底部黄条
+「Coco 的赞赏码」），三个 imageset 只登记 Contents.json。
+AuthorView 的两个占位结构体改本体为真实图片、名与
+调用处不变：头像沿圆形裁切呈现（作者页 96pt、设置页入口行
+40pt 共用），二维码保持原占位卡的 180×180 圆角呈现原图；
+作者页其余（Coco果粉营地、抖音主页按钮、扫码提示文案）不动。
+至此作者页头像与公众号二维码占位正式收口。
+
+### 二、设置页「解锁 Pro」（纯展示，无功能门禁）
+
+SettingsView 在作者入口与配对入口之间新增「解锁 Pro」入口行
+（crown.fill 橙，与既有入口行同版式），push 新 ProView：赞赏
+码图（rewardCode）居中展示（maxWidth 280、圆角 20）；其下大
+字「🎉你已是永久pro会员🎉」；再下文案逐行排（.subheadline
+次级色）：
+
+骗你的
+此软件永久免费
+个人开发者制作与维护
+大家看心情打赏
+也可以发抖音帮助作者宣传一下
+
+注：最后一行 Sage 原文为「帮助者」，按笔误改「帮助作者」
+（主线口径，本登记与交付报告均注明）。本页纯展示：不读写任
+何状态、不给任何功能加锁，全 App 功能照常免费。
+
+### 三、配对页网络区「去系统设置开启 VPN」按钮（口径三易后的最终版）
+
+本项口径经 Sage 两次纠正：先否「打开 LocalDevVPN 商店页」，
+再否「点按直接连内置回环」，最终定为**跳系统设置的 VPN 页**
+让用户在设置里开回环 VPN。实现（PairingTab.openSystemVPN
+Settings()）：先以 prefs 深链 `App-prefs:root=VPN` 打开（
+App-prefs 已在 Info.plist 的 LSApplicationQueriesSchemes 登
+记；工程内 RespringHelper 的壁纸设置跳转同走 prefs 一系，
+为现行工程内已用写法）；open 完成回调报失败时兜底打开本
+App 的系统设置页（UIApplication.openSettingsURLString）。
+按钮加在配对页「网络」Section 内、VPNStatusRow 之下：gear
+图标 +「去系统设置开启 VPN」。前两版口径（商店页 URL、连内
+置回环动作）全部作废，未落地任何相关代码。
+
+### 四、密码盘「刷入与语言目标」整卡删除（只删 UI）
+
+PasscodeTargetSection 结构体与两处调用（已加载主题视图、主
+题制作区）整卡删除：标题行 + 系统缓存/系统语言/字重样式三
+个 Picker + ⚡/🌐 模式提示行全去。底层刷入行为不变：vm 的
+targetTelephonyVersion（默认 TelephonyUI-10）、passcode
+LanguageTarget（默认检测到的设备语言）、passcodeBoldTarget
+（默认 .both 通用（常规 + 粗体））三个存储值、默认值与刷入
+读取路径原样保留，只是从此没有 UI 可改。
+
+### 五、壁纸页目标提示行隐藏（只删 UI）
+
+TendiesView.microcopy 删「目标：已检测到 PosterBoard 容器 ✓
+· 刷入后先尝试免注销刷新」一行的渲染分支；未检测到容器时
+的「刷入时将自动检测 PosterBoard 容器。」提示保留。vm 的容
+器检测逻辑不动。
+
+### 六、配对页顶端 WiFi 横幅（NWPathMonitor）
+
+新 WiFiMonitor（Network 框架 NWPathMonitor）：路径 satisfied
+且 usesInterfaceType(.wifi) 判已连 WiFi，pathUpdateHandler
+回主线程写 @Published。生命周期跟配对页走：PairingTab
+.onAppear start()、.onDisappear stop()（cancel 并置空），不
+留常驻监听。配对页 Form 最顶端加一 Section 作横幅：未连
+WiFi 时 ⚠ 橙图标 +「请确保设备连接wifi后再进行使用！」
+（.subheadline.bold，加醒目）；已连时 wifi 图标（绿）+
+「已连接 WiFi」平静次级文案。
+
+### 不变与边界
+
+引擎与配对核心（TendiesEngine / PairingController /
+RespringHelper / rust-core）零改动；配对页只加横幅 Section、
+一个跳转按钮与 openSystemVPNSettings() 小函数；壁纸页只删
+一行文案渲染；设置页只加入口行，日志区不动。未验证项（归
+Sage 真机）：prefs 深链在 iOS 27.0.1 上是否直达 VPN 页（兜
+底存在，最差落到本 App 设置页）；WiFi 横幅在飞行模式/蜂窝
+/连 WiFi 三态下的切换时机；Pro 页赞赏码图清晰度与扫码可识
+别性；删卡后密码盘刷入按原默认值（TelephonyUI-10 / zh /
+通用）照常工作。

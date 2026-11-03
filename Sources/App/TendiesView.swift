@@ -1474,10 +1474,11 @@ struct TendiesView: View {
 
     private var microcopy: some View {
         VStack(spacing: 2) {
+            // run #151: 「目标：已检测到 PosterBoard 容器 …」一行
+            // 已按 Sage 要求隐藏（只删 UI，vm 的容器检测不动）；
+            // 未检测到时的自动检测提示保留。
             if vm.posterBoardContainer.isEmpty {
                 Text("刷入时将自动检测 PosterBoard 容器。")
-            } else {
-                Text("目标：已检测到 PosterBoard 容器 ✓ · 刷入后先尝试免注销刷新")
             }
         }
         .font(.caption)
