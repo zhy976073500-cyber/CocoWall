@@ -1534,7 +1534,7 @@ struct TendiesView: View {
         sheetTile(icon: "photo.on.rectangle.angled",
                   tint: .blue,
                   title: "获取更多壁纸",
-                  subtitle: "飞书合集，持续更新",
+                  subtitle: "持续更新",
                   subtitleColor: .secondary) {
             if let url = URL(string: "https://my.feishu.cn/wiki/Oi6pwrRp9i8wd2kBl0Lc4bn9nTb") {
                 UIApplication.shared.open(url)
