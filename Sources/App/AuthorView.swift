@@ -20,15 +20,19 @@ struct AuthorAvatarPlaceholder: View {
     }
 }
 
-/// 公众号二维码（run #151 起用真实素材 officialAccountQR 原图，
-/// 保持原占位卡的 180×180 圆角呈现）。
+/// 公众号二维码（run #151 起用真实素材 officialAccountQR 原图）。
+/// run #152：二维码改放白色圆角卡片上呈现（图四周留白作静区）——
+/// 深色模式下页面背景转深，卡片保住二维码的扫描对比度；浅色
+/// 模式下与页面同为白底，观感与原占位卡一致。
 struct AuthorQRPlaceholder: View {
     var body: some View {
         Image("officialAccountQR")
             .resizable()
             .scaledToFit()
             .frame(width: 180, height: 180)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(14)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 }
 
@@ -44,6 +48,7 @@ struct AuthorView: View {
 
                 Text(AuthorInfo.displayName)
                     .font(.title2.bold())
+                    .foregroundStyle(.primary)
 
                 Button {
                     openURL(AuthorInfo.douyinURL)
@@ -69,7 +74,10 @@ struct AuthorView: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
         }
-        .background(Color.white)
+        // run #152：背景改系统语义背景（原写死 Color.white，深色
+        // 模式下白字白底导致名称与扫码文案不可见）；与 ProView
+        // 的 systemBackground 口径一致。
+        .background(Color(UIColor.systemBackground))
         .navigationTitle("作者")
         .navigationBarTitleDisplayMode(.inline)
     }

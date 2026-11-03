@@ -3806,3 +3806,61 @@ Sage 真机）：prefs 深链在 iOS 27.0.1 上是否直达 VPN 页（兜
 /连 WiFi 三态下的切换时机；Pro 页赞赏码图清晰度与扫码可识
 别性；删卡后密码盘刷入按原默认值（TelephonyUI-10 / zh /
 通用）照常工作。
+
+
+## 改动登记 · 作者页深色模式适配 + 制作页「正在开发中」占位（run #152，2026-11-03，Sage 指令两项；发布前最后一版 UI 修订，纯 Swift 侧，rust 零改动）
+
+### 一、作者页深色模式适配（AuthorView）
+
+Sage 截图实证：系统深色模式下作者页背景仍是白色，且「Coco
+果粉营地」名与「微信扫一扫，关注公众号」文案白字白底直接消
+失。根因：AuthorView 背景写死 `.background(Color.white)`，
+而名称 Text 走默认前景色（深色下为白）、扫码文案走
+.secondary（深色下为浅灰），页面在深色环境里渲染出浅色文
+字压在写死的白底上。改法：
+
+- 背景改 `Color(UIColor.systemBackground)` 系统语义背景
+  （与 ProView 现行口径一致），深色走深色背景、浅色不变。
+- 名称 Text 显式 `.foregroundStyle(.primary)`；扫码文案原
+  本就是 `.secondary` 语义色，不动。两者随背景自适应后在
+  两种模式下均可读。
+- 二维码（AuthorQRPlaceholder）改放白色圆角卡片上呈现：
+  图 180×180（圆角 12）外加 14pt 白色内边距、卡片圆角 20，
+  全模式一致——深色下卡片保住二维码的扫描对比度与静区，
+  浅色下与页面同为白底、观感与原占位卡一致或更整齐。
+
+同查 run #151 新建的 ProView：**已查、无此问题**——背景本
+就是 `Color(UIColor.systemBackground)`，标题走默认 primary、
+文案走 `.secondary`，全语义色无写死颜色；赞赏码为自带白底
+黄条的整图资源，深色下自成卡片、扫码对比度不受影响。本轮
+不改 ProView。
+
+### 二、制作页改「正在开发中」占位（口径变更，覆盖「隐藏页签」方案）
+
+发布口径变更：此前收尾构建方案是隐藏「制作」页签；Sage
+2026-11-03 15:18 改定为**页签保留、点开提示正在开发中**。
+实现：MakerView.swift 新增开关 `MakerFeatureGate.
+MakerFeatureEnabled = false`，MakerView 在 NavigationStack
+内二选一渲染——true 走原 KeyframeEditorView，false 走新占
+位页 MakerComingSoonView（同文件）：wand.and.stars 图标 +
+「正在开发中」（.title3.bold / primary）+「敬请期待」
+（.subheadline / secondary），背景 systemBackground，深色
+自适应。**编辑器代码（KeyframeEditorView 本体）与入口接线
+（ContentView 页签、MakerView 壳）一律不删不改**，日后功
+能成熟把开关改 true 即恢复。底栏四页签结构不变。
+
+注记：本地 git HEAD（b0e5cf8）里的 MakerView.swift 仍是旧
+占位稿，与远端不一致——远端 7e68879 的 MakerView.swift 为
+编辑器壳版，经连接器回读 blob（1c4cd16…）与本地工作区逐字
+一致；本轮本地 commit 以工作区（=远端）版本为基线叠加门
+控，顺带把该文件本地历史与远端对齐。
+
+### 不变与边界
+
+改动仅 AuthorView.swift、MakerView.swift 两文件 + 本登记；
+引擎与配对核心（TendiesEngine / PairingController /
+RespringHelper / rust-core）零改动；作者页其余（抖音主页按
+钮、名称与文案内容、头像圆形裁切）不动；ProView 不动。
+未验证项（归 Sage 真机）：深色模式下作者页背景/名称/扫码
+文案可读性与二维码白卡呈现、浅色模式观感不回退；制作页点
+开显示占位页、其余三页签功能照常；深色下占位页呈现。
