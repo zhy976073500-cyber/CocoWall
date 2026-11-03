@@ -817,8 +817,16 @@ struct PairingTab: View {
     @State private var showFilePicker = false
     @State private var showPairingGuide = false
     // run #155: 导出配对文件的分享面板（临时副本 URL）。
-    @State private var pairingExportURL: URL?
-    @State private var showPairingExport = false
+    // run #156: 改单一 item 状态驱动呈现（根因与修法见
+    // exportPairingFile 与 SPEC #156 一）。
+    @State private var pairingExportItem: PairingExportItem?
+
+    /// 导出分享项（run #156）：sheet(item:) 的载荷——呈现与
+    /// 内容同源于这一个可选值，非空才呈现、呈现必有内容。
+    private struct PairingExportItem: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
     // run #151: WiFi 监听只在配对页在场时活（onAppear 起、
     // onDisappear 停），驱动页顶横幅。
     @StateObject private var wifiMonitor = WiFiMonitor()
@@ -898,14 +906,15 @@ struct PairingTab: View {
                 Section("网络") {
                     VPNStatusRow(vm: vm)
 
-                    // run #151: 去系统设置里开 VPN 的直达按钮
-                    // （prefs 深链跳 VPN 页，跳不通兜底本 App 设置页）。
+                    // run #151: 去系统设置里开 VPN 的直达按钮；
+                    // run #156: 文案改 Sage 定稿「去系统设置链接
+                    // 回环」，深链改候选链（见 openSystemVPNSettings）。
                     Button {
                         openSystemVPNSettings()
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "gearshape.fill")
-                            Text("去系统设置开启 VPN")
+                            Text("去系统设置链接回环")
                             Spacer()
                             Image(systemName: "arrow.up.forward.app")
                                 .font(.caption.weight(.semibold))
@@ -1201,11 +1210,10 @@ struct PairingTab: View {
                     }
                 }
             }
-            // 导出配对文件的系统分享面板（run #155）。
-            .sheet(isPresented: $showPairingExport) {
-                if let url = pairingExportURL {
-                    ShareSheet(items: [url])
-                }
+            // 导出配对文件的系统分享面板（run #155；run #156
+            // 改 sheet(item:) 单源驱动，杜绝空内容呈现）。
+            .sheet(item: $pairingExportItem) { item in
+                ShareSheet(items: [item.url])
             }
             .onAppear {
                 vm.refreshNetworkStatus()
@@ -1222,25 +1230,57 @@ struct PairingTab: View {
         }
     }
 
-    /// 跳系统设置的 VPN 页（run #151）：先试 prefs 深链
-    /// （App-prefs 已在 Info.plist 的 LSApplicationQueriesSchemes
-    /// 里登记，RespringHelper 的壁纸设置跳转同走 prefs 一系），
-    /// 打开失败再兜底到本 App 的系统设置页。
+    /// 跳系统设置的 VPN 页（run #151 初版；run #156 候选链
+    /// 修复）：初版 App-prefs:root=VPN 在 Sage 的 iOS 27.0.1
+    /// 上能打开设置、却落到设置里的「App」列表页而非 VPN
+    /// 页（截图实证）；且 open 的成功回调只报「打开了」、
+    /// 不报落点，它留在链里只会遮住后续候选，故本轮移出
+    /// 候选链。候选按可信度排序（依据见 SPEC #156 二）：
+    /// 新版 iOS 的 VPN 位于 设置 › 通用 › VPN与设备管理，
+    /// 候选都走 General 根下的 VPN 路径，逐个尝试、打开
+    /// 失败才试下一个；全部打不开时兜底本 App 的系统设置
+    /// 页。落点准确性代码层无法自证，归 Sage 真机确认。
+    /// App-prefs 已在 Info.plist 的 LSApplicationQueriesSchemes
+    /// 里登记（run #151），候选同 scheme、无需改 Info.plist。
     private func openSystemVPNSettings() {
-        if let url = URL(string: "App-prefs:root=VPN") {
-            UIApplication.shared.open(url, options: [:]) { success in
-                if !success, let fallback = URL(string: UIApplication.openSettingsURLString) {
+        let candidates = [
+            "App-prefs:root=General&path=Network/VPN",
+            "App-prefs:root=General&path=VPN",
+        ]
+        func attempt(_ index: Int) {
+            guard index < candidates.count,
+                  let url = URL(string: candidates[index])
+            else {
+                if let fallback = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(fallback, options: [:], completionHandler: nil)
                 }
+                return
             }
-        } else if let fallback = URL(string: UIApplication.openSettingsURLString) {
-            UIApplication.shared.open(fallback, options: [:], completionHandler: nil)
+            UIApplication.shared.open(url, options: [:]) { success in
+                if !success { attempt(index + 1) }
+            }
         }
+        attempt(0)
     }
 
     /// 导出配对文件（run #155）：把存储原件逐字节复制到临时目录
     /// 并命名 CocoWall_pairing.plist，再拉起系统分享面板。
     /// 复制不转码、不重写，导出字节与原件一致。
+    ///
+    /// run #156 空白面板根因修复：原实现用两个独立 @State
+    /// （pairingExportURL + showPairingExport 布尔）配
+    /// .sheet(isPresented:) 与 if-let 内容——点按时两份状态
+    /// 同回合先后写入，sheet 构建内容时读到的 URL 仍为 nil，
+    /// if let 落空，托管控制器以空内容完成呈现；呈现之后内
+    /// 容身份再从空视图切换为 ShareSheet，控制器也不会重
+    /// 建 → 整片空白（Sage 16:34 截图实证）。文件侧可排除：
+    /// pairingFilePath() 自带存在性与非空校验、按钮又以
+    /// hasPairingFile 为显隐门，源文件可靠；且复制若抛错，
+    /// 旧代码根本不会置呈现位、不会有任何面板——出现的偏
+    /// 偏是空面板，症结在呈现竞速不在文件。修法：改
+    /// sheet(item:) 单源驱动（呈现与内容同出一个可选值）；
+    /// 复制落盘后先核验副本非空再赋值触发呈现；失败则不
+    /// 赋值、不呈现，绝不再弹空面板。
     private func exportPairingFile() {
         let source = PairingController.pairingFilePath()
         let dest = FileManager.default.temporaryDirectory
@@ -1250,10 +1290,15 @@ struct PairingTab: View {
                 try FileManager.default.removeItem(at: dest)
             }
             try FileManager.default.copyItem(atPath: source, toPath: dest.path)
-            pairingExportURL = dest
-            showPairingExport = true
+            let size = (try? FileManager.default
+                .attributesOfItem(atPath: dest.path)[.size] as? Int) ?? 0
+            guard size > 0 else {
+                pairingExportItem = nil
+                return
+            }
+            pairingExportItem = PairingExportItem(url: dest)
         } catch {
-            pairingExportURL = nil
+            pairingExportItem = nil
         }
     }
 

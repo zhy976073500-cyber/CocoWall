@@ -4068,3 +4068,105 @@ passthmFlashLog 的底层收集与全部写入点保留不动，密码盘页
 其他工具正常导入（字节一致）；配对时灵动岛展开态与锁屏
 横幅在码生成后显示 6 位大字码；密码盘页不再出现刷入日志
 窗且刷入功能照常（底层日志保留的回归验证）。
+
+## 改动登记 · 导出空白修复 + 回环按钮改名与 VPN 跳转候选链 + 壁纸页回环显示口径收紧（run #156，2026-11-03，Sage 真机验合并包后三处反馈；纯 Swift 侧，rust 零改动，受保护文件零改动）
+
+### 一、导出配对文件点开是空白 sheet（#155 三的回归修复）
+
+现象：配对页点「导出配对文件」，系统分享面板整片空白
+（Sage 16:34 截图实证）。
+
+根因（呈现竞速，不在文件）：#155 的实现用两个独立
+@State——pairingExportURL（内容数据）与 showPairingExport
+（呈现布尔）——配 .sheet(isPresented:) 与 if-let 内容。
+点按时两份状态在同一回合先后写入，sheet 构建内容时读
+到的 URL 仍为 nil，if let 落空，托管控制器以空内容完
+成呈现；呈现之后内容身份再从空视图切换为 ShareSheet，
+已建好的控制器不会重建 → 整片空白。配对页本身又是设
+置页以 sheet 打开的页面（sheet 里再套 sheet），呈现层
+级更深，竞速更容易撞上。
+
+排除项：①文件不存在/复制失败——pairingFilePath() 自
+带存在性与非空尺寸校验才返回路径，按钮又以
+hasPairingFile 为显隐门，源文件可靠；且复制若抛错，
+旧代码走 catch、根本不会置呈现位，不会有任何面板出
+现——出现的偏偏是空面板，症结只能在呈现不在文件。
+②ShareSheet 本体坏——密码盘 .passthm 导出共用同一
+ShareSheet 且正常（差别只在那条链的呈现挂在根视图、
+不在嵌套 sheet 内、且时序不易撞）。
+
+修法（ContentView.swift PairingTab）：①改 sheet(item:)
+单源驱动——呈现与内容同出一个可选值 pairingExportItem
+（Identifiable 载荷），非空才呈现、呈现必有内容，竞速
+从结构上消失；②复制落盘后先核验副本存在且字节数 > 0
+再赋值触发呈现，失败则不赋值、不呈现，绝不再弹空面板。
+
+### 二、配对页回环按钮改名 + VPN 跳转修复
+
+文案：「去系统设置开启 VPN」改为 Sage 定稿「去系统
+设置链接回环」（逐字采用，未改作「连接」）。
+
+跳转根因：run #151 的 App-prefs:root=VPN 在 Sage 的
+iOS 27.0.1 上能打开设置、却落到设置里的「App」列表页
+（截图实证），不是 VPN 页。且 UIApplication.open 的
+成功回调只报「打开了」、不报落点——root=VPN 在他的机
+器上是「打开成功但落点错」，留在候选链里只会遮住后续
+候选，本轮将它移出候选链。
+
+候选链（按可信度排序，逐个尝试、open 回调失败才试下
+一个，全部失败兜底 UIApplication.openSettingsURLString
+即本 App 的系统设置页）：
+1. App-prefs:root=General&path=Network/VPN——设置深链
+   汇编里长期登记的 VPN 面板路径（General › Network ›
+   VPN 一系），结构最完整，可信度最高；
+2. App-prefs:root=General&path=VPN——新版 iOS 里 VPN
+   挂在通用根下（设置 › 通用 › VPN与设备管理）的同根
+   简写候选；
+3. 兜底：本 App 设置页（至少落在 CocoWall 自己的设置
+   页，用户可由此再找 VPN）。
+LSApplicationQueriesSchemes 已登记 App-prefs（run
+#151），候选同 scheme，Info.plist 无需改动。声明：候
+选给的是当前最可信的路径，不是保证——深链落点无法在
+代码层自证，最终落点归 Sage 真机确认（见未验证项）。
+
+### 三、壁纸页回环状态识别收紧（两处指示统一事实源）
+
+矛盾成因（Sage 16:35 截图：同页胶囊「回环 已连接」绿、
+内置回环瓷砖「未连接 · 点击连接」）：两处指示原本不同
+源。瓷砖只读 LoopbackTunnelManager 的内置隧道状态（未
+连即未连接）；状态胶囊 loopbackSegment 在内置未连时回
+退到 vm.vpnUp——NetworkStatus 的接口扫描口径（任一
+utun/ipsec 接口在场即算 up）。Sage 当时机器上有别的
+App 的 utun 在场（配对页接口列表可见 utun0/utun4 =
+192.0.0.6 一类外部隧道），接口扫描报 up → 胶囊误报
+已连接，瓷砖据实报未连接，两处打架。loopbackPresentation
+的 lineValue 同样吃 externalUp，是同一病灶。
+
+修法（TendiesView.swift）：①loopbackPresentation 去掉
+externalUp 入参，未连接分支恒为「未连接」；②胶囊
+loopbackSegment 未连接分支去掉 vm.vpnUp 回退，恒为
+（未连接，红）。两处指示与瓷砖自此同源同判：唯一事实
+源 = LoopbackTunnelManager.shared 的 status/isBusy——
+它按 providerBundleIdentifier == com.coco.cocowall.tunnel
+在 loadAllFromPreferences 里挑出本 App 的那份系统 VPN
+配置读状态，天生只代表 CocoWall 自己的回环扩展；连着
+别的 VPN、仅存在 utun 接口，一律不算已连接。
+
+显示与刷入的分离（红线自查）：本轮只收紧壁纸页「显
+示」。vm.vpnUp 本身、NetworkStatus、刷入链与密码盘链
+的可用性判定一概未动——引擎侧刷入时会自己尝试 RSD
+连接，密码盘路径对 vpnUp 也只是软提示；外部回环真能
+通时刷入照常走得通，只是壁纸页不再把外部回环显示成
+已连接。配对页的回环卡（读 vm.vpnUp）不在本轮范围，
+未动。
+
+### 未验证项（归 Sage 真机）
+
+- 配对页点「导出配对文件」：分享面板正常显示（有存储
+  到「文件」等动作项），导出的 CocoWall_pairing.plist
+  可用；
+- 配对页点「去系统设置链接回环」：实际落点是否为 VPN
+  页（27.0.1 实测，本轮候选链的第一落点）；
+- 壁纸页：只开别的 VPN 时胶囊与瓷砖同报未连接；连上
+  内置回环后两处同报已连接；外部回环在场时刷入照常
+  （显示收紧未误伤刷入的回归）。
