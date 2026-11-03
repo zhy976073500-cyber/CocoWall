@@ -1007,6 +1007,83 @@ private struct FanStripView: View {
     }
 }
 
+/// 状态胶囊内部状态（run #159 适度耦合）：壁纸页状态胶囊
+/// 三段显示的全部计算输入收成一个值。run #159 起并入远程
+/// 配置验签状态（configVerified）——配置服务由刷入链路所
+/// 在的 AppViewModel 初始化，其验签状态经 VM 转发参与本
+/// 状态的计算，状态翻转会驱动胶囊刷新；但三段的取值与
+/// 语义色口径完全沿用 run #128/#156，configVerified 不
+/// 参与任何一段的取值，更不拦截任何功能（发布方案第 1
+/// 节「适度绑定」：只耦合、不硬拦截，详见 SPEC #159）。
+struct TendiesStatusCapsuleState: Equatable {
+    enum Tone: Equatable {
+        case ok, warn, bad
+        var color: Color {
+            switch self {
+            case .ok: return .green
+            case .warn: return .orange
+            case .bad: return .red
+            }
+        }
+    }
+    var loopbackValue: String
+    var loopbackTone: Tone
+    var pairingReady: Bool
+    var systemText: String
+    var systemTone: Tone
+    var configVerified: Bool
+}
+
+/// 状态胶囊本体（run #159 从 TendiesView 拆出）：只吃
+/// TendiesStatusCapsuleState 渲染，排版与拆分前逐项一致
+/// （run #128：三段 + 1pt 分隔线、胶囊瓷砖底、轻阴影）。
+private struct StatusCapsuleBarView: View {
+    let state: TendiesStatusCapsuleState
+    let tileBackground: Color
+
+    var body: some View {
+        HStack(spacing: 8) {
+            segment(label: "回环",
+                    value: state.loopbackValue,
+                    color: state.loopbackTone.color)
+            divider
+            segment(label: "配对文件",
+                    value: state.pairingReady ? "已识别" : "未识别",
+                    color: state.pairingReady ? .green : .red)
+            divider
+            segment(label: "系统",
+                    value: state.systemText,
+                    color: state.systemTone.color)
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(tileBackground, in: Capsule())
+        .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.secondary.opacity(0.18))
+            .frame(width: 1, height: 14)
+    }
+
+    private func segment(label: String, value: String, color: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.primary)
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(color)
+        }
+    }
+}
+
 struct TendiesView: View {
     @EnvironmentObject var vm: AppViewModel
     /// 深色适配（run #149）：底部 sheet 一套颜色 token
@@ -1077,11 +1154,13 @@ struct TendiesView: View {
         }
     }
 
-    private var systemSegmentColor: Color {
+    /// 系统段语义色调（run #159：原 systemSegmentColor 改以
+    /// Tone 表达，口径不变——支持 ok、风险 warn、不支持 bad）。
+    private var systemTone: TendiesStatusCapsuleState.Tone {
         switch systemStatusLevel {
-        case .supported: return .green
-        case .patchedRisk: return .orange
-        case .tooOld: return .red
+        case .supported: return .ok
+        case .patchedRisk: return .warn
+        case .tooOld: return .bad
         }
     }
 
@@ -1089,17 +1168,17 @@ struct TendiesView: View {
     /// 统一口径）：与 loopbackPresentation 同一事实源、同一判
     /// 定——只认内置隧道（LoopbackTunnelManager 的状态），外
     /// 部 VPN 在场不再算已连接，两处指示不许再打架。
-    private var loopbackSegment: (value: String, color: Color) {
+    private var loopbackSegment: (value: String, tone: TendiesStatusCapsuleState.Tone) {
         switch loopbackPhase {
         case .connected:
-            return ("已连接", .green)
+            return ("已连接", .ok)
         case .connecting, .reasserting:
-            return ("连接中…", .orange)
+            return ("连接中…", .warn)
         case .disconnecting:
-            return ("断开中…", .orange)
+            return ("断开中…", .warn)
         case .disconnected, .invalid, .unknown:
-            if loopback.isBusy { return ("连接中…", .orange) }
-            return ("未连接", .red)
+            if loopback.isBusy { return ("连接中…", .warn) }
+            return ("未连接", .bad)
         }
     }
 
@@ -1360,44 +1439,23 @@ struct TendiesView: View {
 
     // MARK: 状态条
 
-    private var statusCapsule: some View {
-        HStack(spacing: 8) {
-            statusSegment(label: "回环",
-                          value: loopbackSegment.value,
-                          color: loopbackSegment.color)
-            Rectangle()
-                .fill(Color.secondary.opacity(0.18))
-                .frame(width: 1, height: 14)
-            statusSegment(label: "配对文件",
-                          value: vm.hasPairingFile ? "已识别" : "未识别",
-                          color: vm.hasPairingFile ? .green : .red)
-            Rectangle()
-                .fill(Color.secondary.opacity(0.18))
-                .frame(width: 1, height: 14)
-            statusSegment(label: "系统",
-                          value: systemSegmentText,
-                          color: systemSegmentColor)
-        }
-        .lineLimit(1)
-        .minimumScaleFactor(0.8)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .background(sheetTileBackground, in: Capsule())
-        .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
+    /// 状态胶囊的内部状态（run #159）：三段输入 + 远程配置
+    /// 验签状态（vm.remoteConfigVerified）一并在此计算，
+    /// 交给 StatusCapsuleBarView 渲染。验签状态只参与状态
+    /// 计算、不改三段取值（见 TendiesStatusCapsuleState）。
+    private var statusCapsuleState: TendiesStatusCapsuleState {
+        TendiesStatusCapsuleState(
+            loopbackValue: loopbackSegment.value,
+            loopbackTone: loopbackSegment.tone,
+            pairingReady: vm.hasPairingFile,
+            systemText: systemSegmentText,
+            systemTone: systemTone,
+            configVerified: vm.remoteConfigVerified)
     }
 
-    private func statusSegment(label: String, value: String, color: Color) -> some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.primary)
-            Text(value)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(color)
-        }
+    private var statusCapsule: some View {
+        StatusCapsuleBarView(state: statusCapsuleState,
+                             tileBackground: sheetTileBackground)
     }
 
     // MARK: 刷入主按钮
@@ -1536,7 +1594,10 @@ struct TendiesView: View {
                   title: "获取更多壁纸",
                   subtitle: "持续更新",
                   subtitleColor: .secondary) {
-            if let url = URL(string: "https://my.feishu.cn/wiki/Oi6pwrRp9i8wd2kBl0Lc4bn9nTb") {
+            // run #159：飞书入口改读远程配置 feishuUrl（发布
+            // 方案明令禁止写死）；配置未加载成功时服务回落
+            // 内置默认=原写死值，入口永不失效。
+            if let url = URL(string: vm.remoteConfig.feishuURLString) {
                 UIApplication.shared.open(url)
             }
         }

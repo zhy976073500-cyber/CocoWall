@@ -136,3 +136,18 @@ final class LocalNetworkAuthorization {
         listener?.cancel(); listener = nil
     }
 }
+
+// MARK: - 发布版日志总闸（run #159）
+
+/// 详细日志（引擎/FFI 明细、[计时] 明细）的编译期总闸，
+/// 默认关：发布构建里明细行在收集入口就被截断、根本不
+/// 产生（Sage 2026-11-03 定调「发布版关闭详细引擎日志
+/// 输出，源头不产生敏感日志句」）。需要复现问题时把这里
+/// 改 true 重新构建即可，调用点一律走 AppViewModel 的
+/// 收集入口（appendEngineDetail / 各 [计时] 追加点），
+/// 不许绕过总闸直接 append 明细行。覆盖点清单见 SPEC
+/// run #159 第四节。用户级结果行（成功/失败/错误文案）
+/// 不归此闸管，照常产生。
+enum CWLogGate {
+    static let detailedLogsEnabled = false
+}

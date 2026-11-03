@@ -156,6 +156,8 @@ struct SettingsView: View {
 /// 末尾给出本机当前系统的判定。判定复用
 /// `AppViewModel.systemSupportLevel(version:)`，不另写一套。
 struct SupportedSystemsView: View {
+    @EnvironmentObject var vm: AppViewModel
+
     private var deviceVersion: String { UIDevice.current.systemVersion }
 
     private var deviceLevel: SystemSupportLevel {
@@ -189,10 +191,12 @@ struct SupportedSystemsView: View {
                     ]
                 )
 
-                // iOS 26 生成配对文件教程（run #158）：与本机系统行
-                // 同款玻璃行，系统浏览器打开外部教程。
+                // iOS 26 生成配对文件教程（run #158 建入口；
+                // run #159 起链接改读远程配置 pairingTutorialUrl，
+                // 配置未加载成功时回落内置默认=原写死值）：与本机
+                // 系统行同款玻璃行，系统浏览器打开外部教程。
                 Button {
-                    if let url = URL(string: "https://drive.uc.cn/s/2f63634667a44?public=1") {
+                    if let url = URL(string: vm.remoteConfig.pairingTutorialURLString) {
                         UIApplication.shared.open(url)
                     }
                 } label: {

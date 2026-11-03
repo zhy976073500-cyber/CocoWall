@@ -102,6 +102,17 @@ final class AppViewModel: ObservableObject {
     static var sharedLogSink: ((String) -> Void)? = nil
     static weak var shared: AppViewModel? = nil
 
+    // MARK: - 远程配置（run #159）
+
+    /// 配置服务由刷入链路所在的 VM 持有并初始化（发布方案
+    /// 「公告模块与核心适度绑定」）：界面层不直接建服务，
+    /// 经 VM 的两个转发属性订阅弹窗与验签状态；验签状态
+    /// 还并入壁纸页状态胶囊的内部状态计算（TendiesView）。
+    let remoteConfig = RemoteConfigService()
+    @Published private(set) var remotePrompt: RemoteConfigService.Prompt? = nil
+    @Published private(set) var remoteConfigVerified: Bool = false
+    private var remoteConfigCancellables: Set<AnyCancellable> = []
+
     // MARK: - Pairing
     @Published var pairingStatus: String = ""
     @Published var pairingPIN: String? = nil
@@ -283,6 +294,17 @@ final class AppViewModel: ObservableObject {
         AppViewModel.sharedLogSink = { [weak self] line in
             self?.log.append(line)
         }
+
+        // 远程配置（run #159）：转发弹窗与验签状态给界面层，
+        // 并启动配置服务（init 已同步读验签缓存；此处评估
+        // 一次弹窗并异步拉网络，全程静默不阻塞）。
+        remoteConfig.$prompt
+            .sink { [weak self] p in self?.remotePrompt = p }
+            .store(in: &remoteConfigCancellables)
+        remoteConfig.$verificationState
+            .sink { [weak self] state in self?.remoteConfigVerified = (state == .verified) }
+            .store(in: &remoteConfigCancellables)
+        remoteConfig.start()
     }
 
     // MARK: - Documents directory scanner
@@ -797,7 +819,7 @@ final class AppViewModel: ObservableObject {
                                     al_exploit_write_dir(pairC, srcC, tgtC, { _, msg in
                                         guard let msg = msg else { return }
                                         let line = String(cString: msg)
-                                        DispatchQueue.main.async { AppViewModel.shared?.passthmFlashLog.append("    " + line) }
+                                        DispatchQueue.main.async { AppViewModel.shared?.appendPasscodeDetail(line) }
                                     }, nil, &outError)
                                 }
                             }
@@ -890,6 +912,28 @@ final class AppViewModel: ObservableObject {
 
     func appendLog(_ line: String) {
         log.append(line)
+    }
+
+    /// run #159：引擎/助手明细行的统一收集入口（发布日志
+    /// 总闸 CWLogGate）：TendiesEngine / PosterStoreHelper /
+    /// PosterRefreshHelper 的 log 闭包一律经此入列，总闸
+    /// 关闭时明细行（阶段明细 + [计时]）直接丢弃、不产
+    /// 生。注意清理进度（run #148）由 PosterStoreHelper
+    /// 内部先行观察同一批行再外转发，不经此入口、不受
+    /// 总闸影响；用户级结果行（🎉/✅/❌）由各流程直接
+    /// append，不走这里。
+    func appendEngineDetail(_ line: String) {
+        if CWLogGate.detailedLogsEnabled {
+            tendiesFlashLog.append(line)
+        }
+    }
+
+    /// run #159：密码盘 FFI 写盘回调的明细行收集入口
+    /// （发布日志总闸，同 appendEngineDetail 口径）。
+    func appendPasscodeDetail(_ line: String) {
+        if CWLogGate.detailedLogsEnabled {
+            passthmFlashLog.append("    " + line)
+        }
     }
 
     // MARK: - Tendies / Wallpapers
@@ -1208,7 +1252,7 @@ final class AppViewModel: ObservableObject {
         tendiesFlashPhase = .running
         tendiesFlashProgress = 0
         tendiesFlashLog = []
-        if let containerDetectMS {
+        if CWLogGate.detailedLogsEnabled, let containerDetectMS {
             tendiesFlashLog.append("[计时] 刷入·容器检测 \(cwStageText(containerDetectMS)) ms")
         }
 
@@ -1220,7 +1264,7 @@ final class AppViewModel: ObservableObject {
                 pairingPath: pairingPath,
                 log: { [weak self] line in
                     DispatchQueue.main.async {
-                        self?.tendiesFlashLog.append(line)
+                        self?.appendEngineDetail(line)
                     }
                 },
                 progress: { [weak self] p in
@@ -1240,7 +1284,9 @@ final class AppViewModel: ObservableObject {
             )
             // Run #146: round total; poster_refresh reports its own
             // [计时] line when it finishes (it runs async from here).
-            tendiesFlashLog.append("[计时] 刷入·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（不含 poster_refresh）")
+            if CWLogGate.detailedLogsEnabled {
+                tendiesFlashLog.append("[计时] 刷入·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（不含 poster_refresh）")
+            }
             tendiesFlashPhase = .done(ok: true)
             tendiesFlashProgress = 1.0
             tendiesFlashLog.append("🎉 壁纸应用成功！")
@@ -1252,7 +1298,7 @@ final class AppViewModel: ObservableObject {
                 pairingPath: pairingPath,
                 log: { [weak self] line in
                     DispatchQueue.main.async {
-                        self?.tendiesFlashLog.append(line)
+                        self?.appendEngineDetail(line)
                     }
                 }
             ) { [weak self] confirmed, _ in
@@ -1268,7 +1314,9 @@ final class AppViewModel: ObservableObject {
                 }
             }
         } catch {
-            tendiesFlashLog.append("[计时] 刷入·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（中途失败）")
+            if CWLogGate.detailedLogsEnabled {
+                tendiesFlashLog.append("[计时] 刷入·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（中途失败）")
+            }
             tendiesFlashLog.append("❌ 错误：\(error.localizedDescription)")
             tendiesFlashPhase = .done(ok: false)
         }
@@ -1414,7 +1462,7 @@ final class AppViewModel: ObservableObject {
                 structVersion: version,
                 log: { [weak self] line in
                     DispatchQueue.main.async {
-                        self?.tendiesFlashLog.append(line)
+                        self?.appendEngineDetail(line)
                     }
                 }
             ) { result in
@@ -1627,7 +1675,7 @@ final class AppViewModel: ObservableObject {
                 targets: targets,
                 log: { [weak self] line in
                     DispatchQueue.main.async {
-                        self?.tendiesFlashLog.append(line)
+                        self?.appendEngineDetail(line)
                     }
                 },
                 progress: { [weak self] p in
@@ -1665,7 +1713,9 @@ final class AppViewModel: ObservableObject {
             await detectDevicePosters(clearStatus: false)
             // Run #146: round total （删除 + 删后重检测）; poster_refresh
             // reports its own [计时] line when it finishes.
-            tendiesFlashLog.append("[计时] 清理·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（不含 poster_refresh）")
+            if CWLogGate.detailedLogsEnabled {
+                tendiesFlashLog.append("[计时] 清理·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（不含 poster_refresh）")
+            }
             devicePosterStatus = message
             isCleaningDevicePosters = false
             // Removal only takes effect once PosterBoard re-reads its
@@ -1675,7 +1725,7 @@ final class AppViewModel: ObservableObject {
                 pairingPath: ctx.pairingPath,
                 log: { [weak self] line in
                     DispatchQueue.main.async {
-                        self?.tendiesFlashLog.append(line)
+                        self?.appendEngineDetail(line)
                     }
                 }
             ) { [weak self] confirmed, _ in
@@ -1693,7 +1743,9 @@ final class AppViewModel: ObservableObject {
                 }
             }
         case .failure(let err):
-            tendiesFlashLog.append("[计时] 清理·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（失败）")
+            if CWLogGate.detailedLogsEnabled {
+                tendiesFlashLog.append("[计时] 清理·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（失败）")
+            }
             isCleaningDevicePosters = false
             cleanupProgress = nil
             devicePosterStatus = "清理失败：\(err.localizedDescription)"

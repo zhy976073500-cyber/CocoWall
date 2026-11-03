@@ -4284,3 +4284,60 @@ https://drive.uc.cn/s/2f63634667a44?public=1
   图标均为新图）；
 - 配对页与支持系统页的教程按钮点击后，系统浏览器
   正确打开 UC 链接、页面可正常访问。
+
+## 改动登记 · 发布收尾一期：远程配置链路 + 版本 1.0.0 + 防抄收口（run #159，2026-11-03，Sage 发布指令 + 发布防盗方案第 1 节；纯 Swift 侧 + project.yml，rust 零改动，受保护文件零改动）
+
+发布基线 #158（Sage 19:26 整体放行）之上的发布收尾第一轮。本轮范围：远程配置全套、版本号、字符串收口、发布版关详细日志、渠道水印。**资源完整性校验不在本轮**——定为二期 #160 单独一轮（离线签哈希清单），最终发布包须两轮齐备。
+
+### 一、远程配置模块（新建 Sources/App/RemoteConfig.swift）
+
+- **服务形态**：`RemoteConfigService`（@MainActor ObservableObject），由刷入链路所在的 `AppViewModel` 持有（`let remoteConfig`），在其 init 里接线并 `start()`；界面层不直建服务，弹窗与验签状态经 VM 的两个转发属性订阅（`remotePrompt`、`remoteConfigVerified`）——这是发布方案「公告模块与核心适度绑定」在本轮的耦合点之一。
+- **端点（双地址，均已上线验活）**：主 `https://cocowall-config.oss-cn-beijing.aliyuncs.com/config.json`；兜底 `https://cdn.jsdelivr.net/gh/zhy976073500-cyber/cocowall-config@main/config.json`；签名为同目录 `config.sig`。上线状态（2026-11-03 本轮开工前实测）：两端点字节一致、与本地已签副本逐字一致、openssl 以发布公钥验签通过。
+- **拉取顺序**：启动同步读缓存（见下）→ 异步拉主端点 → 拉不到（断网/非 200/超时 10s）或验不过 → 换兜底端点 → 再不行保持缓存/内置默认。全程异步、不阻塞任何功能、失败静默（零误伤红线：配置从未加载成功时全部功能照常）。
+- **验签**：Ed25519（CryptoKit `Curve25519.Signing`）。公钥 base64（原始 32 字节）：`zYU8LDldMafck0ya4KumaNpVJbYeERGJSXVPYarRqaw=`；`config.sig` 内容是 config.json 原始字节签名的 base64（可能带结尾空白，先 trim 再解码，须恰 64 字节）。**验不过整份丢弃**，只记 `verificationState = .rejected`，不打扰用户。
+- **缓存**：验签通过的配置连原始字节存 Application Support/RemoteConfig/（config.json + config.sig 原样落盘，另写 meta.json 记渠道水印与落盘时间）；下次启动读出后**先复验再解码**，缓存被篡改同样整份丢弃回落默认。生效配置替换后另存新缓存。
+- **内置默认**：`RemoteConfig.defaults`——feishuUrl 与 pairingTutorialUrl 与此前写死值逐字一致（飞书壁纸合集 wiki、UC 教程链接，编码存放见第三节）；生效点取值时字段为空回落默认，入口永不失效。
+- **结构**（以 remote-config.json v3 为准）：announcement{id,title,body,link}、app{latestVersion,forceUpdate,downloadUrl,updateNote}、feishuUrl、pairingTutorialUrl、wallpapers[{no,title,preview,driveUrl}]。解码全容错（逐字段 decodeIfPresent 落默认），字段不全不整份失败。wallpapers 本轮只解析存模型，不接 UI。
+- **生效点**：
+  1. 壁纸页「获取更多壁纸」（TendiesView.moreWallpapersTile）改读 `vm.remoteConfig.feishuURLString`，删写死常量；
+  2. run #158 两处「iOS 26 生成配对文件教程」按钮（ContentView PairingTab、SettingsView SupportedSystemsView，后者为此加 `@EnvironmentObject var vm`）改读 `vm.remoteConfig.pairingTutorialURLString`，删两处写死常量；
+  3. 公告：`announcement.id` > 本地已读 id（UserDefaults `cw.remoteConfig.lastReadAnnouncementID`）且标题/正文至少一项非空时，启动后在 ContentView 根弹一次（标题固定「公告」，正文含配置标题+正文；link 非空多一个「查看详情」跳系统浏览器）；关闭即记已读、永不重弹；
+  4. 版本提醒：`app.latestVersion` 高于当前版本（点分数值段比较，读 CFBundleShortVersionString）且 downloadUrl 非空时弹（标题「发现新版本」，正文优先 updateNote）；普通提醒每版本只弹一次（UserDefaults `cw.remoteConfig.lastPromptedVersion` 记账）；forceUpdate=true 时不可取消（只有「去更新」按钮）且不记账——不更新就每次启动再弹；
+  5. 弹窗排队：同一时刻最多一个，优先级 强更 > 公告 > 普通版本提醒，`dismissPrompt()` 记账后链式评估下一个（ContentView 根挂两个 `.alert(presenting:)`，呈现数据经 `vm.remotePrompt` 转发）。
+- **耦合点之二**：验签状态经 `vm.remoteConfigVerified` 并入壁纸页状态胶囊的内部状态计算（TendiesView 新增 `TendiesStatusCapsuleState` + `StatusCapsuleBarView`：胶囊三段的全部输入收成一个 Equatable 状态，其中含 configVerified 一项，状态翻转驱动胶囊刷新）。**只耦合、不拦截**：三段取值与语义色与 run #128/#156 逐项一致（loopbackSegment/systemSegment 的 Color 改以 Tone 枚举表达，映射 绿=ok/橙=warn/红=bad 不变），configVerified 不参与任何一段取值。
+
+### 二、版本号 1.0.0
+
+- `project.yml` settings.base 的 MARKETING_VERSION `0.1.0` → `1.0.0`（Info.plist 的 CFBundleShortVersionString 本就是 `$(MARKETING_VERSION)`，一处生效；与已上线 config.json 的 `app.latestVersion = 1.0.0` 对齐）。
+- 配对页页眉版本字样出处：ContentView PairingTab 页眉 `Text("iOS … · v1.3.2")`——上游 AirCard 自身的版本号，与本 App 无关且一直与 MARKETING_VERSION 脱钩。改读 bundle 版本 `RemoteConfigService.currentAppVersion` 动态拼接，显示即 v1.0.0，今后升版自动跟随、不再写死。
+
+### 三、字符串收口（覆盖清单）
+
+敏感常量一律 base64 编码存放在 RemoteConfig.swift 的 `CWEncoded.decode` 调用点，运行时解码，二进制内无明文：
+- 配置主端点 URL、配置兜底端点 URL；
+- 内置默认 feishuUrl、内置默认 pairingTutorialUrl；
+- 渠道水印串（第五节）。
+公钥本身即 base64 形态（验签的 canonical 编码），在 RemoteConfig.swift 验签函数内以 base64 常量出现，不另做二次编码。签名文件名 config.sig 由端点 URL 推导（同目录替换），不单独存常量。生效点原有的三处写死明文链接（ContentView/SettingsView/TendiesView）已随第一节删除。
+
+### 四、发布版关详细日志（开关：Utilities.swift `CWLogGate.detailedLogsEnabled`，编译期常量，默认 false）
+
+总闸关闭时，明细行在**收集入口**被截断、根本不产生；要复现问题改 true 重构建即可。覆盖点：
+- **Rust/FFI 日志桥**：AirCardApp.init 的 `al_log_init` 安装整体过闸——关时不装桥，Rust tracing/idevice 明细从源头不进入 App（Sage 16:17 定调：源头不产生敏感日志句）。错误信息由各 Swift 流程自己的错误路径呈现，不依赖这条明细流；
+- **引擎/助手明细 funnel**：AppViewModel 新增 `appendEngineDetail(_:)`，刷入（TendiesEngine）、检测/删除（PosterStoreHelper）、PosterBoard 刷新（PosterRefreshHelper）的五处 log 闭包改走此入口——引擎内 C 回调的明细行与 [计时] 行到此为止。受保护的 TendiesEngine.swift 本体零改动（它的行本来就只经 VM 给的闭包出列）；PosterStoreHelper 内部的阶段计时器与 run #148 清理进度 DeleteProgressTracker 是在**转发之前**于其内部观察同一批行，不经 VM 入口、**不受总闸影响**，清理进度条照常工作；
+- **VM 直写 [计时]**：刷入/清理五处 `[计时] …整轮总计/容器检测` 追加点逐处以总闸条件包裹（字符串插值在闸内求值，关时不构建）；
+- **密码盘 FFI 写盘回调**：AppViewModel 内 `al_exploit_write_dir` 的日志回调改走新增 `appendPasscodeDetail(_:)` 过闸入口（回调本体保留、C 侧行为不变，只在收集侧截断）。
+用户级结果行（🎉/✅/❌/⚠️ 与各状态文案）不归此闸，照常产生；`vm.log` 的用户级事件行（已导入配对文件/配对完成等 appendLog 与直写点）保留。
+
+### 五、渠道水印
+
+渠道标识 `cocowall-official-1.0.0`：编码存放于 RemoteConfig.swift `CWChannel.tag`（与第三节同法），不进任何 UI；由 RemoteConfigService 持有（`channelTag`），每次配置缓存落盘时写进同目录 meta.json——盗版包流出后可凭二进制内的编码常量与缓存元数据双路溯源到本发布批次。
+
+### 未验证项（归 Sage 真机，发布包验收）
+
+- 公告：现网 config 的占位公告（id=1）首次启动弹一次、关闭后重启不再弹；改云端文案并 +1 id 后再弹；
+- 断网/飞行模式冷启动：各功能照常，飞书与教程入口打开的仍是现行链接（内置默认=现值）；
+- 把云端 feishuUrl / pairingTutorialUrl 换成新链接并重签覆盖后，重启 App 两处入口跟随新链接（OSS 侧 Cache-Control: no-cache 尚待 Sage 在桶内补设，未设时主端点生效可能延迟，jsDelivr 兜底同理有 CDN 缓存延迟）；
+- 版本提醒：云端 latestVersion 抬到高于 1.0.0 且填 downloadUrl 后弹一次；forceUpdate=true 时无取消按钮；
+- 壁纸页状态胶囊三段显示与 #158 逐项一致（本轮只换了内部状态结构）；
+- 发布构建内不再产生引擎明细与 [计时] 行（日志窗已删，以行为无异常为准）；清理进度条照常推进；
+- 配对页页眉显示 v1.0.0、设置内版本号 1.0.0。

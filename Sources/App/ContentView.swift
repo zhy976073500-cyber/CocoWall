@@ -740,6 +740,23 @@ struct ContentView: View {
     @AppStorage("aircard.dont_show_support_on_launch") private var dontShowSupportOnLaunch: Bool = false
     @State private var showSupportPopup: Bool = false
 
+    // 远程配置弹窗（run #159）：待弹项由 RemoteConfigService
+    // 按「强更 > 公告 > 普通版本提醒」排队，同一时刻最多
+    // 一个；关闭即由服务记账并链式评估下一个。
+    private var announcementAlertPresented: Binding<Bool> {
+        Binding(
+            get: { vm.remotePrompt?.announcementValue != nil },
+            set: { if !$0 { vm.remoteConfig.dismissPrompt() } }
+        )
+    }
+
+    private var updateAlertPresented: Binding<Bool> {
+        Binding(
+            get: { vm.remotePrompt?.updateValue != nil },
+            set: { if !$0 { vm.remoteConfig.dismissPrompt() } }
+        )
+    }
+
     var body: some View {
         TabView(selection: $vm.selectedTab) {
             TendiesView()
@@ -770,6 +787,39 @@ struct ContentView: View {
             Button("好") {}
         } message: {
             Text(vm.successAlertMessage)
+        }
+        // 公告（run #159）：id 大于本地已读 id 才弹一次，
+        // 关闭即记已读；link 非空时多一个「查看详情」跳浏览器。
+        .alert("公告", isPresented: announcementAlertPresented,
+               presenting: vm.remotePrompt?.announcementValue) { ann in
+            if !ann.link.isEmpty, let link = URL(string: ann.link) {
+                Button("查看详情") {
+                    UIApplication.shared.open(link)
+                    vm.remoteConfig.dismissPrompt()
+                }
+            }
+            Button("关闭", role: .cancel) { vm.remoteConfig.dismissPrompt() }
+        } message: { ann in
+            Text(ann.title.isEmpty ? ann.body : "\(ann.title)\n\n\(ann.body)")
+        }
+        // 版本提醒（run #159）：latestVersion 高于当前版本且
+        // downloadUrl 非空才弹；普通提醒每版本只弹一次，
+        // 强更（forceUpdate）不可取消、下次启动还会再弹。
+        .alert("发现新版本", isPresented: updateAlertPresented,
+               presenting: vm.remotePrompt?.updateValue) { info in
+            Button("去更新") {
+                if let url = URL(string: info.downloadUrl) {
+                    UIApplication.shared.open(url)
+                }
+                vm.remoteConfig.dismissPrompt()
+            }
+            if !info.forceUpdate {
+                Button("以后再说", role: .cancel) { vm.remoteConfig.dismissPrompt() }
+            }
+        } message: { info in
+            Text(info.updateNote.isEmpty
+                 ? "CocoWall \(info.latestVersion) 已发布，建议更新到最新版本。"
+                 : info.updateNote)
         }
         // 成功 toast（run #148）：顶部轻量浮层胶囊（对勾 +
         // 文案、液态玻璃面），约 1.6 秒由 AppViewModel 自动
@@ -877,7 +927,7 @@ struct PairingTab: View {
                             Text("CocoWall")
                                 .font(.title2.bold())
                             Spacer()
-                            Text("iOS \(ProcessInfo.processInfo.operatingSystemVersion.majorVersion) · v1.3.2")
+                            Text("iOS \(ProcessInfo.processInfo.operatingSystemVersion.majorVersion) · v\(RemoteConfigService.currentAppVersion)")
                                 .font(.caption.monospaced().bold())
                                 .padding(.horizontal, 8).padding(.vertical, 3)
                                 .glassSurface(Capsule(), tint: Color.blue.opacity(0.12))
@@ -1035,10 +1085,12 @@ struct PairingTab: View {
                         }
                         .buttonStyle(.plain)
 
-                        // iOS 26 生成配对文件教程（run #158）：系统浏览器
-                        // 打开外部教程，与「获取更多壁纸」同款 open 方式。
+                        // iOS 26 生成配对文件教程（run #158 建入口；
+                        // run #159 起链接改读远程配置 pairingTutorialUrl，
+                        // 配置未加载成功时回落内置默认=原写死值）：
+                        // 系统浏览器打开，与「获取更多壁纸」同款 open 方式。
                         Button {
-                            if let url = URL(string: "https://drive.uc.cn/s/2f63634667a44?public=1") {
+                            if let url = URL(string: vm.remoteConfig.pairingTutorialURLString) {
                                 UIApplication.shared.open(url)
                             }
                         } label: {
