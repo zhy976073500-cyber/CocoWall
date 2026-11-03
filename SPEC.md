@@ -3936,3 +3936,36 @@ sheet）；引擎与配对核心（TendiesEngine / PairingController
 未验证项（归 Sage 真机）：三行任意落点（行正中、边缘、
 图标、文字）点一次即进；连点不再出现「有按压反应不跳
 转」；转场观感恢复正常节奏。
+
+## 改动登记 · 删除三个日志窗口（run #154，2026-11-03，Sage 指令；发布前清理，纯 Swift 侧，rust 零改动）
+
+Sage 截图指认，删三处日志窗口的 UI 呈现（整卡含标题行、
+清除/复制按钮与日志文本区）：
+
+1. 配对页（ContentView.swift · PairingTab）底部「活动日志
+（N 行）」Section——整段 `if !vm.log.isEmpty` 删除，配对
+页改以「在本机配对」区收尾。
+2. 设置页（SettingsView.swift）底部「刷入日志（N 行）」卡。
+3. 设置页底部「活动日志（N 行）」卡——与第 2 项同在
+`logSection`，连同其调用点与仅为其存在的 `logCard` 玻
+璃卡辅助一并删除，设置页改以三行入口收尾，不留空白占位。
+
+**红线：仅删 UI 呈现层，底层日志一律保留。** `vm.log` /
+`vm.tendiesFlashLog` 的收集与全部 append 点（AppViewModel，
+含引擎日志回灌、`[计时]` 行、toast 触发文案）零改动；
+清理进度条（#148）靠刷入日志通道的 log-tap 阶段标记解析
+`CleanupProgressState`，其数据源是日志数组本身而非被删的
+窗口，故功能不受影响。`CompactLogView` 本体保留——密码
+盘页仍在用它显示刷入日志（vm.passthmFlashLog），不在本
+轮删除范围。
+
+### 不变与边界
+
+改动仅 ContentView.swift、SettingsView.swift 两文件 + 本
+登记（纯删除，共 43 行）；两页其余布局、顺序、功能不变；
+引擎与配对核心（TendiesEngine / PairingController /
+RespringHelper / rust-core）零改动。
+未验证项（归 Sage 真机）：配对页与设置页底部不再出现任
+何日志窗口且页面收尾自然；清理壁纸时进度条仍按阶段推进
+（底层日志通道保留的回归验证）；密码盘页刷入日志照常
+显示（未误删的回归验证）。

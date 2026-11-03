@@ -1230,15 +1230,6 @@ struct PairingTab: View {
                     }
                 }
 
-                if !vm.log.isEmpty {
-                    Section {
-                        CompactLogView(
-                            title: "活动日志（\(vm.log.count) 行）",
-                            lines: vm.log,
-                            onClear: { vm.log.removeAll() }
-                        )
-                    }
-                }
             }
             .safeAreaInset(edge: .bottom) {
                 Color.clear.frame(height: 60)
