@@ -4341,3 +4341,21 @@ https://drive.uc.cn/s/2f63634667a44?public=1
 - 壁纸页状态胶囊三段显示与 #158 逐项一致（本轮只换了内部状态结构）；
 - 发布构建内不再产生引擎明细与 [计时] 行（日志窗已删，以行为无异常为准）；清理进度条照常推进；
 - 配对页页眉显示 v1.0.0、设置内版本号 1.0.0。
+
+## 改动登记 · #159-fix：RemoteConfig 容错解码可选链编译错误修复（run #159-fix，2026-11-03；纯 Swift 一文件三行，语义零变更）
+
+#159 首轮 CI（run 41632365180）Build (unsigned) 步 exit 65，主线拉全量日志确认全仓仅 2 条 Swift 编译错误，均在 Sources/App/RemoteConfig.swift 的手工容错 Decodable、同一根因：
+
+```
+RemoteConfig.swift:81:31: error: cannot use optional chaining on non-optional value of type 'Box<Announcement>'
+RemoteConfig.swift:84:22: error: cannot use optional chaining on non-optional value of type 'Box<AppInfo>'
+```
+
+根因：`if let box = try? root.decodeIfPresent(...)` 已把结果解包为非可选的 Box，行内再写 `box?.value` 即对非可选值用可选链，非法。
+
+改法（三处，含同文件同型写法一并排查）：
+- 81 行 `announcement = box?.value ?? Announcement()` → `announcement = box.value`；
+- 84 行 `app = box?.value ?? AppInfo()` → `app = box.value`；
+- 89 行 wallpapers 同型：`(boxes ?? []).map(\.value)` → `boxes.map(\.value)`。
+
+解码行为与兜底语义零变更：键缺失时 decodeIfPresent 返回 nil、if-let 不进入，属性保持结构体默认值（Announcement()/AppInfo()/[]，与原 `?? 默认` 的兜底目标一致）；键存在时取 box.value 的逐字段容错解码结果，与原意相同。swiftc -parse 通过。

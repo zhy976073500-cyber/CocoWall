@@ -78,15 +78,15 @@ extension RemoteConfig: Decodable {
     init(from decoder: Decoder) throws {
         let root = try decoder.container(keyedBy: CodingKeys.self)
         if let box = try? root.decodeIfPresent(AnnouncementBox.self, forKey: .announcement) {
-            announcement = box?.value ?? Announcement()
+            announcement = box.value
         }
         if let box = try? root.decodeIfPresent(AppInfoBox.self, forKey: .app) {
-            app = box?.value ?? AppInfo()
+            app = box.value
         }
         feishuUrl = (try? root.decodeIfPresent(String.self, forKey: .feishuUrl)) ?? ""
         pairingTutorialUrl = (try? root.decodeIfPresent(String.self, forKey: .pairingTutorialUrl)) ?? ""
         if let boxes = try? root.decodeIfPresent([WallpaperBox].self, forKey: .wallpapers) {
-            wallpapers = (boxes ?? []).map(\.value)
+            wallpapers = boxes.map(\.value)
         }
     }
 
