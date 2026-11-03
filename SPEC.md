@@ -3864,3 +3864,75 @@ RespringHelper / rust-core）零改动；作者页其余（抖音主页按
 未验证项（归 Sage 真机）：深色模式下作者页背景/名称/扫码
 文案可读性与二维码白卡呈现、浅色模式观感不回退；制作页点
 开显示占位页、其余三页签功能照常；深色下占位页呈现。
+
+
+## 改动登记 · 作者名改「Coco」+ 设置页入口行点按可靠性修复（run #153，2026-11-03，Sage 录屏反馈两项；纯 Swift 侧，rust 零改动）
+
+### 一、作者名改「Coco」（AuthorView）
+
+作者页大名与设置页作者入口行标题共用 `AuthorInfo.
+displayName` 一处定义，由「Coco果粉营地」改「Coco」，两边
+同时生效。设置行副标题「作者」、作者页其余元素（抖音主页
+按钮、二维码与扫码文案）不动。
+
+### 二、设置页三行点一次没反应、要点好几下（根因审计 + 修复）
+
+Sage 录屏实证：设置页三行（作者 / 解锁 Pro / 设备配对）
+有时点一次无反应、连点数下才进。逐项审计结论：
+
+**根因 1（主因）：入口行没有 contentShape，整行大半是命中
+死区。** 三行的 label 都由 `entryRow` 拼装：HStack（头像/
+图标 + 文字 VStack + Spacer + 箭头）+ padding。Button /
+NavigationLink 在 .plain 样式下，命中区 = label 内实际渲
+染内容的并集，不设 contentShape 时 Spacer 撑出的行中段、
+元素之间的空隙、上下 padding 带全部不命中——手指点在行
+的正中或边缘（录屏里正是常见的落点）必然没有任何反应，
+换个落点再点才进。玻璃面是渲染效果，不扩大命中区。这解
+释了症状的间歇性：与落点有关、与时机无关。
+
+**根因 2（共犯）：卡面用了 glassEffect 的 .interactive()
+变体。** entryRow 的 glassSurface 传 interactive: true，
+在 iOS 26+ 落到 `Glass.regular.interactive()`。interactive
+玻璃给视图挂了它自己的按压/手势处理（缩放回弹那一套），
+本应只用在「玻璃面本身就是控件」的场合（如 .glass 按钮
+样式）；把它嵌进另一个 Button/NavigationLink 的 label，
+再叠上外层 ScrollView 的触摸延迟仲裁，同一下触摸三方
+争抢：录屏中出现过行面有按压发白反应、却不触发导航的
+帧，正是玻璃吞了按压、按钮没收到完整点按的形态。
+
+**排除项（查过、不是原因）：**
+- 目标页同步阻塞：作者页、Pro 页都是纯静态轻页（图 + 文
+  字，无 body 重活、无 onAppear 任务）；配对页 Form 虽重，
+  但它走 sheet 且另两行同样中招，共同原因不在目标页。
+- 高频发布中途重建：AppViewModel 无 Timer/轮询发布者
+  （全文检索无 Timer），设置页停留期间 vm 不周期发通知，
+  不存在点按中途视图被换掉的来源。
+- 底栏覆盖：三行在页面顶部，系统 TabBar 胶囊在页面底部，
+  几何上不重叠，不抢触摸。
+
+**转场叠影的判据：** 录屏里的「两页叠影」帧出现在 push
+进行中，左侧露出的是设置页随转场位移滑出的残边，位移量
+与帧序逐帧对应；且每次成功进入目标页只 push 一层（返回
+一次即回设置页，无双层压栈）。判为系统 push 转场的正常
+中间帧，不是重复触发导航；其显眼是因为两页同为白底 +
+源页玻璃行在转场中整行重绘。点按修好后转场按正常节奏
+走完，中间帧不再被注意力捕捉，本项不另动转场代码。
+
+**修法（只动 SettingsView.entryRow 一处，三行同治）：**
+- 补 `.contentShape(RoundedRectangle(cornerRadius: 20))`
+  于 padding 之后的整行 frame 上——整行（含 Spacer 中段、
+  空隙、padding）全部成为命中区。
+- glassSurface 去掉 interactive: true，改非 interactive
+  玻璃：外观逐项不变，点按路径上不再有玻璃手势，触摸只
+  归 Button/NavigationLink 与 ScrollView 的标准仲裁。
+
+### 不变与边界
+
+改动仅 SettingsView.swift、AuthorView.swift 两文件 + 本
+登记；入口行版式（间距、字号、玻璃外观、箭头）不变；三行
+的导航目标与呈现方式不变（作者/Pro 走 push、配对走
+sheet）；引擎与配对核心（TendiesEngine / PairingController
+/ RespringHelper / rust-core）零改动。
+未验证项（归 Sage 真机）：三行任意落点（行正中、边缘、
+图标、文字）点一次即进；连点不再出现「有按压反应不跳
+转」；转场观感恢复正常节奏。

@@ -2,7 +2,9 @@ import SwiftUI
 
 /// 作者页的跳转与素材集中定义：真实素材到位后只改这一处。
 enum AuthorInfo {
-    static let displayName = "Coco果粉营地"
+    // run #153：作者名由「Coco果粉营地」改「Coco」（作者页大名
+    // 与设置页作者入口行标题共用此一处，两边同时生效）。
+    static let displayName = "Coco"
     static let douyinURL = URL(string: "https://v.douyin.com/nioInoa-a18/")!
 }
 

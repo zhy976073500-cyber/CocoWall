@@ -30,8 +30,18 @@ struct SettingsView: View {
 
     // MARK: - 入口行（作者 / 配对）
 
-    /// 圆角入口行：内容 + 右侧箭头。run #129 起卡面走液态玻璃
-    /// （glassSurface，interactive），版式与原来一致。
+    /// 圆角入口行：内容 + 右侧箭头。run #129 起卡面走液态玻璃，
+    /// 版式与原来一致。
+    /// run #153 点按可靠性修复（根因见 SPEC #153）：① 原先无
+    /// contentShape，Button/NavigationLink 的命中区只有 label
+    /// 内容的并集——行内 Spacer 中段、元素间空隙、padding 边缘
+    /// 全是死区，点在这些位置必然无反应；补 contentShape 让
+    /// 整行（含空隙与 padding）都是命中区。② 卡面原用
+    /// glassEffect 的 .interactive() 变体，它给 label 内容挂了
+    /// 玻璃自己的按压手势处理，与外层 Button/NavigationLink 的
+    /// 点按、ScrollView 的触摸仲裁三方抢同一下触摸，出现过
+    /// 玻璃有按压反应却不触发导航；改非 interactive 玻璃，外观
+    /// 不变，点按只归按钮本身。
     private func entryRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         HStack(spacing: 12) {
             content()
@@ -42,7 +52,8 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous), interactive: true)
+        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private var authorEntry: some View {
