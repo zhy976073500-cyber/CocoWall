@@ -4407,3 +4407,28 @@ App 侧不写死这份文件集：清单里列什么就验什么，文件集是�
 
 - 代码侧逻辑未在真机/模拟器实跑（施工环境无 iOS 运行时）：注入清单的分发包刷入放行、篡改任一被验文件后刷入被拦截，待发布打包环节出包后由主线/Sage 验；
 - 文件集的 7 个路径以最终 IPA 内实际布局为准，注入时由主线逐个核对存在性（个别生成文件名随工具链变化时以实际为准，属打包环节契约，不影响本轮代码）。
+
+## 改动登记 · 发布收尾三期：技术致谢补 AirCard 上游致谢行（run #161，2026-11-04；纯展示文字一处，逻辑零改动，受保护文件零改动）
+
+发布收尾第三轮（最后一轮代码改动）。本轮只在 App 的技术致谢区补一行上游致谢，落实 MIT 合规。
+
+### 缘由
+
+CocoWall 的刷入链基于上游开源项目 AirCard-iOS（作者 Mak5er）。MIT 许可条款要求分发软件时附上游的版权与许可声明。此前出处登记仅在仓库 `rust-core/VENDORED.md`（vendoring 记录）里，App 内「技术致谢」区只有 airlift、.passthm 标准、NeoSpring 等底层技术行，没有明写 AirCard 本体——分发物（IPA）内缺上游署名。本轮补上。
+
+### 改动（仅一处）
+
+- 文件：`Sources/App/ContentView.swift`，`CreditsSheet`（致谢页）内「Technology acknowledgments」致谢卡（`tertiarySystemBackground` 卡片）中，继「核心利用 airlift」「密码盘主题 .passthm 标准」「NeoSpring 与 PosterBoard」三行之后，按同一排版（Divider 分隔 + HStack 图标/双行文字）新增第四行：
+  - 图标：`square.stack.3d.up.fill`，`.title3`，蓝色（与既有橙/紫/黄行协调）；
+  - 标题（`.subheadline.bold()`）：「壁纸刷入框架」；
+  - 副文（`.caption`、`.secondary`）：「基于 AirCard-iOS（作者 Mak5er），遵循 MIT 开源许可」。
+- 纯展示文字：不碰任何逻辑、状态与导航；其余文件零改动。
+
+### 预期行为
+
+- 致谢页打开后在技术致谢卡底部多一行 AirCard 致谢，仅此视觉变化；
+- 任何功能路径不变。本轮构建即为最终发布代码基线——后续发布打包仍须按 #160 登记的注入流程对本轮最终 IPA 重新生成、签名并注入完整性清单（run160-release 的清单与本轮包不通用）。
+
+### 未验证项
+
+- 致谢行实际渲染（图标/换行/暗色模式观感）待 Sage 真机打开致谢页确认；施工环境无 iOS 运行时，未实跑。

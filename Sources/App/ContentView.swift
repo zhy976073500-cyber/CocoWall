@@ -514,6 +514,21 @@ struct CreditsSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+
+                    Divider()
+
+                    HStack(spacing: 12) {
+                        Image(systemName: "square.stack.3d.up.fill")
+                            .font(.title3)
+                            .foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("壁纸刷入框架")
+                                .font(.subheadline.bold())
+                            Text("基于 AirCard-iOS（作者 Mak5er），遵循 MIT 开源许可")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .padding(14)
                 .background(Color(uiColor: .tertiarySystemBackground))
