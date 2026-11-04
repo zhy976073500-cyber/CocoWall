@@ -96,6 +96,23 @@
 				<string>com.aircard.tendies</string>
 			</array>
 		</dict>
+		<!-- 统一智能接收（run #165）：Base64 编码的壁纸包以
+		     .txt 形式经 UC 网盘分发，声明 public.plain-text
+		     让 CocoWall 出现在文本文件的「打开方式」里，
+		     导入后由 IntakeRouter 按内容解码识别。
+		     Alternate 排名：不抢文本文件的默认打开者。 -->
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>文本文件</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+		</dict>
 	</array>
 	<key>UTImportedTypeDeclarations</key>
 	<array>

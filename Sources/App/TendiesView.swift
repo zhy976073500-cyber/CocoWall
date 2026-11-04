@@ -1227,8 +1227,13 @@ struct TendiesView: View {
             }
             .sheet(isPresented: $showFilePicker) {
                 TendiesDocumentPickerView { urls in
-                    Task {
-                        await vm.importTendieFiles(urls: urls)
+                    // 统一智能接收（run #165）：每个选中文件
+                    // 都过 vm 接路由器按内容分类（壁纸包 /
+                    // Base64 编码包 → 导入；配对文件 → 应用
+                    // 配对；不识别 → 统一提示）。原生 .tendies
+                    // 仍走同一引擎导入，行为不变。
+                    for url in urls {
+                        vm.intakeFile(at: url, switchTabOnSuccess: false)
                     }
                 }
             }
@@ -1948,7 +1953,10 @@ struct TendiesDocumentPickerView: UIViewControllerRepresentable {
         if let extType = UTType(filenameExtension: "tendies") {
             contentTypes.append(extType)
         }
-        contentTypes.append(contentsOf: [.archive, .zip, .data, .item])
+        // 统一智能接收（run #165）：可选类型放宽为三类并集
+        // （壁纸包 / 纯文本 / plist），选中后统一按内容分类
+        // 分发（见 IntakeRouter.swift）。
+        contentTypes.append(contentsOf: [.archive, .zip, .plainText, .propertyList, .data, .item])
 
         // asCopy: true ensures iOS safely copies documents into app sandbox tmp directory
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: contentTypes, asCopy: true)

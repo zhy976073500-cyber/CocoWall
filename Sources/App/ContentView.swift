@@ -1274,11 +1274,17 @@ struct PairingTab: View {
                     UTType(filenameExtension: "mobiledevicepairing") ?? .data,
                     UTType(filenameExtension: "plist") ?? .propertyList,
                     UTType(filenameExtension: "mobilepair") ?? .data,
+                    // 统一智能接收（run #165）：可选类型放宽
+                    // 为三类并集（壁纸包 / 纯文本 / plist），
+                    // 选中后统一走 vm 接路由器按内容分发，配
+                    // 对文件仍落回 importPairingFile 原路径。
+                    UTType("com.aircard.tendies") ?? .data,
+                    .plainText,
                     .propertyList,
                     .data,
                     .item
                 ]) { url in
-                    _ = vm.importPairingFile(from: url, originalName: url.lastPathComponent)
+                    vm.intakeFile(at: url, switchTabOnSuccess: false)
                 }
             }
             .sheet(isPresented: $showPairingGuide) {

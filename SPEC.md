@@ -4496,3 +4496,30 @@ CocoWall 的刷入链基于上游开源项目 AirCard-iOS（作者 Mak5er）。M
 ### 未验证项
 
 - CI 构建结论由主线在已登录浏览器核（本部署 GitHub MCP 无 Actions 工具）；新赞赏码在 Pro 页的真机渲染待 Sage 验。
+
+## 改动登记 · 统一智能接收（run #165，2026-11-04；Sage 拍板：UC 分发的壁纸包改 Base64 编码 .txt，App 按内容识别接收；纯 Swift 侧 + Info.plist，受保护文件零改动，版本保持 1.0.0）
+
+背景：UC 网盘按内容判定文件类型，后缀伪装（.dmg/.ipa 等）全部不稳定，唯 Base64 编码为纯文本 .txt 的路线经 Sage 真机实测全程过关（分类为文档、下载底栏有「其他应用打开」、往返解码与原包逐字节一致）。本轮把单点 txt 解码扩展为「统一智能接收」：凡经系统「打开方式」或 App 内导入选择器进来的文件，一律按内容识别类型并分发到对应导入位置，用户不用先分清该去哪个页面。
+
+### 审计结论（施工前实查，均为现行代码事实）
+
+- 系统接收：App 此前**没有任何 onOpenURL / scene 级文件接收处理**；Info.plist 已声明 CFBundleDocumentTypes 三项（com.aircard.passthm 密码盘主题、com.apple.property-list 配对文件 Alternate、com.aircard.tendies 壁纸 Owner）并开 UIFileSharingEnabled + LSSupportsOpeningDocumentsInPlace，但外部「打开方式」送进来的文件只落 Documents/Inbox 无人接。壁纸的另一条被动入口是 AppViewModel.scanDocumentsForTendies（扫 Documents 与 Tendies 目录的 .tendies 后缀文件）。
+- 壁纸导入与结构校验：壁纸页导入选择器 TendiesDocumentPickerView（TendiesView）→ AppViewModel.importTendieFiles(urls:) → **TendiesEngine.shared.importTendie(from:)**。结构校验就在引擎导入本体里：拷入 Tendies 存储目录 → al_zip_extract_all 解包（返回码非 0 即抛错拒绝）→ 遍历解出物分析容器/描述符/预览图。**没有独立的包校验函数**，校验与导入同体。
+- 配对导入：配对页 DocumentPickerView → **AppViewModel.importPairingFile(from:originalName:)**。其自有校验只有两条：数据可读、非空；通过后写规范副本 aircard_pairing.plist / airlift_pairing.plist、置 PairingController.customPairingFilePath、refreshPairingFile 并以 pairingStatus 文案反馈。**没有任何 plist 结构/键级校验**（Lockdown 记录的真正解析在 rust 核心使用时把关）。PairingController.swift 受保护，本轮只读、只复用其既有公开入口。
+
+### 改动
+
+1. **新增 Sources/App/IntakeRouter.swift（AppViewModel 扩展）——单一接路由器**。入口 intakeFile(at:switchTabOnSuccess:) / handleOpenInURL(_:)（后者供 onOpenURL）。分类纯函数 classifyIntake(data:) 对任意输入全定义、防御式，优先级固定 **真实结构 > 解码结构 > 配对 plist**：
+   - ① 壁纸包：字节以 ZIP 魔数 PK\x03\x04 开头 → 候选壁纸包；结构校验**调用既有 TendiesEngine.importTendie 本体**（与 importTendieFiles 同一引擎入口，不另写平行校验器）：成功即导入，登记动作（取消默认勾选、同名替换、saveTendieItems 落盘、applyTendieSort 并入排序、showToast「导入成功」）与 importTendieFiles 逐项一致；引擎抛错即视为不属任何类。
+   - ② Base64 编码包：全文去掉所有空白字符后做**严格** Base64 校验（字符全落字母表、`=` 仅末尾至多 2 个、总长 4 的倍数、解码后再编码须与原文逐字一致；不用 ignoreUnknownCharacters 类宽容选项），解码产物命中 ① 才算；解码字节以原文件基名换 .tendies 后缀暂存后走同一引擎路径（如 1-pack.txt → 1-pack.tendies）。
+   - ③ 配对文件：字节可解析为 plist 且根为字典（配对记录的格式门；键级把关仍在既有路径使用时进行）→ 暂存后调用既有 importPairingFile 应用，写入/状态/pairingStatus 反馈全部走原逻辑。注：既有配对导入自有校验仅「可读+非空」，路由器在此之上只加 brief 指定的 plist 格式门，不另立键级平行校验器。
+   - 三类全不命中（含空文件、坏 Base64、截断 zip、根非字典的杂 plist、随机字节）→ errorMessage 置「无法识别这个文件」（根层既有弹窗通道），**不改任何状态**。壁纸路径失败时额外清掉引擎校验前留在 Tendies 存储的半成品副本（引擎先拷后解的既有次序所致），保证无半导入；暂存文件用后即删。
+   - 成功切页：仅系统「打开方式」入口（switchTabOnSuccess=true）在成功后切 vm.selectedTab——壁纸包 → .wallpapers，配对 → .settings；两个 App 内选择器入口用户已在对应页，不切。
+2. **AirCardApp.swift**：根视图加 .onOpenURL { vm.handleOpenInURL(url) }——补上此前缺失的系统接收处理。
+3. **文档类型声明（Info.plist）**：CFBundleDocumentTypes 新增 public.plain-text 一项（CFBundleTypeName「文本文件」、Viewer、LSHandlerRank Alternate——出现在文本文件「打开方式」里但不抢默认打开者）。既有 .tendies 与 com.apple.property-list 两项原样不动。
+4. **两个 App 内选择器放宽为三类并集**（选中后统一过路由器）：配对页 DocumentPickerView 在原有类型（mobiledevicepairing/plist/mobilepair 扩展名、.propertyList、.data、.item）基础上加 com.aircard.tendies 与 .plainText，回调由直调 importPairingFile 改走 vm.intakeFile；壁纸页 TendiesDocumentPickerView 在原有类型（com.aircard.tendies、tendies 扩展名、.archive、.zip、.data、.item）基础上加 .plainText 与 .propertyList，其 sheet 回调由直调 importTendieFiles 改为逐个走 vm.intakeFile（多选保持）。回归安全：两页对自家原生类型的行为与此前逐项一致（壁纸仍同一引擎导入与登记、配对仍同一 importPairingFile 应用），只是多了一层内容分类。
+
+### 未验证项
+
+- 分类纯函数已在本机以 Linux Swift 工具链跑 17 个向量全过（真实 zip、76 列 CRLF 换行 Base64 包、XML/二进制配对 plist、根为数组的 plist、坏 Base64 各形态、空文件、截断 PK、随机字节、Base64(plist) 优先级用例等）；但完整 App 的真机端到端（UC 下载 txt → 打开方式选 CocoWall → 自动解码导入 → 刷入；文件 App 配对文件 → 自动配对；.tendies 分享回归）待 Sage 按验收点真机走全程。CI 构建结论由主线在已登录浏览器核（本部署 GitHub MCP 无 Actions 工具）。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（本轮新增 IntakeRouter.swift 不在清单 7 文件内，清单内容不变）。

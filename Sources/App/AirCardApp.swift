@@ -31,6 +31,14 @@ struct AirCardApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(vm)
+                // 统一智能接收（run #165）：系统「打开方式」
+                // 送进来的文件统一走 vm 的接路由器按内容
+                // 分类（壁纸包 / Base64 编码包 / 配对文件），
+                // 见 IntakeRouter.swift。此前 App 没有任何
+                // onOpenURL 处理，外部打开只落 Inbox 无人接。
+                .onOpenURL { url in
+                    vm.handleOpenInURL(url)
+                }
         }
     }
 }
