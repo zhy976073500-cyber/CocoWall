@@ -895,16 +895,21 @@ struct PairingTab: View {
     // run #151: WiFi 监听只在配对页在场时活（onAppear 起、
     // onDisappear 停），驱动页顶横幅。
     @StateObject private var wifiMonitor = WiFiMonitor()
+    // run #163: 「去系统设置链接回环」改点按弹提示（不再深链
+    // 跳转），提示弹窗的呈现状态。
+    @State private var showLoopbackHint = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// 配对卡次按钮底色（run #163）：浅蓝填充，浅色
+    /// #EAF3FF、深色用蓝 22% 透明（深色下 #EAF3FF 过亮）。
+    private var pairingSecondaryFill: Color {
+        colorScheme == .dark
+            ? Color.blue.opacity(0.22)
+            : Color(red: 234.0 / 255, green: 243.0 / 255, blue: 1.0)
+    }
 
     private var isIOS27OrNewer: Bool {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
-    }
-
-    private var isPotentiallyPatchedOS: Bool {
-        let os = ProcessInfo.processInfo.operatingSystemVersion
-        if os.majorVersion > 27 { return true }
-        if os.majorVersion == 27 && os.minorVersion >= 3 { return true }
-        return false
     }
 
     var body: some View {
@@ -932,40 +937,10 @@ struct PairingTab: View {
                     }
                 }
 
-                // Header
-                Section {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "creditcard.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(.blue)
-                            Text("CocoWall")
-                                .font(.title2.bold())
-                            Spacer()
-                            Text("iOS \(ProcessInfo.processInfo.operatingSystemVersion.majorVersion) · v\(RemoteConfigService.currentAppVersion)")
-                                .font(.caption.monospaced().bold())
-                                .padding(.horizontal, 8).padding(.vertical, 3)
-                                .glassSurface(Capsule(), tint: Color.blue.opacity(0.12))
-                                .foregroundStyle(.blue)
-                                .clipShape(Capsule())
-                        }
-                        Text("在设备上应用密码盘主题与 PosterBoard 壁纸。支持 iOS 18.0 – 27.2 beta 2（iOS 27.2 beta 3+ 已被修复）。")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-
-                        if isPotentiallyPatchedOS {
-                            HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
-                                Text("检测到 iOS 27.2 beta 3 或更新版本：苹果已在该版本修复 AirTraffic 利用链，操作很可能会失败。")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.top, 4)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
+                // run #163: 页顶 App 信息卡（应用名/版本徽章/
+                // 支持范围说明，含 27.2 已修复提示）整卡按
+                // Sage 要求删除，页面直接从「网络」开始；
+                // 页顶 WiFi 横幅（#151）不在此卡内、不受影响。
 
                 // Network / VPN Status
                 Section("网络") {
@@ -973,24 +948,38 @@ struct PairingTab: View {
 
                     // run #151: 去系统设置里开 VPN 的直达按钮；
                     // run #156: 文案改 Sage 定稿「去系统设置链接
-                    // 回环」，深链改候选链（见 openSystemVPNSettings）。
+                    // 回环」，深链改候选链；
+                    // run #163: 深链跳转整条删除（候选链见已删的
+                    // openSystemVPNSettings）——点按只弹提示，
+                    // 让用户自己去 设置 › VPN 连接回环工具。
                     Button {
-                        openSystemVPNSettings()
+                        showLoopbackHint = true
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "gearshape.fill")
                             Text("去系统设置链接回环")
                             Spacer()
-                            Image(systemName: "arrow.up.forward.app")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
                         }
                         .font(.subheadline.bold())
+                        .contentShape(Rectangle())
+                    }
+                    .alert("提示", isPresented: $showLoopbackHint) {
+                        Button("好", role: .cancel) {}
+                    } message: {
+                        Text("去系统设置 - VPN - 链接回环工具（CocoWall）")
                     }
                 }
 
-                // Pairing Status
-                Section("当前配对") {
+                // 配对（run #163：原「当前配对」「配对文件」「在本机配对」
+                // 三段合并为一段。段内顺序：状态行 → 已配对时的导出/删除 →
+                // 本机配对块（仅 iOS 27+）→ 导入配对文件次按钮 → iOS 26
+                // 教程次按钮 → 帮助链接行 → 支持格式小字 → 文稿中发现列表。
+                // 各动作独立成行：原「配对文件」段把导入/指南/教程三个
+                // Button 挤在同一 VStack（= 同一列表行）内且未加 borderless
+                // 类样式，列表会合并整行命中——点「导入配对文件」连带触发
+                // 了同格的指南 Button（Sage 真机实证，run #163 项一 e）；
+                // 本轮每钮独立成行 + 整钮 contentShape，结构上消除该问题。
+                Section("配对") {
                     HStack(spacing: 10) {
                         if vm.hasPairingFile {
                             Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
@@ -1057,102 +1046,10 @@ struct PairingTab: View {
                             .foregroundStyle(.red)
                         }
                     }
-                }
-                .confirmationDialog(
-                    "删除配对会话？",
-                    isPresented: $showDeleteConfirm,
-                    titleVisibility: .visible
-                ) {
-                    Button("删除配对", role: .destructive) { vm.deletePairingFile() }
-                    Button("取消", role: .cancel) {}
-                } message: {
-                    Text("当前配对凭据将被移除，之后可以重新配对或导入其他文件。")
-                }
 
-                // Pairing File Import (SideStore / iLoader / PC)
-                Section("配对文件") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button {
-                            showFilePicker = true
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "square.and.arrow.down.fill")
-                                    .foregroundStyle(.blue)
-                                Text("导入配对文件…")
-                                    .font(.headline)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.vertical, 4)
-                        }
-
-                        Button {
-                            showPairingGuide = true
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "questionmark.circle")
-                                Text("SideStore / LiveContainer 的配对文件在哪？")
-                            }
-                            .font(.footnote)
-                            .foregroundStyle(.blue)
-                        }
-                        .buttonStyle(.plain)
-
-                        // iOS 26 生成配对文件教程（run #158 建入口；
-                        // run #159 起链接改读远程配置 pairingTutorialUrl，
-                        // 配置未加载成功时回落内置默认=原写死值）：
-                        // 系统浏览器打开，与「获取更多壁纸」同款 open 方式。
-                        Button {
-                            if let url = URL(string: vm.remoteConfig.pairingTutorialURLString) {
-                                UIApplication.shared.open(url)
-                            }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "book.pages")
-                                Text("iOS 26 生成配对文件教程")
-                            }
-                            .font(.footnote)
-                            .foregroundStyle(.blue)
-                        }
-                        .buttonStyle(.plain)
-
-                        Text("支持从 SideStore、iLoader、AltStore、Jitterbug 或 Mac/PC 导出的 .mobiledevicepairing、.plist、.mobilepair 文件。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if !vm.documentsPlistFiles.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("在文稿中发现：")
-                                .font(.caption.bold())
-                                .foregroundStyle(.secondary)
-
-                            ForEach(vm.documentsPlistFiles, id: \.self) { filename in
-                                HStack {
-                                    Image(systemName: "doc.text.fill")
-                                        .foregroundStyle(.blue)
-                                    Text(filename)
-                                        .font(.caption.monospaced())
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                    Spacer()
-                                    Button("使用") {
-                                        vm.selectPairingFile(filename: filename)
-                                    }
-                                    .glassButton()
-                                    .controlSize(.small)
-                                }
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-
-                // On-Device Pairing Section (shown ONLY on iOS 27+)
-                if isIOS27OrNewer {
-                    Section("在本机配对") {
+                    // 本机配对（原「在本机配对」段内容，仅 iOS 27+；
+                    // run #163 并入本段，块内逻辑与呈现原样未动）。
+                    if isIOS27OrNewer {
                         if vm.pairingPhase == .pairing {
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack(spacing: 8) {
@@ -1244,12 +1141,110 @@ struct PairingTab: View {
                                     }
                                     .frame(maxWidth: .infinity)
                                     .frame(height: 48)
+                                    // run #163：整钮命中区显式声明
+                                    // （项一 e 的同轮加固）。
+                                    .contentShape(Rectangle())
                                 }
                                 .glassProminentButton()
                             }
                             .listRowInsets(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14))
                         }
                     }
+
+                    // 导入配对文件（run #163：由文字行改整宽次按钮——
+                    // 浅蓝填充 + 蓝字胶囊；动作与原行一致，拉起配对
+                    // 文件选择器 showFilePicker）。
+                    Button {
+                        showFilePicker = true
+                    } label: {
+                        Text("导入配对文件")
+                            .font(.headline)
+                            .foregroundStyle(.blue)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .background(pairingSecondaryFill, in: Capsule())
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14))
+
+                    // iOS 26 生成配对文件教程（run #158 建入口；
+                    // run #159 起链接改读远程配置 pairingTutorialUrl，
+                    // 配置未加载成功时回落内置默认=原写死值）：
+                    // run #163 由文字行改与导入同款次按钮，打开方式
+                    // 不变（系统浏览器 open）。设置页「支持系统」页内
+                    // 的同名按钮不在本段、保持原样。
+                    Button {
+                        if let url = URL(string: vm.remoteConfig.pairingTutorialURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        Text("iOS 26 生成配对文件教程")
+                            .font(.headline)
+                            .foregroundStyle(.blue)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                            .background(pairingSecondaryFill, in: Capsule())
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14))
+
+                    // 配对文件在哪（帮助指南 sheet，行为沿旧行；
+                    // run #163 改独立行 + 整行 contentShape）。
+                    Button {
+                        showPairingGuide = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "questionmark.circle")
+                            Text("SideStore / LiveContainer 的配对文件在哪？")
+                            Spacer()
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(.blue)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    Text("支持从 SideStore、iLoader、AltStore、Jitterbug 或 Mac/PC 导出的 .mobiledevicepairing、.plist、.mobilepair 文件。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if !vm.documentsPlistFiles.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("在文稿中发现：")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+
+                            ForEach(vm.documentsPlistFiles, id: \.self) { filename in
+                                HStack {
+                                    Image(systemName: "doc.text.fill")
+                                        .foregroundStyle(.blue)
+                                    Text(filename)
+                                        .font(.caption.monospaced())
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Spacer()
+                                    Button("使用") {
+                                        vm.selectPairingFile(filename: filename)
+                                    }
+                                    .glassButton()
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                .confirmationDialog(
+                    "删除配对会话？",
+                    isPresented: $showDeleteConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button("删除配对", role: .destructive) { vm.deletePairingFile() }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("当前配对凭据将被移除，之后可以重新配对或导入其他文件。")
                 }
 
             }
@@ -1313,38 +1308,9 @@ struct PairingTab: View {
         }
     }
 
-    /// 跳系统设置的 VPN 页（run #151 初版；run #156 候选链
-    /// 修复）：初版 App-prefs:root=VPN 在 Sage 的 iOS 27.0.1
-    /// 上能打开设置、却落到设置里的「App」列表页而非 VPN
-    /// 页（截图实证）；且 open 的成功回调只报「打开了」、
-    /// 不报落点，它留在链里只会遮住后续候选，故本轮移出
-    /// 候选链。候选按可信度排序（依据见 SPEC #156 二）：
-    /// 新版 iOS 的 VPN 位于 设置 › 通用 › VPN与设备管理，
-    /// 候选都走 General 根下的 VPN 路径，逐个尝试、打开
-    /// 失败才试下一个；全部打不开时兜底本 App 的系统设置
-    /// 页。落点准确性代码层无法自证，归 Sage 真机确认。
-    /// App-prefs 已在 Info.plist 的 LSApplicationQueriesSchemes
-    /// 里登记（run #151），候选同 scheme、无需改 Info.plist。
-    private func openSystemVPNSettings() {
-        let candidates = [
-            "App-prefs:root=General&path=Network/VPN",
-            "App-prefs:root=General&path=VPN",
-        ]
-        func attempt(_ index: Int) {
-            guard index < candidates.count,
-                  let url = URL(string: candidates[index])
-            else {
-                if let fallback = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(fallback, options: [:], completionHandler: nil)
-                }
-                return
-            }
-            UIApplication.shared.open(url, options: [:]) { success in
-                if !success { attempt(index + 1) }
-            }
-        }
-        attempt(0)
-    }
+    // run #163: openSystemVPNSettings（#151 初版、#156 候选链）
+    // 已随「去系统设置链接回环」改弹提示而整函数删除——App 内
+    // 不再有任何 App-prefs 深链跳转。
 
     /// 导出配对文件（run #155）：把存储原件逐字节复制到临时目录
     /// 并命名 CocoWall_pairing.plist，再拉起系统分享面板。
@@ -1442,7 +1408,9 @@ struct VPNStatusRow: View {
                         .font(.subheadline.bold())
                     Text(vm.vpnUp
                          ? "RSD 隧道已就绪——刷入时将自动连接。"
-                         : "运行刷入前请先开启回环（内置或 LocalDevVPN）。")
+                         // run #163：外部 LocalDevVPN 入口已删，
+                         // 未连接文案只引导开启内置回环。
+                         : "运行刷入前请先开启内置回环。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1463,84 +1431,50 @@ struct VPNStatusRow: View {
                 }
             }
 
+            // run #163：未连接时的引导区重做——「内置回环
+            // （推荐）」绿框与 LocalDevVPN（外部 App）橙框整
+            // 块删除；设备 IP 行与网卡明细行一并删除（仅展示
+            // 层：vm.deviceIP / networkDetail 的数据与刷新逻
+            // 辑不动，本页不再渲染这两行）。改整宽主蓝大按钮
+            // （#0071E3）+ 按钮下灰色说明小字；切换动作仍是
+            // loopback.toggle()，忙碌禁用、文案随 isActive
+            // 在开启/关闭间切换，与原小钮行为一致。
             if !vm.vpnUp {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("内置回环（推荐）：")
-                        .font(.caption.bold())
-                    Text("无需再装 LocalDevVPN。点开启后，按系统提示允许添加 VPN 配置即可。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        Button {
-                            loopback.toggle()
-                        } label: {
-                            Text(loopback.isActive ? "关闭内置回环" : "开启内置回环")
-                        }
-                        .font(.caption.bold())
-                        .glassButton()
-                        .controlSize(.small)
-                        .disabled(loopback.isBusy)
-                        Text(loopback.statusText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let loopbackError = loopback.lastError {
-                        Text(loopbackError)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
+                Button {
+                    loopback.toggle()
+                } label: {
+                    Text(loopback.isActive ? "关闭内置回环" : "开启内置回环")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(
+                            Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255),
+                            in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
-                .padding(10)
-                .glassSurface(RoundedRectangle(cornerRadius: 10, style: .continuous), tint: Color.green.opacity(0.10))
+                .buttonStyle(.plain)
+                .disabled(loopback.isBusy)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("或使用 LocalDevVPN（外部 App）：")
-                        .font(.caption.bold())
-                    ForEach([
-                        "1. 打开 LocalDevVPN App 并点连接。",
-                        "2. 回到本应用——状态指示变绿即成功。"
-                    ], id: \.self) { step in
-                        Text(step)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Link("启动 LocalDevVPN",
-                         destination: URL(string: "localdevvpn://")!)
-                        .font(.caption.bold())
-                }
-                .padding(10)
-                .glassSurface(RoundedRectangle(cornerRadius: 10, style: .continuous), tint: Color.orange.opacity(0.10))
-            }
-
-            HStack(spacing: 8) {
-                Text("设备 IP：")
+                Text("点开启后，按系统提示允许添加 VPN 配置即可。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("10.7.0.1", text: $vm.deviceIP)
-                    .font(.caption.monospaced())
-                    .keyboardType(.decimalPad)
-                    .autocorrectionDisabled()
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color(uiColor: .tertiarySystemFill))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .frame(width: 120)
-                Spacer()
-                Button {
-                    vm.refreshNetworkStatus()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption.bold())
-                }
-                .glassButton()
-                .controlSize(.mini)
-            }
+                    .frame(maxWidth: .infinity, alignment: .center)
 
-            if !vm.networkDetail.isEmpty {
-                Text(vm.networkDetail)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(2)
+                // 过渡态（连接中/重连中/断开中）保留状态反馈：
+                // 原小钮旁的 statusText 在新版仅此情形出现，
+                // 静止未开启时不重复状态行已有的信息。
+                if loopback.isBusy || (loopback.isActive && loopback.status != .connected) {
+                    Text(loopback.statusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+                if let loopbackError = loopback.lastError {
+                    Text(loopbackError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
         }
         .padding(.vertical, 4)

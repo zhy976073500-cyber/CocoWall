@@ -4432,3 +4432,57 @@ CocoWall 的刷入链基于上游开源项目 AirCard-iOS（作者 Mak5er）。M
 ### 未验证项
 
 - 致谢行实际渲染（图标/换行/暗色模式观感）待 Sage 真机打开致谢页确认；施工环境无 iOS 运行时，未实跑。
+
+## 改动登记 · 发布后热修八项（run #163，2026-11-04；配对页重构与多处展示层修复，逻辑零改动，受保护文件零改动，版本保持 1.0.0）
+
+发布后第一轮热修。Sage 在朋友手机上实测发布版后逐项提出（前六项），评审效果图时又追加第七、八项；涉及 UI 的改动均先出效果图、经 Sage 看图点头后才施工（效果图存 `~/workspace/cocowall-design/mockup-163/`：pairing-v7.png、cleanup-dark.png、wallpaper-more-v3.png）。全部为展示层改动：配对页在 `Sources/App/ContentView.swift`（PairingTab / VPNStatusRow），壁纸页与清理页在 `Sources/App/TendiesView.swift`，文案一处在 `Sources/App/AppViewModel.swift`。PairingController、TendiesEngine、RespringHelper、GrappaHelper、rust-core、Live Activity 文件零改动；#159 的发布版日志收口、RemoteConfig、ResourceIntegrity 与 7 个完整性校验资源文件均未动。
+
+### 一、配对页删外部回环入口 + 内置回环改大按钮（ContentView.swift · VPNStatusRow）
+
+- 删除 LocalDevVPN（外部 App）橙框整块（步骤文案 + 「启动 LocalDevVPN」链接）；删除「内置回环（推荐）」绿框，改为状态行下方整宽主蓝大按钮（#0071E3 实色、圆角 16、高 50）：文案随 `loopback.isActive` 在「开启内置回环 / 关闭内置回环」间切换、动作仍为 `loopback.toggle()`、忙碌禁用，与原小钮行为一致；按钮下加灰色说明小字「点开启后，按系统提示允许添加 VPN 配置即可。」。
+- 状态行未连接副文案去掉「（内置或 LocalDevVPN）」，改为「运行刷入前请先开启内置回环。」；已连接分支（「RSD 隧道已就绪」+「当前连接由内置回环提供」+ 关闭内置回环钮）原样保留。
+- 过渡态反馈保留：原小钮旁的 `statusText` 只在连接中/重连中/断开中（isBusy 或 isActive 且未 connected）时出现在按钮下方；`lastError` 红字保留。
+- 一并删除设备 IP 行（TextField + 刷新钮）与网卡明细行：仅展示层删除，`vm.deviceIP` / `vm.networkDetail` 的数据与 `refreshNetworkStatus()` 逻辑不动，本页不再渲染这两行。
+
+### 二、配对页顶端 27.2 提示删除（ContentView.swift · PairingTab）
+
+- 页顶 App 信息卡（应用名 + 版本徽章 + 「支持 iOS 18.0 – 27.2 beta 2（iOS 27.2 beta 3+ 已被修复）」说明 + 卡内 iOS 27.2 beta 3 警告行）整卡删除，页面直接从「网络」段开始；随卡删除的还有只服务于该卡的 `isPotentiallyPatchedOS` 计算属性。#151 页顶 WiFi 横幅是独立段、不在此卡内，行为不变。
+
+### 三、配对三段合并为一张卡 + 「去系统设置链接回环」改弹提示（ContentView.swift · PairingTab）
+
+- 原「当前配对」「配对文件」「在本机配对」三段合并为一段「配对」，段内顺序：状态行（已配对时含文件名/大小、垃圾桶图标钮、#155 导出配对文件钮、删除配对文件钮，全部原样）→ 本机配对块（仅 iOS 27+，进行中 PIN/进度/取消与待机状态文案 + 「配对本机」主按钮原样，主按钮标签补整钮 contentShape）→ 「导入配对文件」次按钮 → 「iOS 26 生成配对文件教程」次按钮 → 「SideStore / LiveContainer 的配对文件在哪？」帮助链接行 → 支持格式小字 → 文稿中发现列表（原样）。删除确认对话改挂到合并段段尾。
+- 两个次按钮同款式：整宽胶囊、高 48、蓝字，底色走新 token `pairingSecondaryFill`（浅色 #EAF3FF / 深色蓝 22%）；导入动作仍为拉起 `showFilePicker` 文件选择器，教程仍打开远程配置 `pairingTutorialUrl`（设置页「支持系统」页内的同名按钮不在本段、保持原样）。灵动岛配对流、PIN 展示与 PairingController 交互未动。
+- 「去系统设置链接回环」行（#151 建、#156 改文案与候选链）：删除全部深链跳转——`openSystemVPNSettings()` 候选链函数整删、尾部外链小图标删除；点按改为弹提示（标题「提示」、按钮「好」），文案为 Sage 定稿「去系统设置 - VPN - 链接回环工具（CocoWall）」。
+- **导入误触根因（Sage 真机报告：点「导入配对文件」却打开了「配对文件在哪？」指南）**：原「配对文件」段把导入、指南、教程三个 Button 挤在同一个 VStack 里——在 Form/List 中即同属一个列表行，且未加 `.borderless`/`.plain` 类样式（指南、教程加了 `.plain`，导入钮没有），列表会把整行命中合并，点导入时同格的指南 Button 被连带触发、其 sheet 抢先呈现。本轮每钮独立成行（各自一个列表行）+ 整钮 contentShape + 统一 `.buttonStyle(.plain)`，结构上消除同格合并。
+
+### 四、未配对刷入提示文案（AppViewModel.swift）
+
+- `flashSelectedTendies()` 的无配对文件守卫文案改为 Sage 定稿「请先到软件内部设置-设备配对中进行配对」。壁纸页顶部横幅与弹窗同读 `vm.errorMessage`，一处生效。其余同串出处不动：自动检测的「请先在「配对」页配对设备。」（不同文案、不同路径）与清理页检测状态 `devicePosterStatus` 的「没有生效的配对文件。请先配对设备。」均保留原样。
+
+### 五、壁纸页展开按钮点击可靠性（TendiesView.swift · headerRow）
+
+- 与 #153 设置行同病同治：原钮 38pt 帧 + `glassSurface(interactive: true)`——interactive 玻璃自带按压手势与 Button 点按、滚动触摸仲裁抢同一下触摸，连点常无反应（Sage 录屏实证）。改非 interactive 玻璃（外观不变）、帧扩到 44pt 并以 `contentShape(Circle())` 声明整圆命中（可见圆 = 命中圆）。页头位于纵向 VStack 顶部、轮播是其下方同级视图，不存在覆盖本钮帧的兄弟层。
+
+### 六、清理页深色适配（TendiesView.swift · DevicePosterCleanupView）
+
+- `cleanupAmbientBackground` 改 colorScheme 双值：light 分支逐值保留 #142 原样（近白基底 + 蓝 28% / 绿 26% / 桃 22% / 紫 20% 彩晕）；dark 分支按定稿效果图换深炭近黑基底（0.05, 0.05, 0.07）+ 同色系低透明彩晕（蓝 16% / 绿 10% / 桃 7% / 紫 12%）。页头关闭胶囊、刷新圆钮、标题与空状态图文原本就是玻璃面 + `.primary`/`.secondary` 语义色，底色变深后自动适配、未另改；结果行与底部清理条（#142 玻璃胶囊）无浅色专用引用，未动。
+
+### 七、删底部 sheet 微文案行（TendiesView.swift）
+
+- 「导入壁纸」行下方小字「刷入时将自动检测 PosterBoard 容器。」整行删除，`microcopy` 属性整块移除。仅删文字视图：`posterBoardContainer` 的自动检测逻辑（刷入前检测、进页 `.task` 静默检测）一字未动。
+
+### 八、「获取更多壁纸」瓷砖改淡蓝强调样式（TendiesView.swift）
+
+- 不再走通用 `sheetTile`，改独立实现：布局与 sheetTile 逐项一致（34 图标圆、内边距、20 圆角、阴影、整砖命中），仅换三处——底色走新 token `moreTileBackground`（light #EAF3FF 实色 / dark 主蓝 flashBlue 13% 透明染底）、叠 1pt 主蓝细边 `moreTileBorder`（dark 25% / light 35%）、图标改实心主蓝圆（flashBlue：light #0071E3 / dark #0A84FF）+ 白色图标。标题「获取更多壁纸」/ 副标题「持续更新」文字与点击行为（打开远程配置 feishuUrl）不变；旁边的「内置回环」瓷砖仍走 sheetTile、样式不动。
+
+### 预期行为
+
+- 配对页：打开直接是网络卡（状态 + 开启内置回环大按钮或已连接态）；配对卡内自上而下完成本机配对/导入/教程/指南，不再出现点导入弹出指南的误触；「去系统设置链接回环」只弹提示、不跳出 App。
+- 壁纸页：未配对选图点刷入，横幅与弹窗均显示新文案；展开按钮一次点中；获取更多瓷砖呈淡蓝强调样式；底部 sheet 不再有 PosterBoard 检测小字行。
+- 清理页：深色模式下为深色氛围底 + 玻璃行，浅色模式与 #142 定稿逐值一致。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：直接装 CI 包点刷入会被完整性校验拦截，属预期；若本轮定版分发，须由主线对最终 IPA 重新生成、签名并注入清单。
+
+### 未验证项
+
+- 全部改动的真机渲染与交互（配对页新布局两种配对状态、深/浅色、清理页深色、瓷砖强调样式、展开按钮连点）待 Sage 真机验；施工环境无 iOS 运行时，未实跑。
+- 「去系统设置链接回环」提示弹窗的实际呈现（.alert 挂在 Button 上的系统行为）待真机确认。

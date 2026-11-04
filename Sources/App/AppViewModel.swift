@@ -1234,7 +1234,10 @@ final class AppViewModel: ObservableObject {
 
         let pairingPath = PairingController.pairingFilePath()
         guard FileManager.default.fileExists(atPath: pairingPath) else {
-            errorMessage = "没有生效的配对文件。请先配对设备。"
+            // run #163：未配对点刷入的提示文案改 Sage 定稿
+            // （壁纸页横幅与弹窗同读 errorMessage、一处生效）；
+            // 其余错误文案不动。
+            errorMessage = "请先到软件内部设置-设备配对中进行配对"
             return
         }
 

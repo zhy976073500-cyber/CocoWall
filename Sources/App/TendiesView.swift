@@ -1316,8 +1316,17 @@ struct TendiesView: View {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(.blue)
-                    .frame(width: 38, height: 38)
-                    .glassSurface(Circle(), tint: Color.blue.opacity(0.12), interactive: true)
+                    // run #163：点击可靠性按 #153 同法治——
+                    // 原 38pt 帧 + interactive 玻璃变体：玻璃
+                    // 自带的按压手势与 Button 点按抢触摸，连点
+                    // 常无反应。改非 interactive 玻璃（外观
+                    // 不变）、命中圆扩到 44pt 且可见圆=命中圆
+                    // （contentShape 整圆声明）。页头在纵向
+                    // VStack 内、轮播在其下方同级，不存在覆盖
+                    // 本钮帧的兄弟视图。
+                    .frame(width: 44, height: 44)
+                    .glassSurface(Circle(), tint: Color.blue.opacity(0.12))
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
         }
@@ -1400,6 +1409,19 @@ struct TendiesView: View {
     /// 宽条（导入/清除）图标底圆的不透明度（light 现值
     /// 0.10 保留 / dark 0.20，同上理由）。
     private var barWellOpacity: Double { colorScheme == .dark ? 0.20 : 0.10 }
+    /// 「获取更多壁纸」强调瓷砖底色（run #163 定稿效果图）：
+    /// light #EAF3FF 实色；dark 主蓝 13% 透明染底（透出
+    /// sheet 面板色呈深海军蓝）。
+    private var moreTileBackground: Color {
+        colorScheme == .dark
+            ? flashBlue.opacity(0.13)
+            : Color(red: 234.0 / 255, green: 243.0 / 255, blue: 1.0)
+    }
+    /// 「获取更多壁纸」强调瓷砖描边（run #163）：主蓝细边，
+    /// dark 25% / light 35%。
+    private var moreTileBorder: Color {
+        flashBlue.opacity(colorScheme == .dark ? 0.25 : 0.35)
+    }
 
     private var bottomSheet: some View {
         VStack(spacing: 12) {
@@ -1415,7 +1437,8 @@ struct TendiesView: View {
 
             flashButton
             importTile
-            microcopy
+            // run #163：「刷入时将自动检测 PosterBoard 容器。」
+            // 小字行整行删除（原 microcopy，见下方注记）。
 
             HStack(spacing: 10) {
                 moreWallpapersTile
@@ -1536,20 +1559,12 @@ struct TendiesView: View {
     }
 
     // MARK: 微文案
-
-    private var microcopy: some View {
-        VStack(spacing: 2) {
-            // run #151: 「目标：已检测到 PosterBoard 容器 …」一行
-            // 已按 Sage 要求隐藏（只删 UI，vm 的容器检测不动）；
-            // 未检测到时的自动检测提示保留。
-            if vm.posterBoardContainer.isEmpty {
-                Text("刷入时将自动检测 PosterBoard 容器。")
-            }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-    }
+    //
+    // run #163：microcopy 整块删除——其唯一内容「刷入时将
+    // 自动检测 PosterBoard 容器。」一行已按 Sage 要求整行
+    // 删去（#151 隐藏的「目标：…」行早已不在）。仅删文字
+    // 视图：vm.posterBoardContainer 的自动检测逻辑（刷入
+    // 前检测、.task 静默检测）一字未动。
 
     // MARK: 双列瓷砖
 
@@ -1588,19 +1603,50 @@ struct TendiesView: View {
         .disabled(!enabled)
     }
 
+    /// run #163：改淡蓝强调样式（不再走通用 sheetTile）——
+    /// 布局与 sheetTile 逐项一致（34 图标圆、内边距、圆角、
+    /// 阴影、整砖命中），仅换三处：底色走 moreTileBackground
+    /// （light #EAF3FF / dark 主蓝 13% 染底）、叠 1pt 主蓝细
+    /// 边（moreTileBorder）、图标改实心主蓝圆 + 白图标。
+    /// 标题/副标题文字与点击行为（打开远程配置 feishuUrl）
+    /// 不变；旁边的「内置回环」瓷砖仍走 sheetTile、不动。
     private var moreWallpapersTile: some View {
-        sheetTile(icon: "photo.on.rectangle.angled",
-                  tint: .blue,
-                  title: "获取更多壁纸",
-                  subtitle: "持续更新",
-                  subtitleColor: .secondary) {
+        Button {
             // run #159：飞书入口改读远程配置 feishuUrl（发布
             // 方案明令禁止写死）；配置未加载成功时服务回落
             // 内置默认=原写死值，入口永不失效。
             if let url = URL(string: vm.remoteConfig.feishuURLString) {
                 UIApplication.shared.open(url)
             }
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                ZStack {
+                    Circle().fill(flashBlue)
+                    Image(systemName: "photo.on.rectangle.angled")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 34, height: 34)
+                Text("获取更多壁纸")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.top, 8)
+                Text("持续更新")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(13)
+            .background(moreTileBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(moreTileBorder, lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 2)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     private var loopbackTile: some View {
@@ -1953,6 +1999,7 @@ struct TendiesDocumentPickerView: UIViewControllerRepresentable {
 struct DevicePosterCleanupView: View {
     @EnvironmentObject var vm: AppViewModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @State private var showCleanupConfirm = false
 
     private var selectedItems: [DevicePosterItem] {
@@ -2052,29 +2099,60 @@ struct DevicePosterCleanupView: View {
     /// 氛围底（run #142）：近白底 + 四团大半径模糊的
     /// 柔和彩晕（蓝/绿/桃/紫），参照设计稿 v2 的环境
     /// 光感；纯装饰，不拦截触摸。
+    /// run #163：深色适配——原实现全硬编码浅色，深色模式
+    /// 下整页仍是浅色渐变（Sage 真机截图实证）。light 分支
+    /// 逐值保留 #142 原样；dark 分支换深炭近黑基底 + 同色
+    /// 系低透明彩晕（蓝 16% / 绿 10% / 桃 7% / 紫 12%，
+    /// 按定稿效果图）。页头关闭胶囊/刷新圆钮/标题与空状态
+    /// 图文原本就是玻璃面 + .primary/.secondary 语义色，
+    /// 底色变深后自动适配，不另改。
     private var cleanupAmbientBackground: some View {
         ZStack {
-            Color(red: 0.96, green: 0.96, blue: 0.98)
-            Circle()
-                .fill(Color.blue.opacity(0.28))
-                .frame(width: 360, height: 360)
-                .blur(radius: 90)
-                .offset(x: -160, y: -330)
-            Circle()
-                .fill(Color.green.opacity(0.26))
-                .frame(width: 320, height: 320)
-                .blur(radius: 90)
-                .offset(x: 180, y: -300)
-            Circle()
-                .fill(Color.orange.opacity(0.22))
-                .frame(width: 340, height: 340)
-                .blur(radius: 95)
-                .offset(x: 200, y: 60)
-            Circle()
-                .fill(Color.purple.opacity(0.20))
-                .frame(width: 360, height: 360)
-                .blur(radius: 100)
-                .offset(x: -180, y: 330)
+            if colorScheme == .dark {
+                Color(red: 0.05, green: 0.05, blue: 0.07)
+                Circle()
+                    .fill(Color.blue.opacity(0.16))
+                    .frame(width: 360, height: 360)
+                    .blur(radius: 90)
+                    .offset(x: -160, y: -330)
+                Circle()
+                    .fill(Color.green.opacity(0.10))
+                    .frame(width: 320, height: 320)
+                    .blur(radius: 90)
+                    .offset(x: 180, y: -300)
+                Circle()
+                    .fill(Color.orange.opacity(0.07))
+                    .frame(width: 340, height: 340)
+                    .blur(radius: 95)
+                    .offset(x: 200, y: 60)
+                Circle()
+                    .fill(Color.purple.opacity(0.12))
+                    .frame(width: 360, height: 360)
+                    .blur(radius: 100)
+                    .offset(x: -180, y: 330)
+            } else {
+                Color(red: 0.96, green: 0.96, blue: 0.98)
+                Circle()
+                    .fill(Color.blue.opacity(0.28))
+                    .frame(width: 360, height: 360)
+                    .blur(radius: 90)
+                    .offset(x: -160, y: -330)
+                Circle()
+                    .fill(Color.green.opacity(0.26))
+                    .frame(width: 320, height: 320)
+                    .blur(radius: 90)
+                    .offset(x: 180, y: -300)
+                Circle()
+                    .fill(Color.orange.opacity(0.22))
+                    .frame(width: 340, height: 340)
+                    .blur(radius: 95)
+                    .offset(x: 200, y: 60)
+                Circle()
+                    .fill(Color.purple.opacity(0.20))
+                    .frame(width: 360, height: 360)
+                    .blur(radius: 100)
+                    .offset(x: -180, y: 330)
+            }
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
