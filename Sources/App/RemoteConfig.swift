@@ -41,6 +41,11 @@ struct RemoteConfig: Equatable {
         var forceUpdate: Bool = false
         var downloadUrl: String = ""
         var updateNote: String = ""
+        /// 匿名使用计数上报地址（run #166）：可选字段，
+        /// 缺失/为空即不上报；现行已发布的 B 版配置没有此
+        /// 字段，解析行为与此前逐字一致。激活方式=日后在
+        /// 配置里填入统计函数 URL 并重签发布，客户端零改动。
+        var statsUrl: String = ""
     }
 
     /// 壁纸目录条目（run #159 本轮只解析存模型，不接 UI）。
@@ -106,7 +111,7 @@ extension RemoteConfig: Decodable {
 
     private struct AppInfoBox: Decodable {
         var value: RemoteConfig.AppInfo
-        private enum K: String, CodingKey { case latestVersion, forceUpdate, downloadUrl, updateNote }
+        private enum K: String, CodingKey { case latestVersion, forceUpdate, downloadUrl, updateNote, statsUrl }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: K.self)
             var a = RemoteConfig.AppInfo()
@@ -114,6 +119,7 @@ extension RemoteConfig: Decodable {
             a.forceUpdate = (try? c.decodeIfPresent(Bool.self, forKey: .forceUpdate)) ?? false
             a.downloadUrl = (try? c.decodeIfPresent(String.self, forKey: .downloadUrl)) ?? ""
             a.updateNote = (try? c.decodeIfPresent(String.self, forKey: .updateNote)) ?? ""
+            a.statsUrl = (try? c.decodeIfPresent(String.self, forKey: .statsUrl)) ?? ""
             value = a
         }
     }
@@ -317,6 +323,12 @@ final class RemoteConfigService: ObservableObject {
             verificationState = .verified
             persistCache(configData: configData, signatureText: sigText)
             evaluatePrompts()
+            // 匿名使用计数（run #166）：验签通过的新配置生效
+            // 后顺带触发一次（内部自带「今日已成功上报则跳
+            // 过」与「statsUrl 为空则无-op」两道门；缓存/内置
+            // 默认没有 statsUrl，走不到实际上报）。完全异步、
+            // 失败静默，见 UsageStats。
+            UsageStats.reportIfNeeded(statsUrl: decoded.app.statsUrl)
             return
         }
         if sawInvalidSignature, verificationState != .verified {

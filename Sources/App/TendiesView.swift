@@ -1677,12 +1677,11 @@ struct TendiesView: View {
                          enabled: !busy) {
             // run #127 接线沿用：点按直接启停内置隧道（共享实例），
             // 任何状态下都不跳转外部 App。
-            if loopbackPhase == .connected {
-                loopback.stop()
-            } else {
-                loopback.start()
-            }
-            vm.refreshNetworkStatus()
+            // run #166：动作改经 vm.userToggleLoopback() 共用
+            // 入口（与配对页网络卡开关恒等，动作本身逐字不
+            // 变：已连接 stop、其余 start、随后刷新网络状态；
+            // 连接成功提醒的置位/触发在 VM 内统一处理）。
+            vm.userToggleLoopback()
         }
     }
 

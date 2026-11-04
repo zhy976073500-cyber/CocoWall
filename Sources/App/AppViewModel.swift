@@ -132,6 +132,15 @@ final class AppViewModel: ObservableObject {
     @Published var vpnUp: Bool = false
     @Published var wifiUp: Bool = false
     @Published var networkDetail: String = ""
+    /// 回环连接成功提醒（run #166）：仅当用户点按任一页的
+    /// 回环连接控件（经 userToggleLoopback）发起连接时置
+    /// 位；共享隧道状态随后真正跃迁到 .connected 才经既有
+    /// toast 通道（run #148）弹一次并清位。启动时状态的
+    /// 恢复/被动观察不置位 → 不弹；断开不弹；已连接期间
+    /// 状态重复发布不重弹（清位保证）；连接失败落回断开
+    /// 态时清位，不把提醒攒到日后被动连上时误弹。
+    private var loopbackToastArmed = false
+    private var loopbackCancellables: Set<AnyCancellable> = []
     @Published var deviceIP: String = "10.7.0.1" {
         didSet {
             syncTargetHostsToRust()
@@ -305,6 +314,34 @@ final class AppViewModel: ObservableObject {
             .sink { [weak self] state in self?.remoteConfigVerified = (state == .verified) }
             .store(in: &remoteConfigCancellables)
         remoteConfig.start()
+
+        // 回环连接成功提醒（run #166）：订阅共享隧道状态——
+        // 跃迁到 .connected 且提醒已置位（用户点按发起）时
+        // 弹一次；落回断开态清位。另订 lastError 兜底：
+        // start() 在保存配置/启动阶段失败时状态可能根本
+        // 不变、不会再发布断开态，靠错误置位来清位（不能
+        // 用 isBusy 落沿判失败——成功路径上忙碌结束可能
+        // 早于 .connecting 状态到达，会误清）。判定只读
+        // 共享实例的公开状态，不改 LoopbackTunnelManager
+        // 本体。
+        LoopbackTunnelManager.shared.$status
+            .sink { [weak self] status in
+                guard let self else { return }
+                if status == .connected {
+                    if self.loopbackToastArmed {
+                        self.loopbackToastArmed = false
+                        self.showToast("不用的时候记得断开回环链接哦～")
+                    }
+                } else if status == .disconnected || status == .invalid {
+                    self.loopbackToastArmed = false
+                }
+            }
+            .store(in: &loopbackCancellables)
+        LoopbackTunnelManager.shared.$lastError
+            .sink { [weak self] error in
+                if error != nil { self?.loopbackToastArmed = false }
+            }
+            .store(in: &loopbackCancellables)
     }
 
     // MARK: - Documents directory scanner
@@ -516,6 +553,25 @@ final class AppViewModel: ObservableObject {
     }
 
     // MARK: - Network
+
+    /// 回环开关的用户点按入口（run #166）：壁纸页「内置
+    /// 回环」瓷砖与配对页网络卡开关共用这一处，两页行为
+    /// 自此恒等。动作与此前两处各自实现逐字一致（已连接
+    /// stop、其余 start，随后 refreshNetworkStatus）；连接
+    /// 方向额外置位连接成功提醒（见 loopbackToastArmed），
+    /// 断开方向清位。只经 LoopbackTunnelManager 既有公开
+    /// API，不改其本体。
+    func userToggleLoopback() {
+        let manager = LoopbackTunnelManager.shared
+        if manager.status == .connected {
+            loopbackToastArmed = false
+            manager.stop()
+        } else {
+            loopbackToastArmed = true
+            manager.start()
+        }
+        refreshNetworkStatus()
+    }
 
     func refreshNetworkStatus() {
         let ip = deviceIP

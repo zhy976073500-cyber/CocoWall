@@ -4523,3 +4523,24 @@ CocoWall 的刷入链基于上游开源项目 AirCard-iOS（作者 Mak5er）。M
 
 - 分类纯函数已在本机以 Linux Swift 工具链跑 17 个向量全过（真实 zip、76 列 CRLF 换行 Base64 包、XML/二进制配对 plist、根为数组的 plist、坏 Base64 各形态、空文件、截断 PK、随机字节、Base64(plist) 优先级用例等）；但完整 App 的真机端到端（UC 下载 txt → 打开方式选 CocoWall → 自动解码导入 → 刷入；文件 App 配对文件 → 自动配对；.tendies 分享回归）待 Sage 按验收点真机走全程。CI 构建结论由主线在已登录浏览器核（本部署 GitHub MCP 无 Actions 工具）。
 - 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（本轮新增 IntakeRouter.swift 不在清单 7 文件内，清单内容不变）。
+
+## 改动登记 · 配对页回环开关统一 + 匿名使用计数（run #166，2026-11-05；Sage 拍板两件 + 追加一件；受保护文件零改动，版本保持 1.0.0）
+
+### 审计结论（施工前实查，均为现行代码事实）
+
+- 配对页「网络」段（#163 后形态）= `VPNStatusRow` + 其下独立一行的「去系统设置链接回环」按钮（点按只弹 alert「去系统设置 - VPN - 链接回环工具（CocoWall）」，状态 `showLoopbackHint`）。VPNStatusRow 内部按状态分两支渲染开关：状态行（盾牌图标 +「回环 VPN 已启用 / RSD 隧道已就绪——刷入时将自动连接。」或「未检测到回环 VPN / 运行刷入前请先开启内置回环。」）恒显；`vpnUp && 隧道 .connected` 时一行小字「当前连接由内置回环提供。」+ 迷你玻璃钮「关闭内置回环」（仅 stop）；`!vpnUp` 时 #163 整宽主蓝按钮（toggle、忙碌禁用）+ 说明小字 + 过渡态 statusText + 红色 lastError。**漏档**：外部 VPN 在场（vpnUp 为真）而内置回环未开时两支都不渲染——删掉外部回环引导（#163）后，本页在此状态下没有任何内置回环开关。
+- 壁纸页「内置回环」控件 = 底部 sheet 的 `loopbackTile`（TendiesView）：事实源为共享纯函数 `loopbackPresentation(phase:isBusy:)`（LoopbackPhase 镜像 + LoopbackTunnelManager.isBusy → 标题/副文案/可用性），动作恒为「已连接 stop、其余 start，随后 vm.refreshNetworkStatus()」，过渡态禁用（busy = !buttonEnabled）。它不是独立组件（TendiesView 的私有计算属性，依赖 sheetTile），故本轮按「复用同一呈现函数与动作语义」对齐，而非搬组件。
+- 远程配置：`RemoteConfig.AppInfo` 经 AppInfoBox 容错解码（字段缺失逐个落默认）。配置生效点 = RemoteConfigService.refreshFromNetwork 验签通过分支（effectiveConfig 赋值 → persistCache → evaluatePrompts）；init 里 loadVerifiedCache 是缓存路径。AppViewModel 已有 Combine 订阅与 #148 toast 通道（vm.showToast，根层胶囊约 1.6 秒自清）。
+- 回环启停的 Swift 侧调用点只有两处：壁纸页瓷砖与配对页 VPNStatusRow（刷入链不经 LoopbackTunnelManager.start，引擎侧连接尝试不在此列）；LoopbackTunnelManager 为受保护文件，本轮只用其公开 API（shared/status/lastError/start/stop 与 $status/$lastError 发布者）。
+
+### 改动
+
+1. **配对页网络卡：删设置链接行 + 开关统一（ContentView.swift）**。「去系统设置链接回环」Button 与其 alert、`showLoopbackHint` 状态整段删除（函数 openSystemVPNSettings 早在 #163 已删，本轮连提示行一并清）。VPNStatusRow 删除原两支条件控件，改为**任何状态都渲染同一颗整宽主蓝按钮**（外观沿用 #163：#0071E3、高 50、圆角 16、.plain）：标题/副文案/可用性全取壁纸页同一呈现函数 loopbackPresentation（新增与 TendiesView 同段映射的 loopbackPhase 镜像喂入）——标题「连接内置回环 / 断开内置回环 / 内置回环连接中… / 内置回环断开中…」；副文案居中置于按钮下，颜色与壁纸页瓷砖同口径（已连接绿、过渡态橙、未连接灰），如「内置回环已连接，点击断开」「CocoWall 自带回环，点按直接连接，无需其他 App」，首次未配置（.invalid）为「CocoWall 自带回环；首次连接会弹出系统提示，允许添加 VPN 配置」——取代 #163 的固定说明小字与过渡态 statusText 行；动作经新增共用入口 vm.userToggleLoopback()（见第 3 件）；lastError 红字保留（任何状态下有错即显）。状态行（盾牌 + 两行文案）原样不动；壁纸页本身与状态胶囊的单源口径（#156）未动。
+2. **匿名使用计数·客户端（RemoteConfig.swift + 新增 Sources/App/UsageStats.swift）**。AppInfo 新增可选字段 `statsUrl`（默认 ""），AppInfoBox 同步容错解码——现行 B 版配置无此字段，解析结果与此前逐字一致（本机以发布版 config.json 原件解码断言过）。UsageStats.reportIfNeeded 在 refreshFromNetwork 验签通过、配置生效后被调用，两道门：statsUrl 去空白后为空/非法 URL → 无-op；UserDefaults 记账「今日已成功上报」→ 跳过。载荷仅三项 `{id, v, d}`：id 为安装随机 UUID（首次生成持久化于 UserDefaults `cw.usageStats.installID`）、v 为 App 版本、d 为本地日期 yyyy-MM-dd。ephemeral 会话、5 秒超时、Task.detached 发射后不管；仅 2xx 时记 `cw.usageStats.lastReportDate`，失败静默、下次启动再试；无设置开关、无任何用户可见反馈；不打印 id/URL（#159 发布版无详细日志口径）。未改任何 config.json/config.sig 与配置仓——激活靠日后往配置里填 statsUrl 重签发布。
+3. **连接成功提醒 toast（AppViewModel.swift + 两页接线，Sage 追加）**。新增共用入口 `userToggleLoopback()`：两页控件（壁纸页瓷砖、配对页新开关）的动作改经此一处，动作与此前逐字一致（共享实例 status == .connected → stop、其余 start、随后 refreshNetworkStatus），连接方向额外置位 `loopbackToastArmed`、断开方向清位。VM init 订阅共享隧道 $status：跃迁到 .connected 且已置位 → 经 #148 showToast 弹**「不用的时候记得断开回环链接哦～」**（文案 Sage 逐字定稿）一次并清位；落回 .disconnected/.invalid 清位。再订 $lastError 兜底清位：start() 在保存配置/启动阶段失败时状态可能不变、断开态不再发布，靠错误置位清位（刻意不用 isBusy 落沿判失败——成功路径上忙碌结束可能早于 .connecting 到达，会误清）。由此保证：启动恢复/被动观察不弹（未置位）、断开不弹、已连接期间状态重复发布不重弹（已清位）、失败不攒到日后误弹；进程内状态不持久化，重启后天然未置位。
+4. **服务端函数代码（不入 App 仓）**：`~/workspace/cocowall-release/stats-fc/` 落 index.py + README.md，仅交付、未部署。阿里云 FC HTTP 触发（Python 3、标准库 only、匿名 POST）：校验 id（UUID 形）/d（真实日期）/v 后，每条上报 PUT 一个 OSS 小对象 `stats/raw/<日期>/<id>-<毫秒戳>.json`（per-report-object，避读-改-写竞争；对象内容即上报 JSON）；签名单步走 OSS V1 HMAC-SHA1，凭证读 FC 环境注入的临时凭证（服务角色仅授 cocowall-config 桶 stats/ 前缀 PutObject）。README 写明部署步骤与按对象名 UUID 去重的日活/留存数法。
+
+### 未验证项
+
+- 本机已验：五份改动 Swift 文件 swiftc -parse 全过；UsageStats + 配置模型以 Linux Swift 工具链跑活体断言——发布版 B 配置原件解码全字段不变且 statsUrl 为空、带 statsUrl 的配置正确解析、空 URL 完全无-op、对本地 HTTP 服务真发恰一次 POST（载荷仅 {id,v,d}、d 为客户端本地日期）、2xx 后记账且同日第二次调用被门拦下；stats-fc/index.py 以 Python 跑校验向量、签名 PUT 构造（URL/头/体）与 WSGI handler（POST 200 / GET 405）全过。完整 App 的真机构建与端到端（两页开关各状态呈现与启停、点按连接成功后 toast 只弹一次、断开/恢复不弹）待 CI 出包后 Sage 真机验；服务端未部署，statsUrl 激活与真实上报落盘待部署后另验。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。

@@ -895,9 +895,6 @@ struct PairingTab: View {
     // run #151: WiFi 监听只在配对页在场时活（onAppear 起、
     // onDisappear 停），驱动页顶横幅。
     @StateObject private var wifiMonitor = WiFiMonitor()
-    // run #163: 「去系统设置链接回环」改点按弹提示（不再深链
-    // 跳转），提示弹窗的呈现状态。
-    @State private var showLoopbackHint = false
     @Environment(\.colorScheme) private var colorScheme
 
     /// 配对卡次按钮底色（run #163）：浅蓝填充，浅色
@@ -943,31 +940,14 @@ struct PairingTab: View {
                 // 页顶 WiFi 横幅（#151）不在此卡内、不受影响。
 
                 // Network / VPN Status
+                // run #166: 「去系统设置链接回环」整行删除
+                // （#151 直达按钮 → #156 改文案 → #163 改点按
+                // 弹提示，本轮连提示行与 showLoopbackHint 状态
+                // 一并清掉）。网络卡只剩 VPNStatusRow，其内置
+                // 回环开关已统一为与壁纸页同一逻辑的单一控件，
+                // 不再引导用户去系统设置里手动连接回环工具。
                 Section("网络") {
                     VPNStatusRow(vm: vm)
-
-                    // run #151: 去系统设置里开 VPN 的直达按钮；
-                    // run #156: 文案改 Sage 定稿「去系统设置链接
-                    // 回环」，深链改候选链；
-                    // run #163: 深链跳转整条删除（候选链见已删的
-                    // openSystemVPNSettings）——点按只弹提示，
-                    // 让用户自己去 设置 › VPN 连接回环工具。
-                    Button {
-                        showLoopbackHint = true
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "gearshape.fill")
-                            Text("去系统设置链接回环")
-                            Spacer()
-                        }
-                        .font(.subheadline.bold())
-                        .contentShape(Rectangle())
-                    }
-                    .alert("提示", isPresented: $showLoopbackHint) {
-                        Button("好", role: .cancel) {}
-                    } message: {
-                        Text("去系统设置 - VPN - 链接回环工具（CocoWall）")
-                    }
                 }
 
                 // 配对（run #163：原「当前配对」「配对文件」「在本机配对」
@@ -1316,7 +1296,8 @@ struct PairingTab: View {
 
     // run #163: openSystemVPNSettings（#151 初版、#156 候选链）
     // 已随「去系统设置链接回环」改弹提示而整函数删除——App 内
-    // 不再有任何 App-prefs 深链跳转。
+    // 不再有任何 App-prefs 深链跳转；run #166: 该提示行本身
+    // 亦已整行删除，配对页网络卡只剩内置回环开关。
 
     /// 导出配对文件（run #155）：把存储原件逐字节复制到临时目录
     /// 并命名 CocoWall_pairing.plist，再拉起系统分享面板。
@@ -1401,6 +1382,34 @@ struct VPNStatusRow: View {
     // UI and behavior are unchanged).
     @ObservedObject private var loopback = LoopbackTunnelManager.shared
 
+    /// 隧道相位镜像（run #166）：与壁纸页 TendiesView.loopbackPhase
+    /// 同一段映射（NEVPNStatus → LoopbackPhase），喂给下面同一份
+    /// 呈现函数——两页自此共用一个状态→文案/可用性的事实源。
+    private var loopbackPhase: LoopbackPhase {
+        switch loopback.status {
+        case .connected: return .connected
+        case .connecting: return .connecting
+        case .disconnecting: return .disconnecting
+        case .reasserting: return .reasserting
+        case .disconnected: return .disconnected
+        case .invalid: return .invalid
+        @unknown default: return .unknown
+        }
+    }
+
+    /// 与壁纸页 loopbackUI 同一呈现（run #166）。
+    private var loopbackUI: LoopbackPresentation {
+        loopbackPresentation(phase: loopbackPhase, isBusy: loopback.isBusy)
+    }
+
+    /// 副文案语义色（run #166）：与壁纸页「内置回环」瓷砖同
+    /// 口径——已连接绿、过渡态（按钮禁用）橙、未连接灰。
+    private var loopbackSubtitleColor: Color {
+        if loopbackPhase == .connected { return .green }
+        if !loopbackUI.buttonEnabled { return .orange }
+        return .secondary
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
@@ -1422,65 +1431,52 @@ struct VPNStatusRow: View {
                 }
             }
 
-            if vm.vpnUp && loopback.status == .connected {
-                HStack(spacing: 8) {
-                    Text("当前连接由内置回环提供。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("关闭内置回环") {
-                        loopback.stop()
-                    }
-                    .font(.caption.bold())
-                    .glassButton()
-                    .controlSize(.mini)
-                }
+            // run #166：内置回环开关统一为单一控件（Sage 定：
+            // 与壁纸页「内置回环」功能一致）。此前分置两处且
+            // 有漏档：未连接时（!vpnUp）是 #163 的整宽主按钮；
+            // 内置已连接时（vpnUp 且隧道 .connected）只有一行
+            // 小字 + 迷你玻璃钮「关闭内置回环」；而外部 VPN
+            // 在场、内置未开时两支都不渲染——本页没有任何
+            // 开关（与 #163 删除外部回环引导后留下的死角）。
+            // 本轮改为任何状态都渲染同一颗整宽按钮：标题/
+            // 副文案/可用性全取壁纸页同一呈现函数
+            // loopbackPresentation（连接内置回环 / 断开内置
+            // 回环 / 内置回环连接中… / 内置回环断开中…；
+            // 副文案如「内置回环已连接，点击断开」「CocoWall
+            // 自带回环，点按直接连接，无需其他 App」，首配
+            // 置 .invalid 时即「首次连接会弹出系统提示，允许
+            // 添加 VPN 配置」，取代 #163 的固定说明小字）；
+            // 动作经 vm.userToggleLoopback() 共用入口，与
+            // 壁纸页瓷砖恒等（已连接 stop、其余 start、随后
+            // 刷新网络状态；连接成功提醒在 VM 内统一触发）；
+            // 过渡态按呈现禁用，与壁纸页瓷砖的忙碌禁用同
+            // 口径。按钮外观沿用 #163 整宽主蓝（#0071E3、
+            // 高 50、圆角 16），全状态同形，只换文案。
+            Button {
+                vm.userToggleLoopback()
+            } label: {
+                Text(loopbackUI.buttonTitle)
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .background(
+                        Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
+            .buttonStyle(.plain)
+            .disabled(!loopbackUI.buttonEnabled)
 
-            // run #163：未连接时的引导区重做——「内置回环
-            // （推荐）」绿框与 LocalDevVPN（外部 App）橙框整
-            // 块删除；设备 IP 行与网卡明细行一并删除（仅展示
-            // 层：vm.deviceIP / networkDetail 的数据与刷新逻
-            // 辑不动，本页不再渲染这两行）。改整宽主蓝大按钮
-            // （#0071E3）+ 按钮下灰色说明小字；切换动作仍是
-            // loopback.toggle()，忙碌禁用、文案随 isActive
-            // 在开启/关闭间切换，与原小钮行为一致。
-            if !vm.vpnUp {
-                Button {
-                    loopback.toggle()
-                } label: {
-                    Text(loopback.isActive ? "关闭内置回环" : "开启内置回环")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background(
-                            Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255),
-                            in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(loopback.isBusy)
+            Text(loopbackUI.buttonSubtitle)
+                .font(.caption)
+                .foregroundStyle(loopbackSubtitleColor)
+                .frame(maxWidth: .infinity, alignment: .center)
 
-                Text("点开启后，按系统提示允许添加 VPN 配置即可。")
+            if let loopbackError = loopback.lastError {
+                Text(loopbackError)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-
-                // 过渡态（连接中/重连中/断开中）保留状态反馈：
-                // 原小钮旁的 statusText 在新版仅此情形出现，
-                // 静止未开启时不重复状态行已有的信息。
-                if loopback.isBusy || (loopback.isActive && loopback.status != .connected) {
-                    Text(loopback.statusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                }
-                if let loopbackError = loopback.lastError {
-                    Text(loopbackError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
+                    .foregroundStyle(.red)
             }
         }
         .padding(.vertical, 4)
