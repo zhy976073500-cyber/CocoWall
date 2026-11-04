@@ -38,11 +38,11 @@ struct ContentView: View {
             CanvasView(vm: vm, displayHeight: 300)
                 .padding(.vertical, 8)
             controlsRow
-            animationChipsRow
             ClipTimelineView(vm: vm,
                              onAddLayer: { showMaterialMenu = true },
                              onOpenLayers: { showLayerList = true },
-                             onOpenTransition: { showTransitionEditor = true })
+                             onOpenTransition: { showTransitionEditor = true },
+                             onOpenEntrance: { showEntranceEditor = true })
                 .frame(height: timelineHeight)
                 .padding(.top, 4)
             SelectionPanelView(vm: vm)
@@ -82,13 +82,15 @@ struct ContentView: View {
                 vm.project = ClipProject()
                 vm.select(nil)
                 vm.currentFrame = 0
+                vm.jumpToSegment(.lockedLoop)
+                vm.isPlaying = true
             }
             Button("取消", role: .cancel) {}
         }
         .alert("剪辑制作探针", isPresented: $showAbout) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text("把 .tendies 制作改成剪辑手感的探针：开屏/主屏各一张背景、两套摆位、循环模板动画；动画在时间轴上方加——「开屏入场」管亮屏淡入、「解锁过渡」管开锁时怎么变（默认渐变）。导出按真包结构生成三状态 .tendies，去 CocoWall 刷入验证。熄屏部分导出时自动生成。")
+            Text("把 .tendies 制作改成剪辑手感的探针：时间线一条线四段——开屏动画｜开屏｜解锁动画｜主屏。动画段里给图层打关键帧排运动轨迹（位置/缩放/旋转/透明度/层级），关键帧只定轨迹，导出时长按过渡速度重算；循环段摆位置挂模板。开屏/主屏各一张背景。导出按真包结构生成三状态 .tendies，去 CocoWall 刷入验证。熄屏部分导出时自动生成。")
         }
         .alert("先选一个图层", isPresented: $showPickLayerHint) {
             Button("知道了", role: .cancel) {}
@@ -98,7 +100,8 @@ struct ContentView: View {
     }
 
     private var timelineHeight: CGFloat {
-        ClipTimelineView.height(floatingCount: vm.project.floating.count)
+        ClipTimelineView.height(floatingCount: vm.project.floating.count,
+                                foregroundCount: vm.project.foreground.count)
             + (vm.project.floating.count > 5 ? 20 : 0)
     }
 
@@ -159,7 +162,8 @@ struct ContentView: View {
             HStack(spacing: 3) {
                 ForEach(PartTab.allCases) { tab in
                     Button {
-                        vm.currentTab = tab
+                        // 页签 = 快捷跳转：跳到对应循环段并切画布
+                        vm.jumpToSegment(tab == .locked ? .lockedLoop : .unlockLoop)
                     } label: {
                         Text(tab.displayName)
                             .font(.system(size: 13, weight: .semibold))
@@ -170,7 +174,6 @@ struct ContentView: View {
                                 Capsule().fill(vm.currentTab == tab ? Color.white : Color.clear)
                                     .shadow(color: .black.opacity(vm.currentTab == tab ? 0.1 : 0), radius: 3, y: 1))
                     }
-                    .disabled(vm.isTransitioning)
                 }
             }
             .padding(3)
@@ -182,12 +185,12 @@ struct ContentView: View {
                 previewButton(icon: "sun.max", title: "预览开屏", action: { vm.previewWake() })
             }
             Button {
-                if vm.currentTab == .locked { vm.previewUnlock() } else { vm.previewLock() }
+                vm.previewUnlock()
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: vm.currentTab == .locked ? "lock.open" : "lock")
                         .font(.system(size: 11.5, weight: .semibold))
-                    Text(vm.isTransitioning ? "过渡中" : (vm.currentTab == .locked ? "预览开锁" : "预览回锁"))
+                    Text(vm.currentTab == .locked ? "预览开锁" : "预览回锁")
                         .font(.system(size: 12.5, weight: .semibold))
                 }
                 .foregroundStyle(accent)
@@ -195,7 +198,6 @@ struct ContentView: View {
                 .padding(.vertical, 7)
                 .background(Capsule().fill(Color(red: 0.91, green: 0.95, blue: 1)))
             }
-            .disabled(vm.isTransitioning)
         }
         .padding(.horizontal, 12)
         .padding(.top, 9)
@@ -214,52 +216,13 @@ struct ContentView: View {
             .padding(.vertical, 7)
             .background(Capsule().fill(Color(red: 0.91, green: 0.95, blue: 1)))
         }
-        .disabled(vm.isTransitioning)
-    }
-
-    // MARK: 动画入口 chips（开屏入场 / 解锁过渡，摆在时间轴正上方）
-
-    private var animationChipsRow: some View {
-        HStack(spacing: 8) {
-            animationChip(
-                title: "开屏入场",
-                detail: vm.project.entrance.kind == .none
-                    ? "无" : "\(vm.project.entrance.kind.displayName) \(vm.project.entrance.frames)帧",
-                action: { showEntranceEditor = true })
-            animationChip(
-                title: "解锁过渡",
-                detail: "\(vm.project.transitionKind.displayName) \(vm.project.transitionFrames)帧",
-                action: { showTransitionEditor = true })
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 6)
-    }
-
-    private func animationChip(title: String, detail: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(detail)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color(white: 0.45))
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(Color(white: 0.45))
-            }
-            .foregroundStyle(Color(white: 0.15))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 11).fill(capsuleFill))
-        }
     }
 
     // MARK: 播放控制行
 
     private var controlsRow: some View {
         HStack {
-            Button { vm.currentFrame = 0 } label: {
+            Button { vm.restartSegment() } label: {
                 Image(systemName: "backward.end.fill")
                     .font(.system(size: 15))
                     .foregroundStyle(Color(white: 0.2))
@@ -273,7 +236,7 @@ struct ContentView: View {
                     .background(Circle().fill(Color(white: 0.08)))
             }
             Spacer()
-            Text(timecode(frame: vm.currentFrame))
+            Text("\(vm.segment.displayName) \(timecode(frame: vm.segmentLocalFrame))")
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(Color(white: 0.45))
         }
@@ -320,7 +283,7 @@ struct ContentView: View {
     private func exportSheet(_ outcome: EditorViewModel.ExportOutcome) -> some View {
         switch outcome {
         case .success(let url):
-            ExportSuccessView(url: url)
+            ExportSuccessView(url: url, note: vm.exportNote)
         case .failure(let message):
             VStack(spacing: 14) {
                 Image(systemName: "exclamationmark.triangle")
@@ -342,6 +305,7 @@ struct ContentView: View {
 
 private struct ExportSuccessView: View {
     let url: URL
+    var note: String = ""
     @Environment(\.dismiss) private var dismiss
 
     private var fileSizeText: String? {
@@ -365,6 +329,12 @@ private struct ExportSuccessView: View {
                     .foregroundStyle(.gray)
                     .multilineTextAlignment(.center)
             }
+            if !note.isEmpty {
+                Text(note)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.gray)
+                    .multilineTextAlignment(.center)
+            }
             ShareLink(item: url) {
                 Text("分享 / 存储 .tendies")
                     .font(.system(size: 15.5, weight: .bold))
@@ -377,6 +347,6 @@ private struct ExportSuccessView: View {
                 .font(.system(size: 14.5))
         }
         .padding(24)
-        .presentationDetents([.height(340)])
+        .presentationDetents([.height(410)])
     }
 }

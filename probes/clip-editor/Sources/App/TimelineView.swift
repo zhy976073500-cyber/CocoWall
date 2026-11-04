@@ -1,38 +1,44 @@
 import SwiftUI
 import UIKit
 
-// MARK: - 时间轴（Blurrr 式：播放头固定正中，拖轨道 scrub）
+// MARK: - 时间轴（v3 四段式：一条线从左到右）
 //
-// 结构自上而下：刻度尺（秒）/ 背景轨 / 每浮动图层一行 clip /
-// 前景行 / 「+ 添加图层」灰行。浮动 clip 按当前帧横向偏移，循环
-// 拷贝 ×3（前/当/后）保证拖过回环点不露白。clip 恒跨整个循环
-// （图层一直在），两头手柄拖动 = 淡入/淡出帧数。
-// 背景轨 v2 改三段横排（不随 scrub 滚动，是状态示意）：
-// [开屏背景 clip][过渡段][主屏背景 clip]，过渡段宽度按过渡帧数
-// 占循环的比例示意，点它打开「解锁过渡」编辑。
-// 刻度与时间码按 60fps 口径：mm:ss:ff。
+// 结构：段头行（开屏动画｜开屏｜解锁动画｜主屏，动画段用暖色
+// 区分，点段头 = 播放头跳到该段）/ 刻度尺 / 背景轨 / 每浮动图层
+// 一行 / 前景行 / 「+ 添加图层」灰行。播放头固定正中，整条线横移
+// scrub（统一坐标 = 编辑秒：动画段按编辑尺长度、循环段按循环
+// 时长）。动画段是实实在在的段：段内在图层行上以菱形标关键帧，
+// 点菱形选中该帧（可删），点背景轨的动画段块打开该段设置
+// （开屏动画段 → 开屏入场设置、解锁动画段 → 解锁过渡设置）。
+// 淡入/淡出手柄保留：淡入在「开屏」段左缘、淡出在「主屏」段右缘。
 struct ClipTimelineView: View {
     @ObservedObject var vm: EditorViewModel
     var onAddLayer: () -> Void
     var onOpenLayers: () -> Void
     var onOpenTransition: () -> Void
+    var onOpenEntrance: () -> Void
 
     private let labelWidth: CGFloat = 38
     private let rowHeight: CGFloat = 26
     private let rowSpacing: CGFloat = 4
-    private let rulerHeight: CGFloat = 22
+    private let headerHeight: CGFloat = 20
+    private let rulerHeight: CGFloat = 16
     private let maxFloatingRows = 5
+    private let accent = Color(red: 0, green: 0.44, blue: 0.89)
+    /// 动画段底色（暖色，与循环段区分）。
+    private let animFill = Color(red: 1, green: 0.85, blue: 0.62)
+    private let animFillSelected = Color(red: 1, green: 0.72, blue: 0.38)
 
-    @State private var scrubStartFrame: Double?
+    @State private var scrubStartSeconds: Double?
     @State private var fadeDragLayerID: UUID?
     @State private var fadeDragIsIn = true
     @State private var fadeDragStart = 0
     @State private var lockedThumb: UIImage?
     @State private var unlockThumb: UIImage?
 
-    static func height(floatingCount: Int) -> CGFloat {
-        let rows = 1 + min(floatingCount, 5) + 1 + 1 // 背景 + 浮动 + 前景 + 添加
-        return 22 + CGFloat(rows) * 30 + 8
+    static func height(floatingCount: Int, foregroundCount: Int) -> CGFloat {
+        let rows = 1 + min(floatingCount, 5) + foregroundCount + 1 // 背景 + 浮动 + 前景 + 添加
+        return 20 + 16 + CGFloat(rows) * 30 + 10
     }
 
     private var visibleFloating: ArraySlice<EditorLayer> {
@@ -42,15 +48,17 @@ struct ClipTimelineView: View {
     var body: some View {
         GeometryReader { geo in
             let trackWidth = geo.size.width - labelWidth
-            let ppf = trackWidth / CGFloat(vm.project.loopFrames)
+            // 整条线约 1.7 倍轨宽，段内有排帧的余地。
+            let ppf = trackWidth * 1.7 / CGFloat(max(vm.project.timelineTotalSeconds, 0.01))
             let centerX = labelWidth + trackWidth / 2
 
             ZStack(alignment: .topLeading) {
                 VStack(spacing: rowSpacing) {
+                    segmentHeader(trackWidth: trackWidth, ppf: ppf)
                     ruler(trackWidth: trackWidth, ppf: ppf)
-                    backgroundRow(trackWidth: trackWidth)
+                    backgroundRow(trackWidth: trackWidth, ppf: ppf)
                     ForEach(Array(visibleFloating)) { layer in
-                        clipRow(layer: layer, trackWidth: trackWidth, ppf: ppf)
+                        layerRow(layer: layer, trackWidth: trackWidth, ppf: ppf)
                     }
                     if vm.project.floating.count > maxFloatingRows {
                         Button(action: onOpenLayers) {
@@ -61,18 +69,29 @@ struct ClipTimelineView: View {
                         }
                         .frame(height: 16)
                     }
-                    foregroundRow(trackWidth: trackWidth)
+                    ForEach(vm.project.foreground) { layer in
+                        layerRow(layer: layer, trackWidth: trackWidth, ppf: ppf)
+                    }
+                    if vm.project.foreground.isEmpty {
+                        HStack(spacing: 0) {
+                            rowLabel("前景")
+                            Text("（空）文字、扫光放这里")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color(white: 0.62))
+                                .frame(width: trackWidth, height: rowHeight, alignment: .leading)
+                        }
+                    }
                     addRow
                 }
                 .padding(.horizontal, 2)
 
-                // 固定播放头 + 时间码
+                // 固定播放头 + 时间码（段内本地时间）
                 Rectangle()
                     .fill(Color.black)
                     .frame(width: 2)
                     .offset(x: centerX - 1)
                     .allowsHitTesting(false)
-                Text(timecode(frame: vm.currentFrame))
+                Text(timecode(frame: vm.segmentLocalFrame))
                     .font(.system(size: 10.5, weight: .bold, design: .monospaced))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 6)
@@ -89,54 +108,96 @@ struct ClipTimelineView: View {
         .onChange(of: vm.project.backgroundUnlock?.id) { _ in refreshThumbs() }
     }
 
+    // MARK: 几何（绝对编辑秒 → 轨内 x）
+
+    private func blockX(_ seg: TimelineSegment, ppf: CGFloat) -> CGFloat {
+        CGFloat(vm.project.segmentStart(seg)) * ppf - CGFloat(vm.playheadSeconds) * ppf
+    }
+
+    private func blockW(_ seg: TimelineSegment, ppf: CGFloat) -> CGFloat {
+        CGFloat(vm.project.segmentDuration(seg)) * ppf
+    }
+
+    /// 一段的块面（在行 ZStack 内绝对定位，两侧各留 1.5pt 缝）。
+    @ViewBuilder
+    private func segmentBlock<Content: View>(_ seg: TimelineSegment, ppf: CGFloat,
+                                             height: CGFloat? = nil,
+                                             @ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(width: max(blockW(seg, ppf: ppf) - 3, 8), height: height ?? (rowHeight - 4))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .offset(x: blockX(seg, ppf: ppf) + 1.5)
+    }
+
     // MARK: scrub
 
     private func scrubGesture(ppf: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 3)
             .onChanged { value in
-                if scrubStartFrame == nil {
-                    scrubStartFrame = vm.currentFrame
+                if scrubStartSeconds == nil {
+                    scrubStartSeconds = vm.playheadSeconds
                     vm.isScrubbing = true
                 }
                 let delta = Double(value.translation.width / ppf)
-                var f = (scrubStartFrame ?? 0) - delta
-                let lf = Double(vm.project.loopFrames)
-                f = f.truncatingRemainder(dividingBy: lf)
-                if f < 0 { f += lf }
-                vm.currentFrame = f
+                vm.setPlayhead(seconds: (scrubStartSeconds ?? 0) - delta)
             }
             .onEnded { _ in
-                scrubStartFrame = nil
+                scrubStartSeconds = nil
                 vm.isScrubbing = false
             }
     }
 
-    // MARK: 刻度尺
+    // MARK: 段头行（点段头跳段；动画段暖色）
+
+    private func segmentHeader(trackWidth: CGFloat, ppf: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            Spacer().frame(width: labelWidth)
+            ZStack(alignment: .leading) {
+                ForEach(TimelineSegment.allCases) { seg in
+                    let current = vm.segment == seg
+                    segmentBlock(seg, ppf: ppf, height: headerHeight - 2) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(seg.isAnimation
+                                      ? animFill.opacity(current ? 0.95 : 0.55)
+                                      : Color(white: current ? 0.86 : 0.94))
+                            Text(seg.displayName)
+                                .font(.system(size: 10.5, weight: current ? .bold : .medium))
+                                .foregroundStyle(current ? Color(white: 0.1) : Color(white: 0.45))
+                                .lineLimit(1)
+                        }
+                    }
+                    .onTapGesture { vm.jumpToSegment(seg) }
+                }
+            }
+            .frame(width: trackWidth, height: headerHeight)
+            .clipped()
+        }
+        .frame(height: headerHeight)
+    }
+
+    // MARK: 刻度尺（整条线，1 秒一格）
 
     private func ruler(trackWidth: CGFloat, ppf: CGFloat) -> some View {
         HStack(spacing: 0) {
             Spacer().frame(width: labelWidth)
             Canvas { context, size in
-                let lf = Double(vm.project.loopFrames)
-                let center = size.width / 2
-                for copy in -1...1 {
-                    var sec = 0
-                    while Double(sec) * 60 <= lf {
-                        let frame = Double(copy) * lf + Double(sec) * 60
-                        let x = center + (frame - vm.currentFrame) * Double(ppf)
-                        if x >= -20 && x <= size.width + 20 {
-                            var path = Path()
-                            path.move(to: CGPoint(x: x, y: size.height - 6))
-                            path.addLine(to: CGPoint(x: x, y: size.height))
-                            context.stroke(path, with: .color(.gray.opacity(0.5)), lineWidth: 1)
-                            let label = Text("\(sec)s")
-                                .font(.system(size: 9))
-                                .foregroundColor(.gray)
-                            context.draw(context.resolve(label),
-                                         at: CGPoint(x: x, y: 5), anchor: .center)
-                        }
-                        sec += 1
+                let total = vm.project.timelineTotalSeconds
+                var sec = 0
+                while Double(sec) <= total {
+                    let x = CGFloat(sec) * ppf - CGFloat(vm.playheadSeconds) * ppf
+                    if x >= -20 && x <= size.width + 20 {
+                        var path = Path()
+                        path.move(to: CGPoint(x: x, y: size.height - 5))
+                        path.addLine(to: CGPoint(x: x, y: size.height))
+                        context.stroke(path, with: .color(.gray.opacity(0.5)), lineWidth: 1)
+                        let label = Text("\(sec)s")
+                            .font(.system(size: 9))
+                            .foregroundColor(.gray)
+                        context.draw(context.resolve(label),
+                                     at: CGPoint(x: x, y: 4), anchor: .center)
                     }
+                    sec += 1
                 }
             }
             .frame(width: trackWidth, height: rulerHeight)
@@ -144,28 +205,71 @@ struct ClipTimelineView: View {
         .frame(height: rulerHeight)
     }
 
-    // MARK: 背景行（三段：开屏 clip + 过渡段 + 主屏 clip）
+    // MARK: 背景行（四段各一块）
 
-    private func backgroundRow(trackWidth: CGFloat) -> some View {
-        // 过渡段宽度按过渡帧数占循环时长的比例示意（夹在 58pt 与
-        // 整轨 42% 之间，保证标注文字放得下）。
-        let proportion = CGFloat(vm.project.transitionFrames) / CGFloat(vm.project.loopFrames)
-        let transitionW = min(max(trackWidth * proportion, 58), trackWidth * 0.42)
-        let sideW = max((trackWidth - transitionW - 6) / 2, 10)
-        return HStack(spacing: 0) {
+    private func backgroundRow(trackWidth: CGFloat, ppf: CGFloat) -> some View {
+        HStack(spacing: 0) {
             rowLabel("背景")
-            HStack(spacing: 3) {
-                backgroundSegment(part: .locked, width: sideW)
-                transitionSegment(width: transitionW)
-                backgroundSegment(part: .unlock, width: sideW)
+            ZStack(alignment: .leading) {
+                // 开屏动画段：开屏背景缩略，点开 = 开屏入场设置
+                segmentBlock(.entrance, ppf: ppf) {
+                    ZStack(alignment: .bottomLeading) {
+                        RoundedRectangle(cornerRadius: 6).fill(animFill.opacity(0.5))
+                        if let thumb = lockedThumb {
+                            Image(uiImage: thumb).resizable().scaledToFill().opacity(0.75)
+                        }
+                        Text("开屏入场设置 ▸")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(Color(white: 0.25))
+                            .padding(.leading, 5).padding(.bottom, 2.5)
+                    }
+                }
+                .onTapGesture { onOpenEntrance() }
+
+                // 开屏循环段：开屏背景
+                segmentBlock(.lockedLoop, ppf: ppf) {
+                    backgroundThumbContent(part: .locked)
+                }
+                .onTapGesture { selectBackground(part: .locked) }
+
+                // 解锁动画段：过渡标记，点开 = 解锁过渡设置
+                segmentBlock(.unlockAnim, ppf: ppf) {
+                    ZStack {
+                        LinearGradient(
+                            colors: [Color(red: 0.98, green: 0.75, blue: 0.45),
+                                     Color(red: 0, green: 0.44, blue: 0.89)],
+                            startPoint: .leading, endPoint: .trailing)
+                        Text("\(vm.project.transitionKind.displayName) \(vm.project.transitionFrames)帧")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+                }
+                .onTapGesture { onOpenTransition() }
+
+                // 主屏循环段：主屏背景
+                segmentBlock(.unlockLoop, ppf: ppf) {
+                    backgroundThumbContent(part: .unlock)
+                }
+                .onTapGesture { selectBackground(part: .unlock) }
+
+                // 背景层的关键帧菱形（两张背景共用这一行）
+                ForEach(vm.project.layers(in: .background)) { layer in
+                    ForEach(layer.entranceKeyframes) { kf in
+                        keyframeDiamond(layer: layer, seg: .entrance, kf: kf, ppf: ppf)
+                    }
+                    ForEach(layer.unlockKeyframes) { kf in
+                        keyframeDiamond(layer: layer, seg: .unlockAnim, kf: kf, ppf: ppf)
+                    }
+                }
             }
             .frame(width: trackWidth, height: rowHeight)
+            .clipped()
         }
     }
 
-    /// 一侧背景 clip：显示该部分实际生效的背景（自己设的优先，
-    /// 没设则共用另一侧那张并标注）。点按选中对应图层。
-    private func backgroundSegment(part: PartTab, width: CGFloat) -> some View {
+    /// 一侧背景的缩略内容（自己设的优先，没设则共用另一侧并标注）。
+    private func backgroundThumbContent(part: PartTab) -> some View {
         let own = part == .locked ? vm.project.backgroundLocked : vm.project.backgroundUnlock
         let other = part == .locked ? vm.project.backgroundUnlock : vm.project.backgroundLocked
         let shown = own ?? other
@@ -173,8 +277,7 @@ struct ClipTimelineView: View {
         let thumb = part == .locked ? lockedThumb : unlockThumb
         let selected = shown != nil && vm.selectedLayerID == shown?.id
         return ZStack(alignment: .bottomLeading) {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color(white: 0.94))
+            RoundedRectangle(cornerRadius: 6).fill(Color(white: 0.94))
             if let thumb {
                 Image(uiImage: thumb)
                     .resizable()
@@ -188,40 +291,23 @@ struct ClipTimelineView: View {
                 .lineLimit(1)
                 .padding(.leading, 5)
                 .padding(.bottom, 2.5)
+            if selected {
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(accent, lineWidth: 1.4)
+            }
         }
-        .frame(width: width, height: rowHeight - 4)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(selected ? Color(red: 0, green: 0.44, blue: 0.89) : .clear, lineWidth: 1.4))
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if let shown { vm.select(shown.id) }
-        }
+    }
+
+    private func selectBackground(part: PartTab) {
+        let own = part == .locked ? vm.project.backgroundLocked : vm.project.backgroundUnlock
+        let other = part == .locked ? vm.project.backgroundUnlock : vm.project.backgroundLocked
+        if let shown = own ?? other { vm.select(shown.id) }
     }
 
     private func segmentCaption(part: PartTab, shared: Bool, hasImage: Bool) -> String {
         if !hasImage { return part == .locked ? "开屏背景 · 未设" : "主屏背景 · 未设" }
         if shared { return part == .locked ? "与主屏共用" : "与开屏共用" }
         return part == .locked ? "开屏背景" : "主屏背景"
-    }
-
-    /// 中间过渡段：渐变条 + 「类型 N帧」标注，点按打开过渡编辑。
-    private func transitionSegment(width: CGFloat) -> some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color(red: 0.62, green: 0.74, blue: 0.92),
-                         Color(red: 0, green: 0.44, blue: 0.89)],
-                startPoint: .leading, endPoint: .trailing)
-            Text("\(vm.project.transitionKind.displayName) \(vm.project.transitionFrames)帧")
-                .font(.system(size: 9.5, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-        }
-        .frame(width: width, height: rowHeight - 4)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .contentShape(Rectangle())
-        .onTapGesture { onOpenTransition() }
     }
 
     private func refreshThumbs() {
@@ -234,17 +320,74 @@ struct ClipTimelineView: View {
         return UIImage(data: data)
     }
 
-    // MARK: 浮动图层 clip 行
+    // MARK: 图层行（浮动 / 前景共用：四段块 + 关键帧菱形 + 淡入淡出手柄）
 
-    private func clipRow(layer: EditorLayer, trackWidth: CGFloat, ppf: CGFloat) -> some View {
+    private func layerRow(layer: EditorLayer, trackWidth: CGFloat, ppf: CGFloat) -> some View {
         let selected = vm.selectedLayerID == layer.id
         return HStack(spacing: 0) {
             rowLabel(layer.name)
             ZStack(alignment: .leading) {
-                ForEach(-1...1, id: \.self) { copy in
-                    clipBar(layer: layer, selected: selected, trackWidth: trackWidth, ppf: ppf)
-                        .offset(x: (CGFloat(copy) * CGFloat(vm.project.loopFrames) - CGFloat(vm.currentFrame)) * ppf)
+                // 开屏动画段块（暖色）
+                segmentBlock(.entrance, ppf: ppf) {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(selected ? animFillSelected.opacity(0.75) : animFill.opacity(0.45))
                 }
+                // 开屏循环段块（clip 本体 + 名称 + 淡入楔形）
+                segmentBlock(.lockedLoop, ppf: ppf) {
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(selected ? Color(red: 0.85, green: 0.91, blue: 1) : Color(white: 0.93))
+                            .overlay(RoundedRectangle(cornerRadius: 6)
+                                .stroke(selected ? accent : .clear, lineWidth: 1.4))
+                        if layer.fadeInFrames > 0 {
+                            LinearGradient(colors: [.black.opacity(0.22), .clear],
+                                           startPoint: .leading, endPoint: .trailing)
+                                .frame(width: CGFloat(layer.fadeInFrames) / 60 * ppf)
+                        }
+                        Text(layer.name)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color(white: 0.25))
+                            .lineLimit(1)
+                            .padding(.leading, 8)
+                    }
+                }
+                .onTapGesture { vm.select(layer.id) }
+                // 解锁动画段块（暖→蓝渐变示意交接）
+                segmentBlock(.unlockAnim, ppf: ppf) {
+                    LinearGradient(
+                        colors: [animFill.opacity(selected ? 0.95 : 0.6),
+                                 Color(red: 0.62, green: 0.74, blue: 0.92).opacity(selected ? 0.95 : 0.6)],
+                        startPoint: .leading, endPoint: .trailing)
+                }
+                // 主屏循环段块（+ 淡出楔形）
+                segmentBlock(.unlockLoop, ppf: ppf) {
+                    ZStack(alignment: .trailing) {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(selected ? Color(red: 0.85, green: 0.91, blue: 1) : Color(white: 0.93))
+                            .overlay(RoundedRectangle(cornerRadius: 6)
+                                .stroke(selected ? accent : .clear, lineWidth: 1.4))
+                        if layer.fadeOutFrames > 0 {
+                            LinearGradient(colors: [.clear, .black.opacity(0.22)],
+                                           startPoint: .leading, endPoint: .trailing)
+                                .frame(width: CGFloat(layer.fadeOutFrames) / 60 * ppf)
+                        }
+                    }
+                }
+                .onTapGesture { vm.select(layer.id) }
+
+                // 关键帧菱形（两个动画段）
+                ForEach(layer.entranceKeyframes) { kf in
+                    keyframeDiamond(layer: layer, seg: .entrance, kf: kf, ppf: ppf)
+                }
+                ForEach(layer.unlockKeyframes) { kf in
+                    keyframeDiamond(layer: layer, seg: .unlockAnim, kf: kf, ppf: ppf)
+                }
+
+                // 淡入手柄（开屏段左缘）/ 淡出手柄（主屏段右缘）
+                fadeHandle(layer: layer, isIn: true, ppf: ppf)
+                    .offset(x: blockX(.lockedLoop, ppf: ppf) - 2)
+                fadeHandle(layer: layer, isIn: false, ppf: ppf)
+                    .offset(x: blockX(.unlockLoop, ppf: ppf) + blockW(.unlockLoop, ppf: ppf) - 16)
             }
             .frame(width: trackWidth, height: rowHeight)
             .clipped()
@@ -253,47 +396,28 @@ struct ClipTimelineView: View {
         }
     }
 
-    private func clipBar(layer: EditorLayer, selected: Bool, trackWidth: CGFloat, ppf: CGFloat) -> some View {
-        let fadeInW = CGFloat(layer.fadeInFrames) * ppf
-        let fadeOutW = CGFloat(layer.fadeOutFrames) * ppf
-        return ZStack(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(selected ? Color(red: 0.85, green: 0.91, blue: 1) : Color(white: 0.93))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(selected ? Color(red: 0, green: 0.44, blue: 0.89) : .clear, lineWidth: 1.4))
-
-            // 淡入淡出楔形（深色斜块示意）
-            if layer.fadeInFrames > 0 {
-                LinearGradient(colors: [.black.opacity(0.22), .clear],
-                               startPoint: .leading, endPoint: .trailing)
-                    .frame(width: fadeInW)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+    private func keyframeDiamond(layer: EditorLayer, seg: TimelineSegment,
+                                 kf: LayerKeyframe, ppf: CGFloat) -> some View {
+        let x = blockX(seg, ppf: ppf) + CGFloat(kf.progress) * blockW(seg, ppf: ppf)
+        let isSelected = vm.selectedKeyframe?.keyframeID == kf.id
+        return Rectangle()
+            .fill(isSelected ? accent : Color(white: 0.3))
+            .frame(width: 9, height: 9)
+            .rotationEffect(.degrees(45))
+            .overlay(
+                Rectangle()
+                    .stroke(Color.white, lineWidth: 1)
+                    .frame(width: 9, height: 9)
+                    .rotationEffect(.degrees(45)))
+            .position(x: x, y: rowHeight / 2)
+            .onTapGesture {
+                vm.setPlayhead(seconds: vm.project.segmentStart(seg)
+                               + kf.progress * vm.project.segmentDuration(seg))
+                vm.select(layer.id)
+                vm.selectedKeyframe = EditorViewModel.KeyframeSelection(
+                    layerID: layer.id, segment: seg, keyframeID: kf.id)
+                vm.isPlaying = false
             }
-            if layer.fadeOutFrames > 0 {
-                HStack {
-                    Spacer()
-                    LinearGradient(colors: [.clear, .black.opacity(0.22)],
-                                   startPoint: .leading, endPoint: .trailing)
-                        .frame(width: fadeOutW)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-            }
-
-            Text(layer.name)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Color(white: 0.25))
-                .lineLimit(1)
-                .padding(.leading, max(fadeInW + 6, 8))
-
-            // 两头手柄（命中区 ≥16pt，拖动改淡入/淡出帧数）
-            HStack {
-                fadeHandle(layer: layer, isIn: true, ppf: ppf)
-                Spacer()
-                fadeHandle(layer: layer, isIn: false, ppf: ppf)
-            }
-        }
-        .frame(width: trackWidth, height: rowHeight - 4)
     }
 
     private func fadeHandle(layer: EditorLayer, isIn: Bool, ppf: CGFloat) -> some View {
@@ -304,8 +428,7 @@ struct ClipTimelineView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 2)
                     .fill(Color.black.opacity(0.35))
-                    .frame(width: 3.5, height: 12)
-            )
+                    .frame(width: 3.5, height: 12))
             .highPriorityGesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
@@ -315,48 +438,15 @@ struct ClipTimelineView: View {
                             fadeDragStart = isIn ? layer.fadeInFrames : layer.fadeOutFrames
                             vm.select(layer.id)
                         }
-                        let deltaFrames = Int((value.translation.width / ppf).rounded())
+                        // ppf 是 pt/秒，1 帧 = ppf/60 pt
+                        let deltaFrames = Int((value.translation.width * 60 / ppf).rounded())
                         let delta = fadeDragIsIn ? deltaFrames : -deltaFrames
                         let newValue = min(max(fadeDragStart + delta, 0), 120)
                         vm.updateSelected { l in
                             if fadeDragIsIn { l.fadeInFrames = newValue } else { l.fadeOutFrames = newValue }
                         }
                     }
-                    .onEnded { _ in fadeDragLayerID = nil }
-            )
-    }
-
-    // MARK: 前景行（全部前景图层并排成段）
-
-    private func foregroundRow(trackWidth: CGFloat) -> some View {
-        HStack(spacing: 0) {
-            rowLabel("前景")
-            if vm.project.foreground.isEmpty {
-                Text("（空）文字、扫光放这里")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color(white: 0.62))
-                    .frame(width: trackWidth, height: rowHeight, alignment: .leading)
-            } else {
-                HStack(spacing: 3) {
-                    ForEach(vm.project.foreground) { layer in
-                        let selected = vm.selectedLayerID == layer.id
-                        Text(layer.name)
-                            .font(.system(size: 11, weight: .medium))
-                            .lineLimit(1)
-                            .foregroundStyle(Color(white: 0.25))
-                            .frame(maxWidth: .infinity)
-                            .frame(height: rowHeight - 4)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(selected ? Color(red: 0.85, green: 0.91, blue: 1) : Color(white: 0.93))
-                                    .overlay(RoundedRectangle(cornerRadius: 6)
-                                        .stroke(selected ? Color(red: 0, green: 0.44, blue: 0.89) : .clear, lineWidth: 1.4)))
-                            .onTapGesture { vm.select(layer.id) }
-                    }
-                }
-                .frame(width: trackWidth, height: rowHeight)
-            }
-        }
+                    .onEnded { _ in fadeDragLayerID = nil })
     }
 
     // MARK: 添加行 / 行标签

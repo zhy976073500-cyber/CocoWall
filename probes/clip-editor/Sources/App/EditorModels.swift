@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics
 
-// MARK: - 剪辑式制作器数据模型（探针 v2）
+// MARK: - 剪辑式制作器数据模型（探针 v3）
 //
 // 定案口径（2026-11-02 Sage 拍板，见工程 README）：
 //  · 部分（状态）3 个：开屏 Locked / 主屏 Unlock / 熄屏 Sleep。
@@ -25,6 +25,14 @@ import CoreGraphics
 //  · 每图层最多 2 个模板：动作槽 + 缩放旋转槽，各带幅度/速度。
 //  · 时间轴上每图层一条 clip，拖两头 = 淡入/淡出帧数（图层在整个
 //    循环里一直在，不是生死）。
+//  · 时间线 v3 改四段式（2026-11-04 Sage 拍板）：一条线从左到右
+//    开屏动画｜开屏｜解锁动画｜主屏。动画段内全图层可打关键帧
+//    （位置/缩放/旋转/透明度/层级），关键帧只定义运动轨迹：编辑
+//    段长随便拉，导出时长按过渡速度重算——开屏轨迹写成
+//    CAKeyframeAnimation（duration = 开屏入场帧数），解锁段中间
+//    关键帧本轮只预览（端点靠状态值 + 过渡保证）。动画段终点与
+//    相邻循环段摆位共用同一份数据（开屏动画末帧 = 开屏摆位；
+//    解锁动画首帧 = 开屏摆位、末帧 = 主屏摆位）。
 //
 // 坐标：编辑器画布 390×844pt，原点左上、y 向下；图层 position 均为
 // 「中心点」。导出 CAML 时统一换算为左下原点 (x, 844 − y)
@@ -61,6 +69,41 @@ enum PartTab: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: 四段式时间线（v3，Sage 2026-11-04 拍板的心智模型）
+//
+// 一条线从左到右四段：开屏动画 → 开屏（循环）→ 解锁动画 → 主屏
+// （循环）。动画不是设置项，而是时间线上实实在在的段：段内给图层
+// 打关键帧排运动轨迹，段的编辑长度只是排舞用的尺子（可拉长），
+// 导出时实际时长按过渡速度（开屏入场/解锁过渡的帧数）重算。
+enum TimelineSegment: String, CaseIterable, Identifiable {
+    case entrance    // 开屏动画（关键帧轨迹段）
+    case lockedLoop  // 开屏（循环段）
+    case unlockAnim  // 解锁动画（关键帧轨迹段）
+    case unlockLoop  // 主屏（循环段）
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .entrance: return "开屏动画"
+        case .lockedLoop: return "开屏"
+        case .unlockAnim: return "解锁动画"
+        case .unlockLoop: return "主屏"
+        }
+    }
+
+    /// 是否为关键帧动画段（循环段走状态摆位 + 模板）。
+    var isAnimation: Bool { self == .entrance || self == .unlockAnim }
+
+    /// 段对应的画布部分（解锁动画段横跨两部分，归开屏侧管理页签）。
+    var tab: PartTab {
+        switch self {
+        case .entrance, .lockedLoop, .unlockAnim: return .locked
+        case .unlockLoop: return .unlock
+        }
+    }
+}
+
 // MARK: 单状态摆位（位置/大小/透明度归状态管）
 
 struct LayerLayout: Equatable {
@@ -72,6 +115,82 @@ struct LayerLayout: Equatable {
 
     static func centered(size: CGSize) -> LayerLayout {
         LayerLayout(center: CGPoint(x: 195, y: 422), size: size, opacity: 1)
+    }
+}
+
+// MARK: 关键帧姿态（v3：动画段内的整套属性）
+
+/// 关键帧记下的整套属性：位置/大小/透明度归这里（与状态值同族），
+/// 旋转与层级是轨迹专属（状态值里没有这两项）。rotation 用 CAML
+/// 语义（transform.rotation.z，弧度），与 MotionMath 同约定：
+/// 画布渲染时取负换成屏幕方向。
+struct LayerPose: Equatable {
+    var center: CGPoint
+    var size: CGSize
+    var opacity: Double = 1
+    var rotation: Double = 0
+    var zIndex: Int = 0
+
+    init(center: CGPoint, size: CGSize, opacity: Double = 1,
+         rotation: Double = 0, zIndex: Int = 0) {
+        self.center = center
+        self.size = size
+        self.opacity = opacity
+        self.rotation = rotation
+        self.zIndex = zIndex
+    }
+
+    init(layout: LayerLayout) {
+        self.init(center: layout.center, size: layout.size, opacity: layout.opacity)
+    }
+
+    var asLayout: LayerLayout {
+        LayerLayout(center: center, size: size, opacity: opacity)
+    }
+}
+
+/// 一条关键帧：段内归一化进度（0…1）+ 一整套姿态。同一进度重复
+/// 打帧 = 覆盖。关键帧只定义运动轨迹，时长在导出时重算（见
+/// ClipExporter 的开屏轨迹导出）。
+struct LayerKeyframe: Equatable, Identifiable {
+    var id = UUID()
+    var progress: Double
+    var pose: LayerPose
+}
+
+/// 关键帧轨迹求值：帧间平滑插值（smoothstep），段外取端点帧。
+enum PoseMath {
+    static func smoothstep(_ t: Double) -> Double {
+        let x = min(max(t, 0), 1)
+        return x * x * (3 - 2 * x)
+    }
+
+    static func interpolate(_ a: LayerPose, _ b: LayerPose, t: Double) -> LayerPose {
+        LayerPose(
+            center: CGPoint(x: a.center.x + (b.center.x - a.center.x) * t,
+                            y: a.center.y + (b.center.y - a.center.y) * t),
+            size: CGSize(width: a.size.width + (b.size.width - a.size.width) * t,
+                         height: a.size.height + (b.size.height - a.size.height) * t),
+            opacity: a.opacity + (b.opacity - a.opacity) * t,
+            rotation: a.rotation + (b.rotation - a.rotation) * t,
+            zIndex: Int((Double(a.zIndex) + Double(b.zIndex - a.zIndex) * t).rounded()))
+    }
+
+    /// 在一串已按进度排序的关键帧上求值（空数组返回 nil）。
+    static func evaluate(keyframes: [LayerKeyframe], progress: Double) -> LayerPose? {
+        guard let first = keyframes.first else { return nil }
+        if progress <= first.progress { return first.pose }
+        guard let last = keyframes.last else { return nil }
+        if progress >= last.progress { return last.pose }
+        for i in 0..<(keyframes.count - 1) {
+            let a = keyframes[i], b = keyframes[i + 1]
+            if progress >= a.progress && progress <= b.progress {
+                let span = b.progress - a.progress
+                let local = span > 1e-9 ? (progress - a.progress) / span : 0
+                return interpolate(a.pose, b.pose, t: smoothstep(local))
+            }
+        }
+        return last.pose
     }
 }
 
@@ -149,6 +268,14 @@ struct EditorLayer: Identifiable, Equatable {
     var actionMotion: MotionSetting?
     /// 缩放旋转槽（呼吸缩放/旋转摇摆）。
     var transformMotion: MotionSetting?
+    /// 开屏动画段的关键帧轨迹（按 progress 升序）。非空时最后一帧
+    /// 的姿态即开屏（Locked）状态值（同一份数据，编辑器与导出共用
+    /// 此约定，见 EditorViewModel 的同步与 ClipExporter）。
+    var entranceKeyframes: [LayerKeyframe] = []
+    /// 解锁动画段的中间关键帧（progress 严格在 0…1 之间）：起点 =
+    /// 开屏摆位、终点 = 主屏摆位（由两套 layout 充当，不另存）。
+    /// 本轮仅编辑器预览生效，不写入导出包（如实标注，见 README）。
+    var unlockKeyframes: [LayerKeyframe] = []
 
     func layout(for tab: PartTab) -> LayerLayout {
         tab == .locked ? lockedLayout : unlockLayout
@@ -361,6 +488,12 @@ struct ClipProject: Equatable {
     var transitionKind: TransitionKind = .fade
     /// 开屏入场设置（帧数/弹簧独立）。
     var entrance = EntranceSetting()
+    /// 开屏动画段的编辑长度（秒，1…8，默认 3）：只是排关键帧的
+    /// 尺子，导出时长按开屏入场帧数重算，不按这个长度。
+    var entranceRulerSeconds: Double = 3
+    /// 解锁动画段的编辑长度（秒，1…8，默认 2）：同上，导出时长
+    /// 按解锁过渡帧数走。
+    var unlockRulerSeconds: Double = 2
 
     /// 开屏背景（Locked 用）。只设一张时另一侧共用（见 ViewModel 的
     /// background 共用判定与 ClipExporter 的 .shared 角色）。
@@ -372,6 +505,38 @@ struct ClipProject: Equatable {
 
     var loopSeconds: Double { Double(loopFrames) / Self.fps }
     var transitionSeconds: Double { Double(transitionFrames) / Self.fps }
+
+    // MARK: 四段时间线几何（编辑秒：动画段用编辑尺长度，循环段用循环时长）
+
+    func segmentDuration(_ segment: TimelineSegment) -> Double {
+        switch segment {
+        case .entrance: return entranceRulerSeconds
+        case .lockedLoop, .unlockLoop: return loopSeconds
+        case .unlockAnim: return unlockRulerSeconds
+        }
+    }
+
+    func segmentStart(_ segment: TimelineSegment) -> Double {
+        var start = 0.0
+        for s in TimelineSegment.allCases {
+            if s == segment { return start }
+            start += segmentDuration(s)
+        }
+        return start
+    }
+
+    var timelineTotalSeconds: Double {
+        TimelineSegment.allCases.reduce(0) { $0 + segmentDuration($1) }
+    }
+
+    func segment(at seconds: Double) -> TimelineSegment {
+        var rest = max(seconds, 0)
+        for s in TimelineSegment.allCases {
+            if rest < segmentDuration(s) { return s }
+            rest -= segmentDuration(s)
+        }
+        return .unlockLoop
+    }
 
     /// 是否已设任意一张背景。
     var hasAnyBackground: Bool { backgroundLocked != nil || backgroundUnlock != nil }

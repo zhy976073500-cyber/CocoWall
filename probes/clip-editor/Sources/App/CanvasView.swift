@@ -7,8 +7,9 @@ import UIKit
 // 所有子视图位置/尺寸手动乘 scale，拖动手势的 translation 是
 // 屏幕点，除以 scale 还原成画布点写回模型（不使用 scaleEffect，
 // 避免手势坐标空间随版本变化）。
-// 图层每帧按 MotionMath 求 transform 偏移播放；过渡预览时摆位在
-// 开屏/主屏之间按弹簧进度插值（EditorViewModel.effectiveLayout）。
+// 循环段：图层按状态摆位 + MotionMath 模板偏移播放；动画段：
+// 图层按关键帧轨迹姿态渲染（EditorViewModel.canvasPose），拖动
+// 改操作姿态、打帧后成为关键帧。
 // 锁屏系统占位（时间/日期同行同基线 + 时钟下三组件行）画在最上层、
 // 不可交互——沿用 Sage 的锁屏规格：日期与时间同行同基线、
 // 左电量条 82%、中圆环 51%、右 Q 版人物、冰蓝白半透明。
@@ -22,6 +23,7 @@ struct CanvasView: View {
 
     @State private var dragLayerID: UUID?
     @State private var dragStartCenter: CGPoint = .zero
+    @State private var dragStartPose: LayerPose?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -36,8 +38,8 @@ struct CanvasView: View {
                     .frame(width: displayWidth, height: displayHeight)
             }
 
-            // 壁纸图层（底→顶）
-            ForEach(vm.project.allLayersBottomToTop) { layer in
+            // 壁纸图层（底→顶；动画段按姿态层级排序）
+            ForEach(vm.canvasLayersOrdered()) { layer in
                 layerView(layer)
             }
 
@@ -57,22 +59,24 @@ struct CanvasView: View {
 
     @ViewBuilder
     private func layerView(_ layer: EditorLayer) -> some View {
-        let layout = vm.effectiveLayout(of: layer)
+        let pose = vm.canvasPose(of: layer)
         let offset = vm.motionOffset(of: layer)
         let s = scale
-        // CAML translation.y 正 = 上 → 屏幕 y 取负；rotation.z 同理取负。
-        let cx = (layout.center.x + CGFloat(offset.translationX)) * s
-        let cy = (layout.center.y - CGFloat(offset.translationY)) * s
-        let w = layout.size.width * CGFloat(offset.scale) * s
-        let h = layout.size.height * CGFloat(offset.scale) * s
+        // CAML translation.y 正 = 上 → 屏幕 y 取负；rotation.z 同理取负
+        // （姿态旋转与模板旋转同为 CAML 语义，相加后一起取负）。
+        let cx = (pose.center.x + CGFloat(offset.translationX)) * s
+        let cy = (pose.center.y - CGFloat(offset.translationY)) * s
+        let w = pose.size.width * CGFloat(offset.scale) * s
+        let h = pose.size.height * CGFloat(offset.scale) * s
         let selected = vm.selectedLayerID == layer.id
-        // 两张背景都设时，另一部分的那张在本页签不可见，禁手势防误拖。
-        let hidden = vm.backgroundHiddenInCurrentTab(layer)
+        // 双背景时另一部分的那张在当前上下文不可见，禁手势防误拖。
+        let hidden = vm.isLayerHiddenInCurrentContext(layer)
         let editTab = vm.editingTab(for: layer)
+        let inAnimation = vm.segment.isAnimation
 
         layerContent(layer)
             .frame(width: max(w, 1), height: max(h, 1))
-            .rotationEffect(.radians(-offset.rotationZ))
+            .rotationEffect(.radians(-(offset.rotationZ + pose.rotation)))
             .opacity(vm.effectiveOpacity(of: layer))
             .overlay(
                 RoundedRectangle(cornerRadius: 4)
@@ -87,21 +91,38 @@ struct CanvasView: View {
                     .onChanged { value in
                         if dragLayerID != layer.id {
                             dragLayerID = layer.id
-                            dragStartCenter = vm.project.layer(id: layer.id)?
-                                .layout(for: editTab).center ?? layout.center
                             vm.select(layer.id)
+                            if inAnimation {
+                                dragStartPose = vm.workingPose(for: layer)
+                            } else {
+                                dragStartCenter = vm.project.layer(id: layer.id)?
+                                    .layout(for: editTab).center ?? pose.center
+                            }
                         }
                         let dx = value.translation.width / s
                         let dy = value.translation.height / s
-                        vm.updateSelected { l in
-                            var target = l.layout(for: editTab)
-                            target.center = CGPoint(
-                                x: min(max(dragStartCenter.x + dx, -100), 490),
-                                y: min(max(dragStartCenter.y + dy, -100), 944))
-                            l.setLayout(target, for: editTab)
+                        if inAnimation {
+                            // 动画段：拖动改操作姿态（打帧后才成为关键帧）
+                            let start = dragStartPose ?? pose
+                            vm.updateWorkingPose(for: layer) { p in
+                                p.center = CGPoint(
+                                    x: min(max(start.center.x + dx, -100), 490),
+                                    y: min(max(start.center.y + dy, -100), 944))
+                            }
+                        } else {
+                            vm.updateSelected { l in
+                                var target = l.layout(for: editTab)
+                                target.center = CGPoint(
+                                    x: min(max(dragStartCenter.x + dx, -100), 490),
+                                    y: min(max(dragStartCenter.y + dy, -100), 944))
+                                l.setLayout(target, for: editTab)
+                            }
                         }
                     }
-                    .onEnded { _ in dragLayerID = nil }
+                    .onEnded { _ in
+                        dragLayerID = nil
+                        dragStartPose = nil
+                    }
             )
     }
 

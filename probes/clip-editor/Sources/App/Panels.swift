@@ -1,13 +1,15 @@
 import SwiftUI
 
-// MARK: - 选中图层面板（模板 chips + 滑杆）
+// MARK: - 选中图层面板（模板 chips + 滑杆 / 动画段关键帧区）
 //
-// 选中图层后出现在时间轴与工具坞之间：
-//  · 动作槽 chips：无 / 漂浮 / 摇摆 / 慢放大平移（仅背景可选）
-//  · 缩放旋转槽 chips：无 / 呼吸缩放 / 旋转摇摆
-//  · 每激活一个槽，出它自己的幅度/速度滑杆
-//  · 通用：当前部分的不透明度、尺寸（等比）、淡入/淡出帧数、
-//    把摆位复制到另一部分、删除
+// 选中图层后出现在时间轴与工具坞之间，按当前时间线段分工：
+//  · 循环段：动作槽 chips（无 / 漂浮 / 摇摆 / 慢放大平移，仅背景
+//    可选慢放大平移）、缩放旋转槽 chips（无 / 呼吸缩放 / 旋转
+//    摇摆），每槽幅度/速度滑杆；通用不透明度、尺寸、淡入/淡出
+//    帧数、摆位复制、删除。
+//  · 动画段（开屏动画 / 解锁动画）：关键帧区——缩放/旋转/透明度
+//    滑杆 + 前移/后移（层级）先改操作姿态，点「打关键帧」记下
+//    当前时刻的整套属性；已选中菱形或播放头压着帧时可删除。
 struct SelectionPanelView: View {
     @ObservedObject var vm: EditorViewModel
 
@@ -24,8 +26,10 @@ struct SelectionPanelView: View {
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Capsule().fill(Color(white: 0.55)))
                     Spacer()
-                    // 两张背景都设时背景图层只有自己那套摆位，复制无意义，隐藏。
-                    if !(layer.group == .background && vm.project.hasBothBackgrounds) {
+                    // 两张背景都设时背景图层只有自己那套摆位，复制无意义，隐藏；
+                    // 动画段里摆位由关键帧管，同样隐藏。
+                    if !vm.segment.isAnimation
+                        && !(layer.group == .background && vm.project.hasBothBackgrounds) {
                         Button {
                             vm.updateSelected { l in
                                 let other: PartTab = vm.currentTab == .locked ? .unlock : .locked
@@ -46,7 +50,9 @@ struct SelectionPanelView: View {
                     }
                 }
 
-                if layer.isSweep {
+                if vm.segment.isAnimation {
+                    keyframeSection(layer: layer)
+                } else if layer.isSweep {
                     Text("扫光自带「斜扫」动画（每圈扫过一次），只调摆位与透明度。")
                         .font(.system(size: 11.5))
                         .foregroundStyle(.gray)
@@ -71,15 +77,17 @@ struct SelectionPanelView: View {
                     }
                 }
 
-                HStack(spacing: 14) {
-                    sliderBlock(title: "透明度", value: opacityBinding(layer: layer), range: 0...1)
-                    sliderBlock(title: "大小", value: sizeBinding(layer: layer), range: 20...800)
-                }
-                HStack(spacing: 18) {
-                    Stepper("淡入 \(layer.fadeInFrames) 帧", value: fadeBinding(layer: layer, isIn: true), in: 0...120, step: 6)
-                        .font(.system(size: 12))
-                    Stepper("淡出 \(layer.fadeOutFrames) 帧", value: fadeBinding(layer: layer, isIn: false), in: 0...120, step: 6)
-                        .font(.system(size: 12))
+                if !vm.segment.isAnimation {
+                    HStack(spacing: 14) {
+                        sliderBlock(title: "透明度", value: opacityBinding(layer: layer), range: 0...1)
+                        sliderBlock(title: "大小", value: sizeBinding(layer: layer), range: 20...800)
+                    }
+                    HStack(spacing: 18) {
+                        Stepper("淡入 \(layer.fadeInFrames) 帧", value: fadeBinding(layer: layer, isIn: true), in: 0...120, step: 6)
+                            .font(.system(size: 12))
+                        Stepper("淡出 \(layer.fadeOutFrames) 帧", value: fadeBinding(layer: layer, isIn: false), in: 0...120, step: 6)
+                            .font(.system(size: 12))
+                    }
                 }
             }
             .padding(.horizontal, 12)
@@ -196,6 +204,142 @@ struct SelectionPanelView: View {
                 }
             })
     }
+
+    // MARK: 关键帧区（动画段专用）
+
+    @ViewBuilder
+    private func keyframeSection(layer: EditorLayer) -> some View {
+        let pose = vm.workingPose(for: layer)
+        let hasDeletable = (vm.selectedKeyframe?.layerID == layer.id
+            && vm.selectedKeyframe?.segment == vm.segment)
+            || vm.keyframeNearPlayhead(of: layer) != nil
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(systemName: "diamond.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color(red: 0.85, green: 0.5, blue: 0.1))
+                Text("\(vm.segment.displayName) · 关键帧")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("进度 \(Int((vm.segmentProgress * 100).rounded()))%")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.gray)
+            }
+            Text("在画布上拖位置、用滑杆调好，点「打关键帧」记下这一刻。关键帧只定轨迹，导出时长按过渡速度重算。")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.gray)
+            HStack(spacing: 14) {
+                sliderBlock(title: "缩放", value: poseScaleBinding(), range: 0.2...3)
+                sliderBlock(title: "旋转", value: poseRotationBinding(), range: -180...180)
+            }
+            HStack(spacing: 14) {
+                sliderBlock(title: "透明度", value: poseOpacityBinding(), range: 0...1)
+                HStack(spacing: 6) {
+                    Text("层级").font(.system(size: 11.5)).foregroundStyle(.gray)
+                    Button("后移") {
+                        if let current = vm.selectedLayer {
+                            vm.updateWorkingPose(for: current) { $0.zIndex -= 1 }
+                        }
+                    }
+                    .font(.system(size: 12))
+                    Text("\(pose.zIndex)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(minWidth: 18)
+                    Button("前移") {
+                        if let current = vm.selectedLayer {
+                            vm.updateWorkingPose(for: current) { $0.zIndex += 1 }
+                        }
+                    }
+                    .font(.system(size: 12))
+                }
+            }
+            HStack(spacing: 10) {
+                Button {
+                    vm.stampKeyframe()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "diamond.fill").font(.system(size: 10))
+                        Text("打关键帧").font(.system(size: 13, weight: .bold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 10)
+                        .fill(Color(red: 0, green: 0.44, blue: 0.89)))
+                }
+                if hasDeletable {
+                    Button(role: .destructive) {
+                        if vm.selectedKeyframe?.layerID == layer.id
+                            && vm.selectedKeyframe?.segment == vm.segment {
+                            vm.deleteSelectedKeyframe()
+                        } else {
+                            vm.deleteKeyframeNearPlayhead()
+                        }
+                    } label: {
+                        Text("删除关键帧").font(.system(size: 12.5))
+                    }
+                }
+                Spacer()
+                Text("本段 \(keyframeCount(of: layer)) 帧")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.gray)
+            }
+        }
+    }
+
+    private func keyframeCount(of layer: EditorLayer) -> Int {
+        vm.segment == .entrance ? layer.entranceKeyframes.count : layer.unlockKeyframes.count
+    }
+
+    /// 缩放倍率的基准尺寸：该图层开屏侧摆位（开屏动画段末帧与开屏
+    /// 摆位同步，倍率以它为 1.0 的参照，探针口径）。
+    private func poseBaseSize(for layer: EditorLayer) -> CGSize {
+        vm.displayLayout(of: layer, for: .locked).size
+    }
+
+    private func poseScaleBinding() -> Binding<Double> {
+        Binding(
+            get: {
+                guard let current = vm.selectedLayer else { return 1 }
+                let base = poseBaseSize(for: current)
+                return Double(vm.workingPose(for: current).size.width) / max(Double(base.width), 1)
+            },
+            set: { mult in
+                guard let current = vm.selectedLayer else { return }
+                let base = poseBaseSize(for: current)
+                vm.updateWorkingPose(for: current) { p in
+                    p.size = CGSize(width: base.width * CGFloat(mult),
+                                    height: base.height * CGFloat(mult))
+                }
+            })
+    }
+
+    /// 旋转滑杆：度，+ = 屏幕顺时针（内部存 CAML 语义弧度，取负换算）。
+    private func poseRotationBinding() -> Binding<Double> {
+        Binding(
+            get: {
+                guard let current = vm.selectedLayer else { return 0 }
+                return -vm.workingPose(for: current).rotation * 180 / .pi
+            },
+            set: { degrees in
+                guard let current = vm.selectedLayer else { return }
+                vm.updateWorkingPose(for: current) { p in
+                    p.rotation = -degrees * .pi / 180
+                }
+            })
+    }
+
+    private func poseOpacityBinding() -> Binding<Double> {
+        Binding(
+            get: {
+                guard let current = vm.selectedLayer else { return 1 }
+                return vm.workingPose(for: current).opacity
+            },
+            set: { newValue in
+                guard let current = vm.selectedLayer else { return }
+                vm.updateWorkingPose(for: current) { p in p.opacity = newValue }
+            })
+    }
 }
 
 // MARK: - 图层列表页（选中/删除/改名/调序，不限数量）
@@ -299,6 +443,16 @@ struct EntranceFields: View {
     @ObservedObject var vm: EditorViewModel
 
     var body: some View {
+        HStack {
+            Text("动画段编辑长度")
+            Spacer()
+            Text("\(String(format: "%.1f", vm.project.entranceRulerSeconds)) 秒")
+                .foregroundStyle(.gray)
+        }
+        Slider(value: $vm.project.entranceRulerSeconds, in: 1...8, step: 0.5)
+        Text("时间线上「开屏动画」段的长度，只是排关键帧用的尺子；导出时动画时长按下边的入场帧数重算，不按这个长度。")
+            .font(.system(size: 12.5))
+            .foregroundStyle(.gray)
         Picker("入场类型", selection: $vm.project.entrance.kind) {
             ForEach(EntranceKind.allCases) { kind in
                 Text(kind.displayName).tag(kind)
@@ -339,6 +493,16 @@ struct UnlockTransitionFields: View {
     @ObservedObject var vm: EditorViewModel
 
     var body: some View {
+        HStack {
+            Text("动画段编辑长度")
+            Spacer()
+            Text("\(String(format: "%.1f", vm.project.unlockRulerSeconds)) 秒")
+                .foregroundStyle(.gray)
+        }
+        Slider(value: $vm.project.unlockRulerSeconds, in: 1...8, step: 0.5)
+        Text("时间线上「解锁动画」段的长度，只是排关键帧用的尺子；导出时过渡时长按下边的过渡帧数走。注意：解锁动画段里打的中间关键帧目前只在编辑器预览生效，导出只保证起点（开屏摆位）与终点（主屏摆位）+ 过渡。")
+            .font(.system(size: 12.5))
+            .foregroundStyle(.gray)
         Picker("过渡类型", selection: $vm.project.transitionKind) {
             ForEach(TransitionKind.allCases) { kind in
                 Text(kind.displayName).tag(kind)
@@ -453,7 +617,7 @@ struct StateSettingsView: View {
                     UnlockTransitionFields(vm: vm)
                 }
                 Section {
-                    Text("熄屏部分不用做：导出时自动生成（照抄开屏摆位，整体透明度 ×0.5 压暗）。淡入/淡出（clip 两头）目前只在编辑器预览里生效，暂不写进导出包。")
+                    Text("熄屏部分不用做：导出时自动生成（照抄开屏摆位，整体透明度 ×0.5 压暗）。开屏动画段的关键帧轨迹会写进导出包（时长按开屏入场帧数重算）；解锁动画的中间关键帧暂只在预览生效；淡入/淡出（clip 两头）也只在预览生效。")
                         .font(.system(size: 12.5))
                         .foregroundStyle(.gray)
                 }

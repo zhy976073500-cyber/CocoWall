@@ -36,6 +36,17 @@ import CoreGraphics
 //    只写 transform.*（分工不抢状态属性）。模板一圈 = 循环时长：
 //    duration 写循环秒数、speed 写 2×速度，单程 = 循环/(2×速度)，
 //    autoreverses=1 首尾回环。
+//  · 开屏关键帧轨迹（v3）：关键帧只定轨迹、时长重算——图层在
+//    「开屏动画」段打的帧按段编辑长度归一化为进度 0…1（keyTimes），
+//    导出为 CAKeyframeAnimation（position 点列 / transform.scale
+//    （相对状态尺寸）/ transform.rotation.z / opacity，只写有变化
+//    的属性），duration = 开屏入场帧数/60，repeatCount=1、
+//    fillMode=forwards 不回弹。状态值 Locked 取轨迹末帧（编辑器
+//    与导出共用同一约定，见 syncedLockedLayout）；层级不做动画，
+//    末帧 zIndex 落到 CALayer 的 zPosition 属性。
+//  · 解锁关键帧（v3）：中间帧本轮不写入包——系统状态切换由弹簧
+//    驱动、无法强制走中间点；只保证端点（Locked/Unlock 状态值）
+//    + v2 过渡。如实标注，见 README。
 //  · 熄屏 Sleep：不单独编辑，导出时 = 开屏摆位、透明度 ×0.5。
 //  · 淡入/淡出帧数（clip 两头）v1 只在编辑器预览生效，不写入包：
 //    opacity 已被状态/过渡占用，再叠一条 opacity 循环动画会与
@@ -215,10 +226,31 @@ enum ClipExporter {
         CGPoint(x: p.x, y: ClipProject.canvasSize.height - p.y)
     }
 
+    /// 开屏摆位的导出取值：有开屏关键帧时以轨迹末帧为准（与
+    /// 编辑器的双向同步同约定，导出侧再兜底一次，保证状态值 =
+    /// 轨迹终点恒成立）。
+    private static func syncedLockedLayout(of layer: EditorLayer) -> LayerLayout {
+        guard let last = layer.entranceKeyframes.max(by: { $0.progress < $1.progress }) else {
+            return layer.lockedLayout
+        }
+        return last.pose.asLayout
+    }
+
+    /// 层级端点值：开屏轨迹末帧优先，其次解锁轨迹末个中间帧。
+    private static func exportZIndex(of layer: EditorLayer) -> Int {
+        if let last = layer.entranceKeyframes.max(by: { $0.progress < $1.progress }) {
+            return last.pose.zIndex
+        }
+        if let last = layer.unlockKeyframes.max(by: { $0.progress < $1.progress }) {
+            return last.pose.zIndex
+        }
+        return 0
+    }
+
     /// 图层写进 CALayer 标签的模型摆位：取它「主可见」状态那套
     /// （主屏背景取主屏摆位，其余取开屏摆位）。
     private static func modelLayout(of item: ResolvedLayer) -> LayerLayout {
-        item.bgRole == .unlockSide ? item.layer.unlockLayout : item.layer.lockedLayout
+        item.bgRole == .unlockSide ? item.layer.unlockLayout : syncedLockedLayout(of: item.layer)
     }
 
     private static func caml(rootID: String, layers: [ResolvedLayer], project: ClipProject) -> String {
@@ -227,7 +259,7 @@ enum ClipExporter {
             let layout = modelLayout(of: item)
             let model = camlPoint(layout.center)
             contentLayers += """
-                      <CALayer id="\(item.camlID)" name="\(item.assetName)" bounds="0 0 \(fmt(Double(layout.size.width))) \(fmt(Double(layout.size.height)))" position="\(fmt(Double(model.x))) \(fmt(Double(model.y)))" zPosition="0" geometryFlipped="0" masksToBounds="0" opacity="\(fmt(layout.opacity))" transform.rotation.z="0" transform.rotation.x="0" transform.rotation.y="0" transform="rotate(0deg) rotate(0deg, 0, 1, 0) rotate(0deg, 1, 0, 0)" cornerRadius="0" allowsEdgeAntialiasing="1" allowsGroupOpacity="1" contentsFormat="RGBA8" cornerCurve="circular">
+                      <CALayer id="\(item.camlID)" name="\(item.assetName)" bounds="0 0 \(fmt(Double(layout.size.width))) \(fmt(Double(layout.size.height)))" position="\(fmt(Double(model.x))) \(fmt(Double(model.y)))" zPosition="\(exportZIndex(of: item.layer))" geometryFlipped="0" masksToBounds="0" opacity="\(fmt(layout.opacity))" transform.rotation.z="0" transform.rotation.x="0" transform.rotation.y="0" transform="rotate(0deg) rotate(0deg, 0, 1, 0) rotate(0deg, 1, 0, 0)" cornerRadius="0" allowsEdgeAntialiasing="1" allowsGroupOpacity="1" contentsFormat="RGBA8" cornerCurve="circular">
                         <contents>
                           <CGImage src="assets/\(item.assetName)"/>
                         </contents>\(animationsXML(for: item.layer, project: project))
@@ -252,14 +284,22 @@ enum ClipExporter {
         """
     }
 
-    // MARK: 模板动画（只写 transform.*）
+    // MARK: 模板动画（只写 transform.*）与开屏关键帧轨迹
 
     private struct KeyframeAnimation {
         var keyPath: String
-        var values: [Double]
+        /// 标量 values（real）。与 pointValues 二选一。
+        var values: [Double] = []
+        /// 点列 values（position 用，CAML 坐标）。
+        var pointValues: [CGPoint]? = nil
         var duration: Double
         var speed: Double
         var autoreverses: Bool
+        /// 归一化进度（开屏轨迹用）；nil = 等距（模板两点动画）。
+        var keyTimes: [Double]? = nil
+        var repeatCount: String = "inf"
+        var repeatDuration: String? = "inf"
+        var fillMode: String? = nil
     }
 
     private static func keyframeAnimations(for layer: EditorLayer, project: ClipProject) -> [KeyframeAnimation] {
@@ -312,19 +352,105 @@ enum ClipExporter {
         return result
     }
 
+    /// 开屏关键帧轨迹 → CAKeyframeAnimation（v3 核心语义：只带
+    /// 轨迹、时长重算）。关键帧时刻按段编辑长度归一化后即其
+    /// progress 本身（编辑时就按进度存的），keyTimes 直接取
+    /// progress；duration = 开屏入场帧数/60。只写有变化的属性：
+    /// position（点列）、transform.scale（姿态宽 / 状态宽，状态
+    /// 尺寸 = 末帧尺寸，故末帧恒为 1）、transform.rotation.z、
+    /// opacity（恒定且等于状态值时不写）。少于 2 帧不成轨迹，
+    /// 不写（状态值已是那一帧）。
+    private static func entranceAnimations(for layer: EditorLayer, project: ClipProject) -> [KeyframeAnimation] {
+        let kfs = layer.entranceKeyframes.sorted { $0.progress < $1.progress }
+        guard kfs.count >= 2, let last = kfs.last else { return [] }
+        let duration = project.entrance.seconds
+        let keyTimes = kfs.map { $0.progress }
+        var result: [KeyframeAnimation] = []
+
+        let centers = kfs.map { $0.pose.center }
+        if centers.contains(where: { $0 != centers[0] }) {
+            result.append(KeyframeAnimation(
+                keyPath: "position", values: [],
+                pointValues: kfs.map { camlPoint($0.pose.center) },
+                duration: duration, speed: 1, autoreverses: false,
+                keyTimes: keyTimes, repeatCount: "1", repeatDuration: nil,
+                fillMode: "forwards"))
+        }
+        let stateWidth = max(Double(last.pose.size.width), 1)
+        let scales = kfs.map { Double($0.pose.size.width) / stateWidth }
+        if let lo = scales.min(), let hi = scales.max(), hi - lo > 0.001 {
+            result.append(KeyframeAnimation(
+                keyPath: "transform.scale", values: scales,
+                duration: duration, speed: 1, autoreverses: false,
+                keyTimes: keyTimes, repeatCount: "1", repeatDuration: nil,
+                fillMode: "forwards"))
+        }
+        let rotations = kfs.map { $0.pose.rotation }
+        if rotations.contains(where: { abs($0) > 0.0001 })
+            || (rotations.max() ?? 0) - (rotations.min() ?? 0) > 0.001 {
+            result.append(KeyframeAnimation(
+                keyPath: "transform.rotation.z", values: rotations,
+                duration: duration, speed: 1, autoreverses: false,
+                keyTimes: keyTimes, repeatCount: "1", repeatDuration: nil,
+                fillMode: "forwards"))
+        }
+        let opacities = kfs.map { $0.pose.opacity }
+        if (opacities.max() ?? 0) - (opacities.min() ?? 0) > 0.001 {
+            result.append(KeyframeAnimation(
+                keyPath: "opacity", values: opacities,
+                duration: duration, speed: 1, autoreverses: false,
+                keyTimes: keyTimes, repeatCount: "1", repeatDuration: nil,
+                fillMode: "forwards"))
+        }
+        return result
+    }
+
     private static func animationsXML(for layer: EditorLayer, project: ClipProject) -> String {
+        // 模板在前、开屏轨迹在后（同 keyPath 时后写的轨迹优先表达
+        // 入场，两者在真机的合成行为未验，见构建报告风险项）。
         let anims = keyframeAnimations(for: layer, project: project)
+            + entranceAnimations(for: layer, project: project)
         guard !anims.isEmpty else { return "" }
         var body = ""
         for (i, anim) in anims.enumerated() {
-            let values = anim.values
-                .map { "                  <real value=\"\(fmt($0))\"/>" }
-                .joined(separator: "\n")
+            var attrs = "key=\"animation-\(i)\" type=\"CAKeyframeAnimation\" keyPath=\"\(anim.keyPath)\""
+            attrs += " autoreverses=\"\(anim.autoreverses ? 1 : 0)\" beginTime=\"1e-100\""
+            attrs += " duration=\"\(fmt(anim.duration))\" speed=\"\(fmt(anim.speed))\""
+            attrs += " removedOnCompletion=\"0\" repeatCount=\"\(anim.repeatCount)\""
+            if let repeatDuration = anim.repeatDuration {
+                attrs += " repeatDuration=\"\(repeatDuration)\""
+            }
+            if let fillMode = anim.fillMode {
+                attrs += " fillMode=\"\(fillMode)\""
+            }
+            attrs += " calculationMode=\"linear\""
+            let values: String
+            if let points = anim.pointValues {
+                values = points
+                    .map { "                  <point value=\"\(fmt(Double($0.x))) \(fmt(Double($0.y)))\"/>" }
+                    .joined(separator: "\n")
+            } else {
+                values = anim.values
+                    .map { "                  <real value=\"\(fmt($0))\"/>" }
+                    .joined(separator: "\n")
+            }
+            var keyTimesXML = ""
+            if let keyTimes = anim.keyTimes {
+                let items = keyTimes
+                    .map { "                  <real value=\"\(fmt($0))\"/>" }
+                    .joined(separator: "\n")
+                keyTimesXML = """
+
+                                        <keyTimes>
+                            \(items)
+                                        </keyTimes>
+                        """
+            }
             body += """
-                      <animation key="animation-\(i)" type="CAKeyframeAnimation" keyPath="\(anim.keyPath)" autoreverses="\(anim.autoreverses ? 1 : 0)" beginTime="1e-100" duration="\(fmt(anim.duration))" speed="\(fmt(anim.speed))" removedOnCompletion="0" repeatCount="inf" repeatDuration="inf" calculationMode="linear">
+                      <animation \(attrs)>
                         <values>
             \(values)
-                        </values>
+                        </values>\(keyTimesXML)
                       </animation>
 
             """
@@ -344,19 +470,22 @@ enum ClipExporter {
     /// ×0.5；单背景共用与浮动/前景走老行为（Sleep = 开屏 ×0.5）。
     private static func stateLayout(of item: ResolvedLayer, state: String) -> LayerLayout {
         let layer = item.layer
+        // 开屏侧一律走 syncedLockedLayout：有开屏关键帧时 Locked /
+        // Sleep 取轨迹末帧（终点 = 状态值的导出兜底）。
+        let locked = syncedLockedLayout(of: layer)
         switch item.bgRole {
         case .lockedSide:
             switch state {
             case "Unlock":
-                var hidden = layer.lockedLayout
+                var hidden = locked
                 hidden.opacity = 0
                 return hidden
             case "Sleep":
-                var sleep = layer.lockedLayout
+                var sleep = locked
                 sleep.opacity *= 0.5
                 return sleep
             default:
-                return layer.lockedLayout
+                return locked
             }
         case .unlockSide:
             switch state {
@@ -372,11 +501,11 @@ enum ClipExporter {
             case "Unlock":
                 return layer.unlockLayout
             case "Sleep":
-                var sleep = layer.lockedLayout
+                var sleep = locked
                 sleep.opacity *= 0.5
                 return sleep
             default:
-                return layer.lockedLayout
+                return locked
             }
         }
     }
