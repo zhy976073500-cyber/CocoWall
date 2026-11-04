@@ -32,6 +32,11 @@ enum UsageStats {
 
     /// 远程配置生效后调用。statsUrl 为空/非法、或今日已
     /// 成功上报过 → 立即返回；否则 detached 后台发一次。
+    /// @MainActor：调用方（RemoteConfigService）本就在主
+    /// actor 上，且载荷要读它的 currentAppVersion；同步前
+    /// 段（读 UserDefaults、组包）短小无阻塞，真正的网络
+    /// POST 仍在下面的 Task.detached 里，主 actor 不等它。
+    @MainActor
     static func reportIfNeeded(statsUrl: String) {
         let trimmed = statsUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let url = URL(string: trimmed) else { return }
