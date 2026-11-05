@@ -126,12 +126,11 @@ enum LoopbackPhase {
     case unknown
 }
 
-/// 壁纸页状态区回环按钮与「回环连接」状态行的呈现结果。
+/// 配对页回环按钮与状态行的呈现结果（run #169 起：回环入口
+/// 已从壁纸页移出，统一在配对页；壁纸页只留状态胶囊显示）。
 /// 可发现性纪律（run #127，Sage 2026-11-02 真机反馈：设置页的
-/// 内置回环开关他根本没找到）：壁纸页这一处就是唯一入口的心智
-/// 模型——按钮标题在任何状态下都必须写明「内置回环」，不许只
-/// 写含糊的「连接」二字让人分不清连的是内是外；连接状态紧贴
-/// 按钮下方一行显示（见状态区排版）。
+/// 内置回环开关他根本没找到）：按钮标题在任何状态下都必须写明
+/// 「内置回环」，不许只写含糊的「连接」二字让人分不清连的是内是外。
 struct LoopbackPresentation {
     let buttonTitle: String
     let buttonSubtitle: String
@@ -1093,6 +1092,9 @@ struct TendiesView: View {
     @State private var selectedDetailItem: TendieItem? = nil
     @State private var isNeoSpringing = false
     @State private var showImportedPage = false
+    /// run #169：设备配对瓷砖打开配对页（PairingTab 以 sheet 呈现，
+    /// 与设置页原入口同一份页面）。
+    @State private var showPairingPage = false
     /// 扇形卡长按菜单的目标项（run #130）：非 nil 时轮播
     /// 拖动冻结（run #139：拖动 onChanged/onEnded 开头
     /// 判定后忽略更新）、页面根部弹 confirmationDialog
@@ -1129,11 +1131,6 @@ struct TendiesView: View {
         case .invalid: return .invalid
         @unknown default: return .unknown
         }
-    }
-
-    private var loopbackUI: LoopbackPresentation {
-        loopbackPresentation(phase: loopbackPhase,
-                             isBusy: loopback.isBusy)
     }
 
     private var systemStatusLevel: SystemSupportLevel {
@@ -1266,6 +1263,9 @@ struct TendiesView: View {
             }
             .sheet(isPresented: $vm.showDevicePosterSheet) {
                 DevicePosterCleanupView()
+            }
+            .sheet(isPresented: $showPairingPage) {
+                PairingTab()
             }
             .onAppear {
                 vm.isNeoSpringing = false
@@ -1440,9 +1440,9 @@ struct TendiesView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // run #167：签名被挡（Code 10）时才出现兜底卡片——
-            // 与配对页同一份 LoopbackSigningBlockedCard。
-            LoopbackSigningBlockedCard(loopback: loopback)
+            // run #169：壁纸页不再放回环工具入口——兜底卡片
+            // （LoopbackSigningBlockedCard）只留配对页，回环
+            // 的连接/断开统一去配对页做。
 
             flashButton
             importTile
@@ -1451,7 +1451,7 @@ struct TendiesView: View {
 
             HStack(spacing: 10) {
                 moreWallpapersTile
-                loopbackTile
+                pairingTile
             }
 
             cleanupTile
@@ -1618,7 +1618,7 @@ struct TendiesView: View {
     /// （light #EAF3FF / dark 主蓝 13% 染底）、叠 1pt 主蓝细
     /// 边（moreTileBorder）、图标改实心主蓝圆 + 白图标。
     /// 标题/副标题文字与点击行为（打开远程配置 feishuUrl）
-    /// 不变；旁边的「内置回环」瓷砖仍走 sheetTile、不动。
+    /// 不变；旁边的「设备配对」瓷砖走通用 sheetTile（run #169）。
     private var moreWallpapersTile: some View {
         Button {
             // run #159：飞书入口改读远程配置 feishuUrl（发布
@@ -1658,34 +1658,17 @@ struct TendiesView: View {
         .buttonStyle(.plain)
     }
 
-    private var loopbackTile: some View {
-        let connected = loopbackPhase == .connected
-        let busy = !loopbackUI.buttonEnabled
-        let subtitle: String
-        let subtitleColor: Color
-        if connected {
-            subtitle = "已连接 · 点击断开"
-            subtitleColor = .green
-        } else if busy {
-            subtitle = loopbackUI.lineValue
-            subtitleColor = .orange
-        } else {
-            subtitle = "未连接 · 点击连接"
-            subtitleColor = .secondary
-        }
-        return sheetTile(icon: "globe",
-                         tint: .green,
-                         title: "内置回环",
-                         subtitle: subtitle,
-                         subtitleColor: subtitleColor,
-                         enabled: !busy) {
-            // run #127 接线沿用：点按直接启停内置隧道（共享实例），
-            // 任何状态下都不跳转外部 App。
-            // run #166：动作改经 vm.userToggleLoopback() 共用
-            // 入口（与配对页网络卡开关恒等，动作本身逐字不
-            // 变：已连接 stop、其余 start、随后刷新网络状态；
-            // 连接成功提醒的置位/触发在 VM 内统一处理）。
-            vm.userToggleLoopback()
+    /// run #169：设备配对瓷砖（取代原「内置回环」瓷砖）——
+    /// 壁纸页不再放回环工具入口；点按以 sheet 打开配对页，
+    /// 回环的连接/断开在配对页做（内置 + 外部两个按钮都在那）。
+    private var pairingTile: some View {
+        let ready = vm.hasPairingFile
+        return sheetTile(icon: "antenna.radiowaves.left.and.right",
+                         tint: flashBlue,
+                         title: "设备配对",
+                         subtitle: ready ? "已就绪 · 点按打开" : "未配对 · 点按打开",
+                         subtitleColor: ready ? .green : .secondary) {
+            showPairingPage = true
         }
     }
 

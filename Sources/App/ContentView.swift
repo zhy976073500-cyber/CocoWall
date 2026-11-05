@@ -1423,9 +1423,10 @@ struct VPNStatusRow: View {
                         .font(.subheadline.bold())
                     Text(vm.vpnUp
                          ? "RSD 隧道已就绪——刷入时将自动连接。"
-                         // run #163：外部 LocalDevVPN 入口已删，
-                         // 未连接文案只引导开启内置回环。
-                         : "运行刷入前请先开启内置回环。")
+                         // run #169：未连接文案改提两路（内置或外部），
+                         // 与下方常驻的外部按钮对应；#163 只引导内置
+                         // 的旧口径随外部入口常驻而废止。
+                         : "运行刷入前请先开启内置回环，或使用外部回环工具连接。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1471,6 +1472,33 @@ struct VPNStatusRow: View {
             Text(loopbackUI.buttonSubtitle)
                 .font(.caption)
                 .foregroundStyle(loopbackSubtitleColor)
+                .frame(maxWidth: .infinity, alignment: .center)
+
+            // run #169：配对页常驻外部回环按钮（Sage 定：内置与外部
+            // 各留一个）。与兜底卡片同一入口
+            // LoopbackSigningBlockedCard.openExternalLoopback：已装
+            // LocalDevVPN 时一键自动连接后跳回，未装时跳 App Store
+            // 下载页。内置已连接时也能点——系统一次只允许一个 VPN，
+            // 点按即切到外部；不与内置按钮共用忙碌禁用（外部无过渡态）。
+            // 浅蓝次按钮，与上方主蓝内置按钮区分主次。
+            Button {
+                LoopbackSigningBlockedCard.openExternalLoopback()
+            } label: {
+                Text("连接外部回环（LocalDevVPN）")
+                    .font(.headline)
+                    .foregroundStyle(Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .background(
+                        Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255).opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(.plain)
+
+            Text("没有内置回环权限时可用外部工具连接，需外区 Apple ID 下载 LocalDevVPN。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
 
             if let loopbackError = loopback.lastError {

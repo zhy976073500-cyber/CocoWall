@@ -286,6 +286,33 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Shared
     @Published var errorMessage: String? = nil
+
+    // MARK: - 诊断日志（run #169）
+    //
+    // 容器检测等关键步骤失败时，把真正的原因连同现场信息记下来，
+    // 供作者页头像三击复制与设置页「问题反馈」附带。平时不显示，
+    // 不写用户可见日志；只保留最近一次失败。
+    @Published var lastDiagnosticsLog: String? = nil
+
+    /// 记录一次失败的诊断日志：时间、版本、系统、回环与配对状态、
+    /// 失败步骤、底层原始错误。调用方在各自 catch 里记一笔即可。
+    func recordDiagnostics(step: String, error: Error) {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        let lines = [
+            "CocoWall 诊断日志",
+            "时间：\(formatter.string(from: Date()))",
+            "App 版本：\(RemoteConfigService.currentAppVersion) (build \(build))",
+            "iOS 版本：\(UIDevice.current.systemVersion)",
+            "回环：\(vpnUp ? "已连接" : "未连接")",
+            "配对文件：\(FileManager.default.fileExists(atPath: PairingController.pairingFilePath()) ? "已就绪" : "无")",
+            "失败步骤：\(step)",
+            "原始错误：\(error.localizedDescription)",
+        ]
+        lastDiagnosticsLog = lines.joined(separator: "\n")
+    }
     @Published var log: [String] = []
     @Published var showDeletePairingConfirm: Bool = false
 
@@ -1275,6 +1302,7 @@ final class AppViewModel: ObservableObject {
         } catch {
             if !silent {
                 await MainActor.run {
+                    self.recordDiagnostics(step: "查找 PosterBoard 容器", error: error)
                     self.errorMessage = "自动检测失败：\(error.localizedDescription)\n请确认 LocalDevVPN 已连接且设备已解锁。"
                 }
             }
@@ -1319,6 +1347,10 @@ final class AppViewModel: ObservableObject {
                 self.posterBoardContainer = container
                 UserDefaults.standard.set(container, forKey: "aircard.posterboard_container")
             } catch {
+                // run #169：失败的真正原因记进诊断日志（作者页头像
+                // 三击复制、设置页「问题反馈」附带），界面仍只显示
+                // 通用提示，不把底层错误直接推给所有用户。
+                recordDiagnostics(step: "查找 PosterBoard 容器", error: error)
                 errorMessage = "无法自动找到 PosterBoard 容器。请确认 LocalDevVPN 已连接且 iPhone 已解锁。"
                 return
             }

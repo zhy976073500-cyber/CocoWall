@@ -4604,3 +4604,28 @@ iOS 26.5 用户点「连接内置回环」报「开启内置回环失败：permi
 ### 修复（#168-fix，2026-11-05；CI 构建失败后补）
 
 首推 commit 7b05fed 的 CI（Build CocoWall IPA，run 41994855013）失败，唯一 Swift 编译错：`LoopbackTunnelManager.swift:53:56: error: covariant 'Self' type cannot be referenced from a stored property initializer`——`@Published var isLiveContainerGuest = Self.isRunningInsideLiveContainer()`，存储属性初始化器里不能引用协变 `Self`。改为显式类名 `LoopbackTunnelManager.isRunningInsideLiveContainer()`，其余一字未动；版本仍为 1.0.2（该版尚未成功出包，不另升版）。LoopbackFallbackCard.swift 无编译错。
+
+## 改动登记 · 诊断日志 + 隐藏复制入口 + 问题反馈 + 回环入口收拢配对页 + 版本 1.0.3（run #169，2026-11-05；Sage 拍板；纯 Swift 侧 + project.yml，rust 零改动）
+
+### 版本命名
+
+**1.0.3**（build 4）。按 #167 定例：每次修 bug 都更新版本号。project.yml：MARKETING_VERSION 1.0.2 → 1.0.3，CURRENT_PROJECT_VERSION 3 → 4。
+
+### 病因（Sage 反馈，2026-11-05）
+
+粉丝真机（iOS 27.0.1，1.0.2 清单版）：完整性校验已过，点刷入卡在「无法自动找到 PosterBoard 容器」。`detectPosterBoardContainer` 的 Swift catch 把 Rust 原始错误丢掉、只显示通用文案，根因看不见。Sage 连下三令：① 把真正的原因显示出来；② 加一个隐藏按钮；③ 把作者页头像做成隐藏按钮、连点三下直接复制日志；随后又补：④ 设置页加问题反馈选项（填作者 QQ 1138973255）；⑤ 配对页内置+外部回环按钮两个都留；⑥ 壁纸页的回环工具入口移除、设置页的设备配对移到壁纸页。⑥ 先出图、Sage 看图点头（2026-11-05 21:35「就按这个做，发 1.0.3」）后再动手。
+
+### 改动
+
+1. **AppViewModel.swift：诊断日志**。新增 `@Published var lastDiagnosticsLog: String?` 与 `recordDiagnostics(step:error:)`：失败时记下时间（`yyyy-MM-dd HH:mm:ss`）、App 版本 + build、iOS 版本、回环 vpnUp、配对文件有无、失败步骤、原始错误 `localizedDescription`。两处调用：`autoDetectPosterBoardContainer` 的 catch（MainActor.run 内，步骤「查找 PosterBoard 容器」）与 `flashSelectedTendies` 的 catch（同步骤名）。通用提示文案不变，只多存一份日志。
+2. **AuthorView.swift：头像三击复制**。作者页 96pt 大头像加 `.contentShape(Circle())` + `.onTapGesture(count: 3)`：有日志时复制 `vm.lastDiagnosticsLog` 到剪贴板并弹「已复制诊断日志」；无日志时弹「暂无诊断日志，可先复现一次报错再来复制」。仅作者页大头像，设置页 40pt 小头像不动。`@EnvironmentObject var vm: AppViewModel` + `@State copyNotice` + 提示 alert。
+3. **FeedbackView.swift（新文件）+ SettingsView.swift：问题反馈**。设置页新增 `feedbackEntry`（紫色 `exclamationmark.bubble`，副标题「加 QQ 1138973255，附带诊断日志」），点进 `FeedbackView`：顶部作者 QQ 卡片（1138973255 + 「复制 QQ 号」按钮）、问题输入框（minHeight 120）、诊断日志区（有日志显示原文、无日志显示「暂无诊断记录（未发生过刷入失败）」）、蓝色「复制反馈内容」按钮（问题 + 日志一并复制，弹「已复制，可粘贴发给作者」）、底部说明「复制后加 QQ 1138973255 发给作者即可」。不上传服务器，用户自己粘贴发给作者。
+4. **ContentView.swift（配对页 VPNStatusRow）：常驻外部回环按钮**。未连接副文案改「运行刷入前请先开启内置回环，或使用外部回环工具连接。」；内置按钮下方常驻一个浅蓝次级按钮「连接外部回环（LocalDevVPN）」，调 `LoopbackSigningBlockedCard.openExternalLoopback()`（#169 起改为 static，供两处共用；卡片自身按钮改调 `Self.openExternalLoopback()`），附小字「没有内置回环权限时可用外部工具连接，需外区 Apple ID 下载 LocalDevVPN。」。内置 + 外部两个入口同时在场（#151/#163 的条件式放置就此收回，配对页是回环唯一入口）。
+5. **TendiesView.swift（壁纸页）：回环入口移出，设备配对入驻**。① 删 `bottomSheet` 里的 `LoopbackSigningBlockedCard`（兜底卡只留配对页）；② 原「内置回环」瓷砖改为「设备配对」瓷砖（`pairingTile`，走通用 `sheetTile`：`antenna.radiowaves.left.and.right`、主蓝、副标题按 `vm.hasPairingFile` 取「已就绪 · 点按打开」（绿）/「未配对 · 点按打开」），点按以 sheet 打开 `PairingTab()`（新增 `@State showPairingPage`，与设置页原入口同一份页面）；③ 删已无用的 `loopbackUI` 计算属性（`loopbackPhase` 仍供状态胶囊用）；④ `LoopbackPresentation` 的文档注释更新：回环入口已从壁纸页移出、统一在配对页，按钮标题仍须写明「内置回环」；`moreWallpapersTile` 注释同步。状态胶囊三段（回环/配对文件/系统）只显示、不改。
+6. **SettingsView.swift：设备配对行移出**。删 `pairingEntry`、删 `showPairingPage` 状态与对应 sheet、删 body 里的 `pairingEntry`；设置页剩作者 / 解锁 Pro / 支持系统 / 问题反馈四行。
+7. **版本号 1.0.3（build 4）**，见本节首段。
+
+### 未验证项
+
+- 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（`UIPasteboard`、`onTapGesture(count:)`、`antenna.radiowaves.left.and.right` 均为 UIKit / SwiftUI 现成 API；`PairingTab` 与 TendiesView 同 target，`LoopbackSigningBlockedCard.openExternalLoopback` 的 static 化已在卡片自身调用处同步）。完整 App 的真机端到端待 CI 出包后 Sage 真机验：① 刷入失败后作者页连点三下头像能复制出含原始错误的日志；② 设置 → 问题反馈里 QQ 1138973255 可复制、反馈内容含日志；③ 壁纸页无内置回环瓷砖、无兜底卡片，设备配对瓷砖点按打开配对页；④ 配对页内置 + 外部两个回环按钮同时在场；⑤ 设置页无设备配对行；⑥ 关于页 / 设置页显示的版本号为 1.0.3。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。

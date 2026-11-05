@@ -67,7 +67,7 @@ struct LoopbackSigningBlockedCard: View {
 
                 HStack(spacing: 10) {
                     Button("使用外部回环连接") {
-                        openExternalLoopback()
+                        Self.openExternalLoopback()
                     }
                     .buttonStyle(.borderedProminent)
                     .font(.caption.bold())
@@ -98,14 +98,15 @@ struct LoopbackSigningBlockedCard: View {
         return "检测到当前签名未授予回环权限，无法开启内置回环。请用已获得回环权限的签名重装，或用下方外部回环工具连接。"
     }
 
-    /// 一键外部回环（Sage 定：和之前一样；run #168 改完成回调兜底）：
+    /// 一键外部回环（Sage 定：和之前一样；run #168 改完成回调兜底；
+    /// run #169 改为静态共用：配对页常驻的外部按钮走同一入口）。
     /// 直接开 `localdevvpn://enable?scheme=cocowall`（LocalDevVPN
     /// 自动打开、自动开始连接，1 秒后自动跳回 CocoWall；回跳由
     /// IntakeRouter.handleOpenInURL 拦截，只刷新网络状态）。
     /// 打开失败（未装 LocalDevVPN）时回调里落到 App Store 下载页。
     /// 不用 canOpenURL 先探——LiveContainer 内查的是宿主的
     /// Info.plist，会谎报未装；open 本身不受登记限制。
-    private func openExternalLoopback() {
+    static func openExternalLoopback() {
         UIApplication.shared.open(Self.localDevVPNEnableURL) { success in
             if !success {
                 UIApplication.shared.open(Self.localDevVPNAppStoreURL)

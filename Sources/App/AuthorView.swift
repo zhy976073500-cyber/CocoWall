@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 作者页的跳转与素材集中定义：真实素材到位后只改这一处。
 enum AuthorInfo {
@@ -41,12 +42,28 @@ struct AuthorQRPlaceholder: View {
 /// 作者页：大头像 + 名称、抖音直跳按钮、公众号二维码。
 struct AuthorView: View {
     @Environment(\.openURL) private var openURL
+    @EnvironmentObject var vm: AppViewModel
+
+    /// 三击头像复制诊断日志的结果提示（run #169 隐藏按钮）。
+    @State private var copyNotice: String? = nil
 
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
+                // run #169：头像是隐藏按钮——连点三下复制诊断日志。
+                // 平时无任何外观变化；有日志时复制到剪贴板并提示，
+                // 无日志时提示先复现一次报错再来复制。
                 AuthorAvatarPlaceholder(size: 96)
                     .padding(.top, 28)
+                    .contentShape(Circle())
+                    .onTapGesture(count: 3) {
+                        if let log = vm.lastDiagnosticsLog, !log.isEmpty {
+                            UIPasteboard.general.string = log
+                            copyNotice = "已复制诊断日志"
+                        } else {
+                            copyNotice = "暂无诊断日志，可先复现一次报错再来复制"
+                        }
+                    }
 
                 Text(AuthorInfo.displayName)
                     .font(.title2.bold())
@@ -82,5 +99,13 @@ struct AuthorView: View {
         .background(Color(UIColor.systemBackground))
         .navigationTitle("作者")
         .navigationBarTitleDisplayMode(.inline)
+        .alert("提示", isPresented: Binding(
+            get: { copyNotice != nil },
+            set: { if !$0 { copyNotice = nil } }
+        )) {
+            Button("好") { copyNotice = nil }
+        } message: {
+            Text(copyNotice ?? "")
+        }
     }
 }

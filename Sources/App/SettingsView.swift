@@ -1,11 +1,11 @@
 import SwiftUI
 import UIKit
 
-/// 设置页：沿用我方旧版的卡片版式。只有作者入口与配对入口两行
-/// （配对页本体仍是上游 PairingTab，从这里以 sheet 打开）。
+/// 设置页：沿用我方旧版的卡片版式。入口行：作者 / 解锁 Pro /
+/// 支持系统 / 问题反馈（run #169 起设备配对已移到壁纸页）。
 struct SettingsView: View {
     @EnvironmentObject var vm: AppViewModel
-    @State private var showPairingPage = false
+    @State private var showFeedbackPage = false
 
     var body: some View {
         NavigationStack {
@@ -14,21 +14,21 @@ struct SettingsView: View {
                     VStack(spacing: 16) {
                         authorEntry
                         proEntry
-                        pairingEntry
                         supportEntry
+                        feedbackEntry
                     }
                     .padding(20)
                 }
             }
             .background(Color(UIColor.systemBackground))
             .navigationTitle("设置")
-            .sheet(isPresented: $showPairingPage) {
-                PairingTab()
+            .sheet(isPresented: $showFeedbackPage) {
+                FeedbackView()
             }
         }
     }
 
-    // MARK: - 入口行（作者 / 配对）
+    // MARK: - 入口行
 
     /// 圆角入口行：内容 + 右侧箭头。run #129 起卡面走液态玻璃，
     /// 版式与原来一致。
@@ -126,22 +126,25 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    private var pairingEntry: some View {
+    /// 「问题反馈」入口（run #169）：点进反馈页，写问题、自动附带
+    /// 诊断日志，一键复制后粘贴发给作者。沿用 entryRow，自动继承
+    /// #153 的整行命中修复。
+    private var feedbackEntry: some View {
         Button {
-            showPairingPage = true
+            showFeedbackPage = true
         } label: {
             entryRow {
                 ZStack {
-                    Circle().fill(Color.blue.opacity(0.12))
-                    Image(systemName: "antenna.radiowaves.left.and.right")
-                        .foregroundStyle(.blue)
+                    Circle().fill(Color.purple.opacity(0.12))
+                    Image(systemName: "exclamationmark.bubble")
+                        .foregroundStyle(.purple)
                 }
                 .frame(width: 40, height: 40)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("设备配对")
+                    Text("问题反馈")
                         .font(.headline)
                         .foregroundStyle(.primary)
-                    Text("打开配对页")
+                    Text("加 QQ 1138973255，附带诊断日志")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
