@@ -4544,3 +4544,32 @@ CocoWall 的刷入链基于上游开源项目 AirCard-iOS（作者 Mak5er）。M
 
 - 本机已验：五份改动 Swift 文件 swiftc -parse 全过；UsageStats + 配置模型以 Linux Swift 工具链跑活体断言——发布版 B 配置原件解码全字段不变且 statsUrl 为空、带 statsUrl 的配置正确解析、空 URL 完全无-op、对本地 HTTP 服务真发恰一次 POST（载荷仅 {id,v,d}、d 为客户端本地日期）、2xx 后记账且同日第二次调用被门拦下；stats-fc/index.py 以 Python 跑校验向量、签名 PUT 构造（URL/头/体）与 WSGI handler（POST 200 / GET 405）全过。完整 App 的真机构建与端到端（两页开关各状态呈现与启停、点按连接成功后 toast 只弹一次、断开/恢复不弹）待 CI 出包后 Sage 真机验；服务端未部署，statsUrl 激活与真实上报落盘待部署后另验。
 - 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。
+
+## 改动登记 · 内置回环签名被挡提示 + 外部回环入口 + 版本 1.0.1（run #167，2026-11-05；Sage 拍板；纯 Swift 侧 + Info.plist + project.yml，rust 零改动）
+
+### 版本命名（Sage 2026-11-05 定）
+
+**1.0.1**（build 2）。定例：以后每次修 bug（漏洞）都更新版本号，不再像 #163–#166 那样多轮热修共用 1.0.0。project.yml 单一事实源：MARKETING_VERSION 1.0.0 → 1.0.1，CURRENT_PROJECT_VERSION 1 → 2；Info.plist 的 CFBundleShortVersionString / CFBundleVersion 均取自此处，无他处写死版本号（RemoteConfig.swift 的 "1.0.0" 只是读不到 Bundle 版本时的兜底默认值，未动）。
+
+### 病因（用户反馈视频定案，2026-11-05）
+
+iOS 26.5 用户点「连接内置回环」报「开启内置回环失败：permission denied」，进页即「读 VPN 配置失败：permission denied」，全程未弹出系统「添加 VPN 配置」提示。不是系统版本（26.5 在 17.0–27.1 支持范围内）；是签名链未授予 NetworkExtension packet-tunnel-provider 权限——CI 出无签名包，免费个人账号 / 共享企业证书的描述文件里都没有该 entitlement，`loadAllFromPreferences` / `saveToPreferences` 直接被系统拒绝（NEConfigurationErrorDomain Code=10）。SPEC #125/#127 早已把此列为未验证项。Sage 补充：该用户应该用的是已撤销的企业证书——与诊断吻合（共享企业证书通常只支持普通 IPA、无 packet-tunnel-provider，App 能装但隧道起不来；免费账号同样拿不到该 entitlement，SideStore 免费签也不行）。但“已撤销”本身 App 内无法直接核验（系统只在启动时做吊销校验），且已撤销证书正常应直接拦启动（“无法验证 App”/不受信任），该用户 App 还能打开，说明吊销校验可能尚未命中——本轮检测只断言“企业证书 + 无回环权限”，不谎称已核验吊销。当前版本 #163 已删 LocalDevVPN 外部入口，用户无兜底可用。
+
+### 检测口径
+
+- 主触发：`LoopbackTunnelManager.reload()` / `start()` 的 catch 里判 `(error as NSError).domain == "NEConfigurationErrorDomain" && code == 10`，置位新增 `@Published signingBlocked`（成功读/启时清位）。Code 10 即 entitlements / 描述文件未授权，非用户拒绝、非系统版本。
+- 企业分发判定：读 `Bundle.main` 的 `embedded.mobileprovision`，在 CMS 包里截取 `<?xml … </plist>` 段解析 plist，`ProvisionsAllDevices == true` 即企业证书签名；开发 / Ad Hoc（带 ProvisionedDevices 列表）、App Store（无此键）、无签名的 CI 产物（无此文件）均返回 false，走通用文案。
+- 不用 SecTask 读自身 entitlements（链接与真机行为均不确定），Code 10 + 描述文件已足够；不做吊销状态的网络核验。
+
+### 改动
+
+1. **LoopbackTunnelManager.swift（最小增量，现有启停逻辑未改）**。新增 `@Published signingBlocked` / `signingBlockedIsEnterprise`、私有 `isPermissionDenied(_:)` / `noteSigningBlocked()`、静态 `isEnterpriseProvisioned()`；两处 catch 置位、两处成功清位。#166 称其为受保护文件只用公开 API——本轮是 Sage 明确指令的定点偏离（检测只能落在管理器内部才拿得到原始 Error），其余行为逐字未动。
+2. **新增 Sources/App/LoopbackFallbackCard.swift（两页共用）**。`LoopbackSigningBlockedCard` 只在 `signingBlocked` 为真时渲染：橙色标题「内置回环无法使用」+ 文案 + 两颗按钮。企业档文案为 Sage 逐字定稿：「检测到您使用的是共享已撤销的企业证书，无法获取回环权限，请前往 App Store 登录外区 ID 下载 LocalDevVPN 回环工具进行外部回环连接。」（Sage 原文「外埠」按笔误改「外部」）；非企业档为通用版：「检测到当前签名未授予回环权限，无法开启内置回环。请用已获得回环权限的签名重装，或用下方外部回环工具连接。」另附一行小字「LocalDevVPN 未在中国区 App Store 上架，需用外区 Apple ID 登录下载。」按钮一「前往 App Store 下载 LocalDevVPN」开 `https://apps.apple.com/us/app/localdevvpn/id6755608044`（LocalDevVPN，Coxson Engineering LLC，免费，需 iOS 14+，美区链接）；按钮二「打开 LocalDevVPN」先 `canOpenURL(localdevvpn://)`（Info.plist 的 LSApplicationQueriesSchemes 已登记），已装直开、未装落到同一 App Store 页。
+3. **两页接线（ContentView.swift VPNStatusRow + TendiesView.swift 底部 sheet）**。各在原 lastError 红字下方加一行 `LoopbackSigningBlockedCard(loopback: loopback)`，共用共享实例；lastError 原文保留（诊断用）。入口只在确诊签名无权限时出现——#151 否过常驻的商店页按钮、#163 删过外部入口，本轮不恢复常驻入口，只在失败态给兜底。
+4. **一键外部回环 + 自动跳回（Sage 追加：和之前一样）**。主按钮改为「使用外部回环连接」，动作为 `openExternalLoopback()`：`canOpenURL(localdevvpn://enable?scheme=cocowall)` 为真 → 开该链接（LocalDevVPN 自动打开、自动开始连接，1 秒后打开 `cocowall://` 自动跳回 CocoWall）；为假（未装 LocalDevVPN）→ 直接开 App Store 下载页 `https://apps.apple.com/us/app/localdevvpn/id6755608044`。LocalDevVPN 的 URL scheme API 即此口径（`localdevvpn://enable` 启动、`?scheme=` 回调、1 秒延迟）。为此 Info.plist 新增 CFBundleURLTypes 注册本 App 的 `cocowall` scheme（CFBundleURLName com.coco.cocowall）；IntakeRouter.handleOpenInURL 首判 `url.scheme == "cocowall"` 时只调 `refreshNetworkStatus()`（外部回环已连即点亮 vpnUp）并 return，不走文件接收——否则回跳会被误判为文件、弹「无法识别这个文件」。「前往 App Store 下载 LocalDevVPN」次按钮保留作手动入口。
+5. **版本号 1.0.1（build 2）**，见本节首段定例。
+
+### 未验证项
+
+- 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（`Data.range(of:)`、`PropertyListSerialization`、`canOpenURL` 均为 Foundation / UIKit 现成 API；Info.plist 以 plistlib 解析核对 CFBundleURLTypes 结构）。完整 App 的真机端到端待 CI 出包后 Sage 真机验：①企业证书签的包进页即出橙色卡片 + 企业版文案，点下载跳美区 App Store 页；②已装 LocalDevVPN 时「使用外部回环连接」自动打开 LocalDevVPN、自动连接、1 秒后自动跳回 CocoWall 且状态变已连接；③未装 LocalDevVPN 时同一按钮直接跳 App Store 下载页；④付费开发者账号重签的包不出现卡片、内置回环正常连接；⑤免费个人账号签的包出通用版文案（不谎称企业证书）；⑥关于页 / 设置页显示的版本号为 1.0.1。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。

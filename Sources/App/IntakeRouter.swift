@@ -112,6 +112,14 @@ extension AppViewModel {
 
     /// 系统「打开方式」专用入口（AirCardApp 的 onOpenURL）。
     func handleOpenInURL(_ url: URL) {
+        // run #167：LocalDevVPN 回调（`localdevvpn://enable?
+        // scheme=cocowall`，1 秒后 LocalDevVPN 打开 `cocowall://`
+        // 跳回本 App）——只刷新网络状态（外部回环已连上即点亮
+        // vpnUp），不走文件接收，否则会误报「无法识别这个文件」。
+        if url.scheme?.lowercased() == "cocowall" {
+            refreshNetworkStatus()
+            return
+        }
         intakeFile(at: url, switchTabOnSuccess: true)
     }
 

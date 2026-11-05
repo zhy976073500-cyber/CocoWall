@@ -1478,6 +1478,12 @@ struct VPNStatusRow: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+
+            // run #167：签名被挡（Code 10）时才出现兜底卡片——
+            // 企业证书版文案 + App Store 下载 LocalDevVPN 入口
+            // + 已装时直接打开。平时不渲染（#151 否过常驻的
+            // 商店页按钮，本轮只在确诊签名无权限时才给入口）。
+            LoopbackSigningBlockedCard(loopback: loopback)
         }
         .padding(.vertical, 4)
     }

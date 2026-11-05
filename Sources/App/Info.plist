@@ -18,6 +18,23 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- 外部回环回调（run #167）：LocalDevVPN 的 URL scheme API
+	     支持 `localdevvpn://enable?scheme=<回调 scheme>`，1 秒后
+	     打开 `<回调 scheme>://` 跳回调用方；CocoWall 注册
+	     `cocowall` 作为自己的回调 scheme，AirCardApp 的
+	     onOpenURL 经 IntakeRouter.handleOpenInURL 拦截后只刷新
+	     网络状态，不走文件接收。 -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.coco.cocowall</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>cocowall</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>localdevvpn</string>

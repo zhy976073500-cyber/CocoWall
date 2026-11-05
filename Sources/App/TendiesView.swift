@@ -1440,6 +1440,10 @@ struct TendiesView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+            // run #167：签名被挡（Code 10）时才出现兜底卡片——
+            // 与配对页同一份 LoopbackSigningBlockedCard。
+            LoopbackSigningBlockedCard(loopback: loopback)
+
             flashButton
             importTile
             // run #163：「刷入时将自动检测 PosterBoard 容器。」

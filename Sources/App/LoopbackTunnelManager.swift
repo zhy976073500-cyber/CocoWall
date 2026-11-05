@@ -30,6 +30,18 @@ final class LoopbackTunnelManager: ObservableObject {
     @Published private(set) var isBusy = false
     @Published var lastError: String?
 
+    /// run #167：签名被挡标志——`loadAllFromPreferences` /
+    /// `saveToPreferences` 报 NEConfigurationErrorDomain Code 10
+    /// "permission denied" 时置位，说明当前签名未授予
+    /// NetworkExtension packet-tunnel-provider 权限，内置回环
+    /// 在此签名下永远起不来（不是用户点拒绝、不是系统版本）。
+    /// `signingBlockedIsEnterprise` 为真 = 描述文件是企业
+    /// 分发（ProvisionsAllDevices），即 Sage 说的共享企业证书
+    /// 情形；吊销本身 App 内无法直接核验（系统在启动时才做
+    /// 吊销校验），此处只断言“企业证书 + 无回环权限”。
+    @Published private(set) var signingBlocked = false
+    @Published private(set) var signingBlockedIsEnterprise = false
+
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
 
@@ -79,9 +91,50 @@ final class LoopbackTunnelManager: ObservableObject {
                     .providerBundleIdentifier == LoopbackTunnelManager.providerBundleIdentifier
             }
             status = manager?.connection.status ?? .invalid
+            // 读配置成功 = 系统允许本签名访问 VPN 偏好设置，
+            // 此前若因 Code 10 置过位，在此清掉。
+            signingBlocked = false
         } catch {
             lastError = "读取 VPN 配置失败：\(error.localizedDescription)"
+            // run #167：Code 10 即签名无回环权限，置位供两页
+            // 的兜底卡片（LoopbackSigningBlockedCard）渲染。
+            if Self.isPermissionDenied(error) {
+                noteSigningBlocked()
+            }
         }
+    }
+
+    /// NEConfigurationErrorDomain Code 10 "permission denied"——
+    /// 官方文档与生态经验均指向 entitlements / 描述文件未授
+    /// 权，而非用户拒绝或系统版本。
+    private static func isPermissionDenied(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == "NEConfigurationErrorDomain" && nsError.code == 10
+    }
+
+    private func noteSigningBlocked() {
+        signingBlocked = true
+        signingBlockedIsEnterprise = Self.isEnterpriseProvisioned()
+    }
+
+    /// 描述文件是否为企业分发：embedded.mobileprovision 内
+    /// `ProvisionsAllDevices == true` 即企业证书签名（共享
+    /// 签名店常用）；开发 / Ad Hoc 描述文件带 ProvisionedDevices
+    /// 列表、App Store 描述文件无此键，均返回 false。无签名
+    /// 的 CI 产物无此文件，返回 false（走通用文案）。
+    static func isEnterpriseProvisioned() -> Bool {
+        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let data = try? Data(contentsOf: url),
+              let xmlStart = data.range(of: Data("<?xml".utf8)),
+              let plistEnd = data.range(of: Data("</plist>".utf8)) else {
+            return false
+        }
+        let plistData = data[xmlStart.lowerBound..<plistEnd.upperBound]
+        guard let plist = try? PropertyListSerialization.propertyList(
+            from: plistData, format: nil) as? [String: Any] else {
+            return false
+        }
+        return plist["ProvisionsAllDevices"] as? Bool == true
     }
 
     func toggle() {
@@ -120,8 +173,15 @@ final class LoopbackTunnelManager: ObservableObject {
                 manager = mgr
                 status = mgr.connection.status
                 try mgr.connection.startVPNTunnel()
+                // 启动成功 = 签名有回环权限，清掉此前置位。
+                signingBlocked = false
             } catch {
                 lastError = "开启内置回环失败：\(error.localizedDescription)"
+                // run #167：Code 10 即签名无回环权限，置位供两页
+                // 的兜底卡片（LoopbackSigningBlockedCard）渲染。
+                if Self.isPermissionDenied(error) {
+                    noteSigningBlocked()
+                }
             }
         }
     }
