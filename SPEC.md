@@ -4573,3 +4573,30 @@ iOS 26.5 用户点「连接内置回环」报「开启内置回环失败：permi
 
 - 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（`Data.range(of:)`、`PropertyListSerialization`、`canOpenURL` 均为 Foundation / UIKit 现成 API；Info.plist 以 plistlib 解析核对 CFBundleURLTypes 结构）。完整 App 的真机端到端待 CI 出包后 Sage 真机验：①企业证书签的包进页即出橙色卡片 + 企业版文案，点下载跳美区 App Store 页；②已装 LocalDevVPN 时「使用外部回环连接」自动打开 LocalDevVPN、自动连接、1 秒后自动跳回 CocoWall 且状态变已连接；③未装 LocalDevVPN 时同一按钮直接跳 App Store 下载页；④付费开发者账号重签的包不出现卡片、内置回环正常连接；⑤免费个人账号签的包出通用版文案（不谎称企业证书）；⑥关于页 / 设置页显示的版本号为 1.0.1。
 - 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。
+
+## 改动登记 · LiveContainer 专项提示 + 一键回环改完成回调兜底 + 版本 1.0.2（run #168，2026-11-05；Sage 拍板；纯 Swift 侧 + project.yml，rust 零改动）
+
+### 版本命名
+
+**1.0.2**（build 3）。按 #167 定例：每次修 bug 都更新版本号。project.yml：MARKETING_VERSION 1.0.1 → 1.0.2，CURRENT_PROJECT_VERSION 2 → 3。
+
+### 病因（Sage 反馈，2026-11-05）
+
+用 LiveContainer 安装的用户也用不了内置回环。根因与企业证书同一类（Code 10），但更根本：LiveContainer 是启动器不是安装器——客 App 不真正安装、不独立沙盒、客 entitlements 不作用于宿主、App 扩展不支持；CocoWallTunnel.appex 从未向系统注册，NEVPN 调用以 LiveContainer 身份发出、无 packet-tunnel-provider。1.0.1 的通用卡片已能兜底（Code 10 → 外部 LocalDevVPN，外部 VPN 整机生效、客 App 也能用），但 LC 内两处降级：① `cocowall://` 回调大概率失效（客 scheme 未注册、LC 内自定义 URL scheme 本就不可靠）；② `canOpenURL` 探 LocalDevVPN 可能失灵（查的是宿主 LiveContainer 的 Info.plist 是否登记了该 scheme）。
+
+### 检测口径
+
+- 新增 `LoopbackTunnelManager.isRunningInsideLiveContainer()`（静态）+ `@Published isLiveContainerGuest`（init 时一次求值）。不能用 Bundle.main 判断：LiveContainer 会把 mainBundle patch 成客 bundle，bundleIdentifier / bundlePath 看着都是 CocoWall。只看进程本身：① `ProcessInfo.processInfo.processName` 或 `arguments[0]` 含 LiveContainer；② 进程可执行文件名与主 bundle 可执行文件名不一致、且后者是 CocoWall（防调试器等启动路径花样误判）。正常安装时两者同一文件，返回 false。
+- 卡片渲染条件由 `signingBlocked` 扩为 `signingBlocked || isLiveContainerGuest`——LC 内即使尚未报 Code 10 也直接出卡片，不必等用户先点一次失败（reload 在 LC 内可能只返回空管理器而不抛错）。
+
+### 改动
+
+1. **LoopbackTunnelManager.swift**。新增上文检测函数与 `isLiveContainerGuest` 发布值；其余逻辑未动。
+2. **LoopbackFallbackCard.swift**。三档文案，LC 档优先级最高：「检测到您在 LiveContainer 内运行 CocoWall。LiveContainer 不真正安装 App、不应用客 App 的权限、也不支持 App 扩展，内置回环在此无法使用。请用下方外部回环工具连接：已装 LocalDevVPN 时点按会自动打开并连接，连接后请手动切回 LiveContainer；未装时会跳到 App Store 下载页。」——直说原因与手动切回，不承诺自动跳回。企业档与通用档原样保留。
+3. **一键外部回环改完成回调兜底**。`openExternalLoopback()` 不再 `canOpenURL` 先探——`canOpenURL` 只查本 App（LC 内是宿主）的 Info.plist 是否登记该 scheme，宿主没登记就谎报未装；`open(_:completionHandler:)` 不受登记限制。改为直接开 `localdevvpn://enable?scheme=cocowall`，打开失败（未装 LocalDevVPN）时在 completion 里落到 App Store 下载页。正常安装的 App 行为与此前一致（已装直连、未装商店页），LC 内也不再被误判。
+4. **版本号 1.0.2（build 3）**，见本节首段。
+
+### 未验证项
+
+- 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（`ProcessInfo.processInfo.arguments` / `processName`、`Bundle.main.executablePath`、`open(_:completionHandler:)` 均为 Foundation / UIKit 现成 API）。完整 App 的真机端到端待 CI 出包后 Sage 真机验：① LiveContainer 内装的包进页即出橙色卡片 + LC 版文案（不必先点连接）；② LC 内「使用外部回环连接」：已装 LocalDevVPN 时打开并连接，跳回不自动、手动切回 LiveContainer 后状态变已连接；未装时跳 App Store 下载页；③ 正常安装的包行为与 1.0.1 一致（付费签无卡片、企业证书出企业版文案、一键自动跳回）；④ 关于页 / 设置页显示的版本号为 1.0.2。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。

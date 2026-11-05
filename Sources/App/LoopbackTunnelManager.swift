@@ -42,6 +42,16 @@ final class LoopbackTunnelManager: ObservableObject {
     @Published private(set) var signingBlocked = false
     @Published private(set) var signingBlockedIsEnterprise = false
 
+    /// run #168：是否在 LiveContainer 内以客 App 运行。LiveContainer
+    /// 是启动器不是安装器：客 App 不真正安装，进程可执行文件仍是
+    /// 宿主 LiveContainer（客可执行文件只是被 dlopen，不 exec），
+    /// 故内置回环在此从原理上不可用——客 entitlements 不作用于
+    /// 宿主、App 扩展不支持、tunnel appex 从未向系统注册。
+    /// 注意不能用 Bundle.main 判断：LiveContainer 会把 mainBundle
+    /// patch 成客 bundle，bundleIdentifier / bundlePath 看着都是
+    /// CocoWall；只能看进程本身的可执行文件路径。
+    @Published private(set) var isLiveContainerGuest = Self.isRunningInsideLiveContainer()
+
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
 
@@ -135,6 +145,35 @@ final class LoopbackTunnelManager: ObservableObject {
             return false
         }
         return plist["ProvisionsAllDevices"] as? Bool == true
+    }
+
+    /// 是否在 LiveContainer 内以客 App 运行（run #168）。
+    /// 判定只看进程本身：正常安装时进程可执行文件即主 bundle
+    /// 的可执行文件（…/CocoWall.app/CocoWall）；LiveContainer
+    /// 内进程可执行文件是宿主（…/LiveContainer.app/LiveContainer），
+    /// 而主 bundle 的可执行文件是客的 CocoWall。两档判定：
+    /// ① 进程路径或进程名含 LiveContainer；② 进程可执行文件
+    /// 名与主 bundle 可执行文件名不一致且后者是 CocoWall（防
+    /// 调试器等启动路径花样造成的误判）。
+    static func isRunningInsideLiveContainer() -> Bool {
+        let processName = ProcessInfo.processInfo.processName
+        if processName.localizedCaseInsensitiveContains("LiveContainer") {
+            return true
+        }
+        guard let execPath = ProcessInfo.processInfo.arguments.first else {
+            return false
+        }
+        if execPath.localizedCaseInsensitiveContains("LiveContainer") {
+            return true
+        }
+        guard let bundleExec = Bundle.main.executablePath else {
+            return false
+        }
+        let execName = URL(fileURLWithPath: execPath).lastPathComponent
+        let bundleExecName = URL(fileURLWithPath: bundleExec).lastPathComponent
+        return execName != bundleExecName
+            && !execName.localizedCaseInsensitiveContains("CocoWall")
+            && bundleExecName.localizedCaseInsensitiveContains("CocoWall")
     }
 
     func toggle() {
