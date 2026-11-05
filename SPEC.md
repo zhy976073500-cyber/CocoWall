@@ -4600,3 +4600,7 @@ iOS 26.5 用户点「连接内置回环」报「开启内置回环失败：permi
 
 - 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（`ProcessInfo.processInfo.arguments` / `processName`、`Bundle.main.executablePath`、`open(_:completionHandler:)` 均为 Foundation / UIKit 现成 API）。完整 App 的真机端到端待 CI 出包后 Sage 真机验：① LiveContainer 内装的包进页即出橙色卡片 + LC 版文案（不必先点连接）；② LC 内「使用外部回环连接」：已装 LocalDevVPN 时打开并连接，跳回不自动、手动切回 LiveContainer 后状态变已连接；未装时跳 App Store 下载页；③ 正常安装的包行为与 1.0.1 一致（付费签无卡片、企业证书出企业版文案、一键自动跳回）；④ 关于页 / 设置页显示的版本号为 1.0.2。
 - 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。
+
+### 修复（#168-fix，2026-11-05；CI 构建失败后补）
+
+首推 commit 7b05fed 的 CI（Build CocoWall IPA，run 41994855013）失败，唯一 Swift 编译错：`LoopbackTunnelManager.swift:53:56: error: covariant 'Self' type cannot be referenced from a stored property initializer`——`@Published var isLiveContainerGuest = Self.isRunningInsideLiveContainer()`，存储属性初始化器里不能引用协变 `Self`。改为显式类名 `LoopbackTunnelManager.isRunningInsideLiveContainer()`，其余一字未动；版本仍为 1.0.2（该版尚未成功出包，不另升版）。LoopbackFallbackCard.swift 无编译错。

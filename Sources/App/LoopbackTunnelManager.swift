@@ -50,7 +50,7 @@ final class LoopbackTunnelManager: ObservableObject {
     /// 注意不能用 Bundle.main 判断：LiveContainer 会把 mainBundle
     /// patch 成客 bundle，bundleIdentifier / bundlePath 看着都是
     /// CocoWall；只能看进程本身的可执行文件路径。
-    @Published private(set) var isLiveContainerGuest = Self.isRunningInsideLiveContainer()
+    @Published private(set) var isLiveContainerGuest = LoopbackTunnelManager.isRunningInsideLiveContainer()
 
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
