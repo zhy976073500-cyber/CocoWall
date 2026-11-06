@@ -4,6 +4,13 @@ import AirliftFFI
 @main
 struct AirCardApp: App {
     @StateObject private var vm = AppViewModel()
+    /// run #170：切回前台即刷新回环探活——用户在别的 App 里
+    /// 连上 LocalDevVPN 后切回 CocoWall 时，已显示的页面
+    /// onAppear 不重跑，只靠进页刷新会让 vm.vpnUp 一直停在
+    /// 旧值、外部档显示滞后；回到前台即重扫一次接口，胶囊
+    /// 与配对页随之刷新。refreshNetworkStatus 只读轻量检查
+    /// + 同步目标 host，不动隧道本身。
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         // Route Rust tracing/idevice logs into the app's vm log array.
@@ -38,6 +45,15 @@ struct AirCardApp: App {
                 // onOpenURL 处理，外部打开只落 Inbox 无人接。
                 .onOpenURL { url in
                     vm.handleOpenInURL(url)
+                }
+                // run #170：切回前台刷新回环探活（见 scenePhase
+                // 注释）；Task 跳主线程，避开 onChange 闭包与
+                // @MainActor vm 之间的隔离问题（本项目同类写
+                // 法，见 AppViewModel 多处 Task { @MainActor in }）。
+                .onChange(of: scenePhase) { _, newPhase in
+                    if newPhase == .active {
+                        Task { @MainActor in vm.refreshNetworkStatus() }
+                    }
                 }
         }
     }

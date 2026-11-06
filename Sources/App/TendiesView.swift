@@ -140,25 +140,27 @@ struct LoopbackPresentation {
     let lineWarn: Bool
 }
 
-/// 纯映射（run #127 立；run #156 收紧口径）：隧道相位 + 保存
-/// 配置忙碌位 → 按钮标题/副文案/可用性与状态行文案。
+/// 纯映射（run #127 立；run #156 收紧口径；run #170 恢复外部
+/// 识别为独立状态）：隧道相位 + 保存配置忙碌位 + 外部回环
+/// 在场位 → 按钮标题/副文案/可用性与状态行文案。
 ///
-/// 口径（run #156，Sage 定）：显示层只认 CocoWall 自带回环。
-/// 事实源是 LoopbackTunnelManager 的 NEVPN 状态——它读的是
-/// providerBundleIdentifier == com.coco.cocowall.tunnel 的
-/// 那一份系统 VPN 配置，天生只代表本 App 的回环扩展。run
-/// #127 的宽口径（内置不在场时外部 LocalDevVPN / 任意 VPN
-/// 在跑也算「已连接」，externalUp = vm.vpnUp 接口扫描结果）
-/// 就此废止：别的 App 的 utun 在场时状态胶囊报已连接、内
-/// 置回环瓷砖报未连接，两处打架且属误报（Sage 16:35 截图
-/// 实证）。注意这只收紧「显示」：刷入链的可用性判定不在
-/// 此列——vm.vpnUp 本身与引擎侧的连接尝试一概未动，外部
-/// 回环真能通时刷入照常走得通，显示不认而已。isBusy 表示
-/// start() 正在保存 VPN 配置（NEVPNStatus 尚未翻到
-/// connecting），此时按连接中呈现，避免按钮在授权弹窗前后
-/// 闪回可点状态。
+/// 口径（run #170，Sage 定）：显示层分三档，不再只认内置。
+/// 内置已连接时事实源仍是 LoopbackTunnelManager 的 NEVPN
+/// 状态（providerBundleIdentifier == com.coco.cocowall.tunnel
+/// 的那一份系统 VPN 配置）；内置未连接、但外部回环在场时
+/// （externalUp = vm.vpnUp 接口扫描结果，任意 utun 在场即
+/// 真）显示「已连接（外部回环）」，与内置的「已连接（内置
+/// 回环）」文案不同，两处指示仍不打架。run #156 废止的只是
+/// 旧宽口径（外部在场也报成内置的「已连接」）；run #170 恢复
+/// 的是带区分的显示，不是把旧口径原样搬回。注意这只改「显
+/// 示」：刷入链的可用性判定不在此列——vm.vpnUp 本身与引擎
+/// 侧的连接尝试一概未动。isBusy 表示 start() 正在保存 VPN
+/// 配置（NEVPNStatus 尚未翻到 connecting），此时按连接中
+/// 呈现，避免按钮在授权弹窗前后闪回可点状态；忙碌时外部
+/// 位不参与判定（用户刚点了连接内置，以内置过渡态为准）。
 func loopbackPresentation(phase: LoopbackPhase,
-                          isBusy: Bool) -> LoopbackPresentation {
+                          isBusy: Bool,
+                          externalUp: Bool = false) -> LoopbackPresentation {
     let effective: LoopbackPhase =
         (isBusy && (phase == .disconnected || phase == .invalid || phase == .unknown))
         ? .connecting : phase
@@ -185,6 +187,16 @@ func loopbackPresentation(phase: LoopbackPhase,
             lineValue: "断开中…",
             lineOK: false, lineWarn: true)
     case .disconnected, .invalid, .unknown:
+        // run #170：内置未连接、外部回环在场时显示独立的
+        // 外部档（按钮仍是内置开关，用户可点按切回内置）。
+        if externalUp {
+            return LoopbackPresentation(
+                buttonTitle: "连接内置回环",
+                buttonSubtitle: "外部回环已连接，点按切换到内置回环",
+                buttonEnabled: true,
+                lineValue: "已连接（外部回环）",
+                lineOK: true, lineWarn: false)
+        }
         return LoopbackPresentation(
             buttonTitle: "连接内置回环",
             buttonSubtitle: phase == .invalid
@@ -1162,9 +1174,13 @@ struct TendiesView: View {
     }
 
     /// 状态条「回环」段的值与语义色（run #128；run #156 与瓷砖
-    /// 统一口径）：与 loopbackPresentation 同一事实源、同一判
-    /// 定——只认内置隧道（LoopbackTunnelManager 的状态），外
-    /// 部 VPN 在场不再算已连接，两处指示不许再打架。
+    /// 统一口径；run #170 加外部档）：与 loopbackPresentation
+    /// 同一事实源、同一判定——内置已连接显示「已连接」，内
+    /// 置未连接但外部回环在场（vm.vpnUp）显示「已连接（外部
+    /// 回环）」，两档文案不同、两处指示不打架；其余未连接。
+    /// 注意 vm.vpnUp 是接口扫描结果（任意 utun 在场即真），
+    /// 须由切回前台刷新（见 AirCardApp scenePhase）与进页
+    /// 刷新（本页 onAppear）保持新鲜，否则外部档会滞后。
     private var loopbackSegment: (value: String, tone: TendiesStatusCapsuleState.Tone) {
         switch loopbackPhase {
         case .connected:
@@ -1175,6 +1191,7 @@ struct TendiesView: View {
             return ("断开中…", .warn)
         case .disconnected, .invalid, .unknown:
             if loopback.isBusy { return ("连接中…", .warn) }
+            if vm.vpnUp { return ("已连接（外部回环）", .ok) }
             return ("未连接", .bad)
         }
     }

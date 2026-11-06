@@ -1397,15 +1397,20 @@ struct VPNStatusRow: View {
         }
     }
 
-    /// 与壁纸页 loopbackUI 同一呈现（run #166）。
+    /// 与壁纸页 loopbackUI 同一呈现（run #166；run #170 喂入
+    /// 外部在场位 vm.vpnUp：内置未连接、外部在场时按钮副文案
+    /// 显示「已连接（外部回环）」，与壁纸页胶囊同口径）。
     private var loopbackUI: LoopbackPresentation {
-        loopbackPresentation(phase: loopbackPhase, isBusy: loopback.isBusy)
+        loopbackPresentation(phase: loopbackPhase, isBusy: loopback.isBusy,
+                             externalUp: vm.vpnUp)
     }
 
-    /// 副文案语义色（run #166）：与壁纸页「内置回环」瓷砖同
-    /// 口径——已连接绿、过渡态（按钮禁用）橙、未连接灰。
+    /// 副文案语义色（run #166；run #170：外部已连接也绿）：
+    /// 与壁纸页「内置回环」瓷砖同口径——已连接绿、过渡态
+    /// （按钮禁用）橙、未连接灰。lineOK 为真即两档已连接
+    /// （内置或外部）之一，副文案同绿。
     private var loopbackSubtitleColor: Color {
-        if loopbackPhase == .connected { return .green }
+        if loopbackUI.lineOK { return .green }
         if !loopbackUI.buttonEnabled { return .orange }
         return .secondary
     }

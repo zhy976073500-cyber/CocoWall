@@ -4629,3 +4629,31 @@ iOS 26.5 用户点「连接内置回环」报「开启内置回环失败：permi
 
 - 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（`UIPasteboard`、`onTapGesture(count:)`、`antenna.radiowaves.left.and.right` 均为 UIKit / SwiftUI 现成 API；`PairingTab` 与 TendiesView 同 target，`LoopbackSigningBlockedCard.openExternalLoopback` 的 static 化已在卡片自身调用处同步）。完整 App 的真机端到端待 CI 出包后 Sage 真机验：① 刷入失败后作者页连点三下头像能复制出含原始错误的日志；② 设置 → 问题反馈里 QQ 1138973255 可复制、反馈内容含日志；③ 壁纸页无内置回环瓷砖、无兜底卡片，设备配对瓷砖点按打开配对页；④ 配对页内置 + 外部两个回环按钮同时在场；⑤ 设置页无设备配对行；⑥ 关于页 / 设置页显示的版本号为 1.0.3。
 - 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。
+
+## 改动登记 · 外部回环识别 + 切回前台刷新 + 版本 1.0.4（run #170，2026-11-06；Sage 拍板；纯 Swift 侧 + project.yml，rust 零改动）
+
+### 版本命名
+
+**1.0.4**（build 5）。按 #167 定例：每次修 bug 都更新版本号。project.yml：MARKETING_VERSION 1.0.3 → 1.0.4，CURRENT_PROJECT_VERSION 4 → 5。
+
+### 病因（Sage 反馈，2026-11-06 22:00）
+
+LocalDevVPN 已连接，壁纸页状态胶囊仍显示「未连接」。根因是 #156 的显示口径：胶囊与回环呈现只认内置隧道（LoopbackTunnelManager 的 NEVPN 状态），外部 VPN 在场不算已连接——当时 Sage 自己定的，因旧宽口径让两处指示打架（胶囊报已连接、瓷砖报未连接）。Sage 现令：加一个能识别 LocalDevVPN 的显示。
+
+### 改动
+
+1. **TendiesView.swift：`loopbackPresentation` 加 `externalUp` 参数**（默认 false，纯映射仍可离线断言）。内置未连接（disconnected/invalid/unknown）且外部在场时，返回独立的外部档：按钮仍是「连接内置回环」（控制内置，用户可点按切回）、副文案「外部回环已连接，点按切换到内置回环」、状态行「已连接（外部回环）」绿标。内置已连接仍优先报「已连接（内置回环）」。isBusy 时外部位不参与判定（以内置过渡态为准）。#156 废止的只是旧宽口径（外部在场也报成内置的「已连接」）；本轮恢复的是带区分的显示，不是把旧口径原样搬回。
+2. **TendiesView.swift：壁纸页状态胶囊 `loopbackSegment` 加外部档**。内置未连接、非忙碌、`vm.vpnUp` 为真时返回（「已连接（外部回环）」，绿）；内置已连接仍是（「已连接」，绿）；其余未连接。与配对页呈现同一事实源、同一判定，两处指示不打架。
+3. **ContentView.swift：配对页 `loopbackUI` 喂入 `externalUp: vm.vpnUp`**。配对页内置按钮的副文案与状态行随之显示外部档；`loopbackSubtitleColor` 改以 `loopbackUI.lineOK` 判绿（内置或外部已连接同绿），过渡态橙、未连接灰不变。配对页顶部的盾牌行本就读 `vm.vpnUp`（「回环 VPN 已启用」），本轮后与下方按钮文案一致。
+4. **AirCardApp.swift：切回前台刷新回环探活**。`@Environment(\.scenePhase)` + `.onChange`：回到 `.active` 即调 `vm.refreshNetworkStatus()`（Task 跳主线程，避开 onChange 闭包与 @MainActor vm 的隔离问题）。必要性：用户在别的 App 里连上 LocalDevVPN 后切回 CocoWall 时，已显示页面的 onAppear 不重跑，只靠进页刷新会让 `vm.vpnUp` 停在旧值、外部档显示滞后。刷新只读轻量检查 + 同步目标 host，不动隧道本身。
+5. **版本号 1.0.4（build 5）**，见本节首段。
+
+### 未改动
+
+- 刷入链的可用性判定一概未动：`vm.vpnUp` 与引擎侧的连接尝试仍按原有逻辑，`!vpnUp` 时刷入只记一条提示、不拦截（AppViewModel 789 行）。外部回环真能通时刷入照常走得通——本轮只改显示。
+- `LoopbackTunnelManager` 本体未动；内置回环的启动/停止、签名被挡、LiveContainer 判定均不变。
+
+### 未验证项
+
+- 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（`@Environment(\.scenePhase)`、`onChange(of:)` 双参闭包、`Task { @MainActor in }` 均为 SwiftUI / Swift 现成 API，部署目标 iOS 17.0）。完整 App 的真机端到端待 CI 出包后 Sage 真机验：① 连上 LocalDevVPN 后切回 CocoWall，壁纸页胶囊显示「已连接（外部回环）」绿标；② 配对页盾牌行「回环 VPN 已启用」与下方按钮副文案一致；③ 点「连接内置回环」可切到内置（系统一次只允许一个 VPN）；④ 什么都没连时仍显示「未连接」；⑤ 关于页 / 设置页显示的版本号为 1.0.4。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。
