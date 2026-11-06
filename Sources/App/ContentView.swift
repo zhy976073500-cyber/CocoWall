@@ -799,11 +799,11 @@ struct ContentView: View {
             Text(vm.successAlertMessage)
         }
         // 公告（run #159 → #173 改自定义卡片）：id 大于本地已读
-        // id 才弹一次，关闭即记已读；link 非空时多一个「查看详情」
+        // id 才弹一次，关闭即记已读；link 非空时多一个「查看教程」
         // 跳浏览器。系统 .alert 的按钮不支持带倒计时的禁用态，
         // 改 .overlay 居中卡片（与 #172 更新卡片同款）：遮罩 40%
         // 黑、点遮罩不关闭，必须选按钮；「关闭」10 秒倒计时，
-        // 倒数完才可点（Sage 2026-11-07 定）；「查看详情」是去
+        // 倒数完才可点（Sage 2026-11-07 定）；「查看教程」是去
         // 看教程的正向动作，不等倒计时，点了即开链接并记已读。
         .overlay {
             if let ann = vm.remotePrompt?.announcementValue {
@@ -820,7 +820,7 @@ struct ContentView: View {
                         }
                         VStack(spacing: 10) {
                             if !ann.link.isEmpty, let link = URL(string: ann.link) {
-                                Button("查看详情") {
+                                Button("查看教程") {
                                     UIApplication.shared.open(link)
                                     vm.remoteConfig.dismissPrompt()
                                 }
