@@ -758,17 +758,14 @@ struct ContentView: View {
     // 更新弹窗倒计时（run #172）：「以后再说」按钮 10 秒后才可点，
     // 每秒减 1；弹窗每次出现都从 10 重新计。
     @State private var updateDismissCountdown = 10
+    // 公告弹窗倒计时（run #173）：「关闭」按钮 10 秒后才可点，
+    // 每秒减 1；弹窗每次出现都从 10 重新计。
+    @State private var announcementDismissCountdown = 10
     private let updateCountdownTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     // 远程配置弹窗（run #159）：待弹项由 RemoteConfigService
     // 按「强更 > 公告 > 普通版本提醒」排队，同一时刻最多
     // 一个；关闭即由服务记账并链式评估下一个。
-    private var announcementAlertPresented: Binding<Bool> {
-        Binding(
-            get: { vm.remotePrompt?.announcementValue != nil },
-            set: { if !$0 { vm.remoteConfig.dismissPrompt() } }
-        )
-    }
 
     var body: some View {
         TabView(selection: $vm.selectedTab) {
@@ -801,19 +798,63 @@ struct ContentView: View {
         } message: {
             Text(vm.successAlertMessage)
         }
-        // 公告（run #159）：id 大于本地已读 id 才弹一次，
-        // 关闭即记已读；link 非空时多一个「查看详情」跳浏览器。
-        .alert("公告", isPresented: announcementAlertPresented,
-               presenting: vm.remotePrompt?.announcementValue) { ann in
-            if !ann.link.isEmpty, let link = URL(string: ann.link) {
-                Button("查看详情") {
-                    UIApplication.shared.open(link)
-                    vm.remoteConfig.dismissPrompt()
+        // 公告（run #159 → #173 改自定义卡片）：id 大于本地已读
+        // id 才弹一次，关闭即记已读；link 非空时多一个「查看详情」
+        // 跳浏览器。系统 .alert 的按钮不支持带倒计时的禁用态，
+        // 改 .overlay 居中卡片（与 #172 更新卡片同款）：遮罩 40%
+        // 黑、点遮罩不关闭，必须选按钮；「关闭」10 秒倒计时，
+        // 倒数完才可点（Sage 2026-11-07 定）；「查看详情」是去
+        // 看教程的正向动作，不等倒计时，点了即开链接并记已读。
+        .overlay {
+            if let ann = vm.remotePrompt?.announcementValue {
+                ZStack {
+                    Color.black.opacity(0.4)
+                        .ignoresSafeArea()
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(ann.title.isEmpty ? "公告" : ann.title)
+                            .font(.headline)
+                        if !ann.body.isEmpty {
+                            Text(ann.body)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        VStack(spacing: 10) {
+                            if !ann.link.isEmpty, let link = URL(string: ann.link) {
+                                Button("查看详情") {
+                                    UIApplication.shared.open(link)
+                                    vm.remoteConfig.dismissPrompt()
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255))
+                                .foregroundStyle(.white)
+                                .font(.subheadline.weight(.semibold))
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                            }
+                            Button(announcementDismissCountdown > 0
+                                   ? "关闭（\(announcementDismissCountdown)秒后可关闭）"
+                                   : "关闭") {
+                                vm.remoteConfig.dismissPrompt()
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color(.secondarySystemBackground))
+                            .foregroundStyle(.primary)
+                            .font(.subheadline.weight(.semibold))
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .disabled(announcementDismissCountdown > 0)
+                            .opacity(announcementDismissCountdown > 0 ? 0.5 : 1)
+                        }
+                    }
+                    .padding(20)
+                    .frame(maxWidth: 320)
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                    .shadow(radius: 20)
+                    .padding(.horizontal, 32)
+                    .onAppear { announcementDismissCountdown = 10 }
                 }
             }
-            Button("关闭", role: .cancel) { vm.remoteConfig.dismissPrompt() }
-        } message: { ann in
-            Text(ann.title.isEmpty ? ann.body : "\(ann.title)\n\n\(ann.body)")
         }
         // 成功 toast（run #148）：顶部轻量浮层胶囊（对勾 +
         // 文案、液态玻璃面），约 1.6 秒由 AppViewModel 自动
@@ -906,6 +947,9 @@ struct ContentView: View {
         .onReceive(updateCountdownTimer) { _ in
             if vm.remotePrompt?.updateValue != nil, updateDismissCountdown > 0 {
                 updateDismissCountdown -= 1
+            }
+            if vm.remotePrompt?.announcementValue != nil, announcementDismissCountdown > 0 {
+                announcementDismissCountdown -= 1
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: vm.toastMessage)
