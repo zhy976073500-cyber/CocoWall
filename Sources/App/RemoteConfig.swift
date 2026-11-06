@@ -187,8 +187,15 @@ final class RemoteConfigService: ObservableObject {
 
     private enum Keys {
         static let lastReadAnnouncementID = "cw.remoteConfig.lastReadAnnouncementID"
-        static let lastPromptedVersion = "cw.remoteConfig.lastPromptedVersion"
+        /// 「明天再提醒」休眠到期的时间戳（run #172）：到明天 0 点
+        /// 前普通提醒不弹；强更不受休眠影响。
+        static let updateSnoozedUntil = "cw.remoteConfig.updateSnoozedUntil"
     }
+
+    /// 本次启动内已点过「以后再说」的普通提醒版本（run #172）：
+    /// 同版本当次启动不再重弹，下次启动恢复——「每次都弹」
+    /// 是按启动计，不是点了立刻又弹。纯内存，不落盘。
+    private var updateDismissedVersionThisLaunch: String? = nil
 
     init() {
         loadVerifiedCache()
@@ -221,18 +228,32 @@ final class RemoteConfigService: ObservableObject {
 
     /// 弹窗被关闭（或主按钮已处理跳转）后调用：按类型记账，
     /// 然后链式评估下一个待弹项。强更不记账——下次启动还会
-    /// 再弹，直到用户更新到 latestVersion 为止。
+    /// 再弹，直到用户更新到 latestVersion 为止。普通提醒
+    /// （run #172）也不再按版本记「只弹一次」：点了「以后再说」
+    /// 只记本次启动内不再重弹，下次进 App 照常再弹。
     func dismissPrompt() {
         switch prompt {
         case .announcement(let a):
             UserDefaults.standard.set(a.id, forKey: Keys.lastReadAnnouncementID)
         case .update(let info):
             if !info.forceUpdate {
-                UserDefaults.standard.set(info.latestVersion, forKey: Keys.lastPromptedVersion)
+                updateDismissedVersionThisLaunch = info.latestVersion
             }
         case nil:
             return
         }
+        prompt = nil
+        evaluatePrompts()
+    }
+
+    /// 「明天再提醒」（run #172）：普通提醒休眠到明天 0 点，
+    /// 明天进 App 再弹一次；强更不受休眠影响（直接忽略本次调用）。
+    func snoozeUpdatePromptUntilTomorrow() {
+        guard case .update(let info) = prompt, !info.forceUpdate else { return }
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: Date())
+            ?? Date().addingTimeInterval(86400)
+        let startOfTomorrow = Calendar.current.startOfDay(for: tomorrow)
+        UserDefaults.standard.set(startOfTomorrow.timeIntervalSince1970, forKey: Keys.updateSnoozedUntil)
         prompt = nil
         evaluatePrompts()
     }
@@ -251,10 +272,15 @@ final class RemoteConfigService: ObservableObject {
                 prompt = .update(info)
                 return
             }
-            let prompted = UserDefaults.standard.string(forKey: Keys.lastPromptedVersion)
-            if prompted != info.latestVersion {
-                // 普通提醒排在公告之后：先看公告，公告关掉后
-                // dismissPrompt 的链式评估会再轮到它。
+            // 普通提醒（run #172）：每次进 App 都弹——不再按版本
+            // 只记一次。两道当次抑制：点了「明天再提醒」则休眠
+            // 到明天 0 点；本次启动已点过「以后再说」则当次不
+            // 再重弹（否则点了立刻又弹，没法关）。普通提醒仍排
+            // 在公告之后：先看公告，公告关掉后 dismissPrompt
+            // 的链式评估会再轮到它。
+            let snoozedUntil = UserDefaults.standard.double(forKey: Keys.updateSnoozedUntil)
+            let snoozed = snoozedUntil > 0 && Date().timeIntervalSince1970 < snoozedUntil
+            if !snoozed, updateDismissedVersionThisLaunch != info.latestVersion {
                 if pendingAnnouncement(in: config) == nil {
                     prompt = .update(info)
                     return

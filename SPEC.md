@@ -4689,3 +4689,32 @@ LocalDevVPN 已连接，壁纸页状态胶囊仍显示「未连接」。根因�
 
 - 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（改动均为现成 API 与纯逻辑：`getifaddrs` 路由探活、`FileManager.fileExists`、`UIPasteboard`、三元表达式）。完整 App 的真机端到端待 CI 出包后 Sage 真机验：① 不连任何回环、只开专用代理 / 商用 VPN 时，壁纸页胶囊显示「未连接」，配对页盾牌显示「未检测到回环 VPN」；② 连上 LocalDevVPN 后切回，胶囊显示「已连接（外部回环）」绿标，且下方无红字；③ 两路都不通时红字「读取 VPN 配置失败」照常显示；④ 没触发过失败时头像点三下能拷出带「当前状态（未发生失败）」的日志；⑤ 关于页 / 设置页显示的版本号为 1.0.5。
 - 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。
+
+## 改动登记 · 更新弹窗三件套：每次都弹 + 明天再提醒 + 10 秒倒计时 + 版本 1.0.6（run #172，2026-11-06；Sage 拍板；纯 Swift 侧 + project.yml，rust 零改动）
+
+### 版本命名
+
+**1.0.6**（build 7）。按 #167 定例：每次修 bug / 加功能都更新版本号。project.yml：MARKETING_VERSION 1.0.5 → 1.0.6，CURRENT_PROJECT_VERSION 6 → 7。
+
+### 背景（Sage 2026-11-06 22:46–22:52，连着三条语音）
+
+1. 给 1.0.5 以下版本加更新弹窗（配置已备好，见 `~/workspace/cocowall-release/config-update-105/`，强更 / 普通两档，UC 链接 `https://drive.uc.cn/s/270faaaa228f4?public=1`，文案「已更新1.0.5版本，修复了外置回环无法链接的问题，请尽快前往更新」——「回放」是语音转文字错，应为「回环」）。
+2. 普通提醒要「每次进入 App 都弹」。cc 当场说明：老版本二进制里的普通提醒是每版本只弹一次，配置改不了这个，只有强更能让老版本每次进都弹；每次都弹得改代码，且只对改完代码的新版本生效。
+3. Sage 改口：三样全做进代码——10 秒提醒（关闭按钮倒计时，1.0.3 那次要过的那个）、每次都弹、再加「明天弹一次」；cc 对过三样意思（10 秒倒计时 / 每次进都弹 / 「明天再提醒」按钮）与版本号（1.0.5 已出包，只能进 1.0.6），Sage 说「对」「10 秒提醒那个也加进去」。
+
+### 改动
+
+1. **RemoteConfig.swift：普通提醒每次进 App 都弹**。删掉 `lastPromptedVersion` 的记账与「每版本只弹一次」门（`Keys.lastPromptedVersion` 常量一并删）；`dismissPrompt()` 对普通提醒只记一个纯内存标记 `updateDismissedVersionThisLaunch`（本次启动内点过「以后再说」则当次不再重弹，否则点了立刻又弹，没法关；下次启动恢复，纯内存不落盘）。强更仍不记账，行为不变。
+2. **RemoteConfig.swift：新增 `snoozeUpdatePromptUntilTomorrow()`**。普通提醒休眠到明天 0 点（`Calendar.startOfDay` 算明天起点，存 `Keys.updateSnoozedUntil` 时间戳），明天进 App 再弹一次；休眠是「别打扰我到明天」，不分版本；强更不受休眠影响（调用时直接忽略）。`evaluatePrompts()` 里休眠只拦普通提醒那路，公告照常排队。
+3. **ContentView.swift：更新弹窗改自定义卡片**。系统 `.alert` 的按钮不支持带倒计时的禁用态（点了一定会关），所以版本提醒不再走 `.alert`，改 `.overlay` 居中卡片：遮罩 40% 黑、点遮罩不关闭，必须选按钮。普通提醒三按钮：去更新（主按钮 #0071E3）/ 明天再提醒（调 `snoozeUpdatePromptUntilTomorrow()`）/ 以后再说（10 秒倒计时：文案「以后再说（N秒后可关闭）」，`@State updateDismissCountdown` 每秒减 1，`Timer.publish` 驱动，弹窗每次出现 `onAppear` 重置回 10，倒数完才可点）。强更只有去更新，不可关。公告仍走 `.alert`，与更新卡片互斥（同一时刻最多一个，由 `evaluatePrompts` 保证）。
+4. **版本号 1.0.6（build 7）**，见本节首段。
+
+### 未改动
+
+- 公告逻辑、强更逻辑、配置拉取与验签、匿名计数均未动。`updateAlertPresented` 随旧 `.alert` 一并删（只被它用）。
+- 1.0.5 的配置推送（`config-update-105/` 强更 / 普通两档）仍等 Sage 选一档；1.0.6 出包后配置要改指 1.0.6（下载链接须换成 Sage 新传的 1.0.6 包，UC 链接 `270faaaa228f4` 里是 1.0.5，不能复用）。
+
+### 未验证项
+
+- 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（改动均为现成 API 与纯逻辑：`UserDefaults`、`Calendar.startOfDay`、`Timer.publish`、`onReceive`、`disabled`）。完整 App 的真机端到端待 CI 出包后 Sage 真机验：① 1.0.6 上普通提醒每次进 App 都弹，点了「以后再说」当次不再弹，下次进又弹；② 「以后再说」按钮 10 秒倒计时，倒数完才可点；③ 点「明天再提醒」后当天不再弹，明天进 App 再弹一次；④ 强更弹窗仍只有「去更新」，不可关；⑤ 关于页 / 设置页显示的版本号为 1.0.6。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。

@@ -755,19 +755,17 @@ struct ContentView: View {
     @AppStorage("aircard.dont_show_support_on_launch") private var dontShowSupportOnLaunch: Bool = false
     @State private var showSupportPopup: Bool = false
 
+    // 更新弹窗倒计时（run #172）：「以后再说」按钮 10 秒后才可点，
+    // 每秒减 1；弹窗每次出现都从 10 重新计。
+    @State private var updateDismissCountdown = 10
+    private let updateCountdownTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
     // 远程配置弹窗（run #159）：待弹项由 RemoteConfigService
     // 按「强更 > 公告 > 普通版本提醒」排队，同一时刻最多
     // 一个；关闭即由服务记账并链式评估下一个。
     private var announcementAlertPresented: Binding<Bool> {
         Binding(
             get: { vm.remotePrompt?.announcementValue != nil },
-            set: { if !$0 { vm.remoteConfig.dismissPrompt() } }
-        )
-    }
-
-    private var updateAlertPresented: Binding<Bool> {
-        Binding(
-            get: { vm.remotePrompt?.updateValue != nil },
             set: { if !$0 { vm.remoteConfig.dismissPrompt() } }
         )
     }
@@ -817,25 +815,6 @@ struct ContentView: View {
         } message: { ann in
             Text(ann.title.isEmpty ? ann.body : "\(ann.title)\n\n\(ann.body)")
         }
-        // 版本提醒（run #159）：latestVersion 高于当前版本且
-        // downloadUrl 非空才弹；普通提醒每版本只弹一次，
-        // 强更（forceUpdate）不可取消、下次启动还会再弹。
-        .alert("发现新版本", isPresented: updateAlertPresented,
-               presenting: vm.remotePrompt?.updateValue) { info in
-            Button("去更新") {
-                if let url = URL(string: info.downloadUrl) {
-                    UIApplication.shared.open(url)
-                }
-                vm.remoteConfig.dismissPrompt()
-            }
-            if !info.forceUpdate {
-                Button("以后再说", role: .cancel) { vm.remoteConfig.dismissPrompt() }
-            }
-        } message: { info in
-            Text(info.updateNote.isEmpty
-                 ? "CocoWall \(info.latestVersion) 已发布，建议更新到最新版本。"
-                 : info.updateNote)
-        }
         // 成功 toast（run #148）：顶部轻量浮层胶囊（对勾 +
         // 文案、液态玻璃面），约 1.6 秒由 AppViewModel 自动
         // 清除；不拦截触摸、不打断当前操作，与上面两个
@@ -855,6 +834,78 @@ struct ContentView: View {
                 .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                 .transition(.move(edge: .top).combined(with: .opacity))
                 .allowsHitTesting(false)
+            }
+        }
+        // 版本提醒（run #172）：系统 .alert 的按钮不支持带倒计时的
+        // 禁用态，改自定义卡片。普通提醒三按钮：去更新 / 明天再提醒
+        // （休眠到明天 0 点，明天进 App 再弹一次）/ 以后再说（10 秒
+        // 倒计时，倒数完才可点）；强更只有去更新，不可关。遮罩挡住
+        // 下层触摸，点遮罩不关闭，必须选按钮。
+        .overlay {
+            if let info = vm.remotePrompt?.updateValue {
+                ZStack {
+                    Color.black.opacity(0.4)
+                        .ignoresSafeArea()
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("发现新版本")
+                            .font(.headline)
+                        Text(info.updateNote.isEmpty
+                             ? "CocoWall \(info.latestVersion) 已发布，建议更新到最新版本。"
+                             : info.updateNote)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        VStack(spacing: 10) {
+                            Button("去更新") {
+                                if let url = URL(string: info.downloadUrl) {
+                                    UIApplication.shared.open(url)
+                                }
+                                vm.remoteConfig.dismissPrompt()
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255))
+                            .foregroundStyle(.white)
+                            .font(.subheadline.weight(.semibold))
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            if !info.forceUpdate {
+                                Button("明天再提醒") {
+                                    vm.remoteConfig.snoozeUpdatePromptUntilTomorrow()
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Color(.secondarySystemBackground))
+                                .foregroundStyle(.primary)
+                                .font(.subheadline.weight(.semibold))
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                Button(updateDismissCountdown > 0
+                                       ? "以后再说（\(updateDismissCountdown)秒后可关闭）"
+                                       : "以后再说") {
+                                    vm.remoteConfig.dismissPrompt()
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Color(.secondarySystemBackground))
+                                .foregroundStyle(.primary)
+                                .font(.subheadline.weight(.semibold))
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .disabled(updateDismissCountdown > 0)
+                                .opacity(updateDismissCountdown > 0 ? 0.5 : 1)
+                            }
+                        }
+                    }
+                    .padding(20)
+                    .frame(maxWidth: 320)
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                    .shadow(radius: 20)
+                    .padding(.horizontal, 32)
+                    .onAppear { updateDismissCountdown = 10 }
+                }
+            }
+        }
+        .onReceive(updateCountdownTimer) { _ in
+            if vm.remotePrompt?.updateValue != nil, updateDismissCountdown > 0 {
+                updateDismissCountdown -= 1
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: vm.toastMessage)
