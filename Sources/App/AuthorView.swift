@@ -51,18 +51,18 @@ struct AuthorView: View {
         ScrollView {
             VStack(spacing: 20) {
                 // run #169：头像是隐藏按钮——连点三下复制诊断日志。
-                // 平时无任何外观变化；有日志时复制到剪贴板并提示，
-                // 无日志时提示先复现一次报错再来复制。
+                // 平时无任何外观变化；有失败日志时复制它，无失败
+                // 日志时复制当前状态快照（run #171：没触发过失败
+                // 也能拿到一份可发给作者的日志，不再报「暂无」）。
                 AuthorAvatarPlaceholder(size: 96)
                     .padding(.top, 28)
                     .contentShape(Circle())
                     .onTapGesture(count: 3) {
-                        if let log = vm.lastDiagnosticsLog, !log.isEmpty {
-                            UIPasteboard.general.string = log
-                            copyNotice = "已复制诊断日志"
-                        } else {
-                            copyNotice = "暂无诊断日志，可先复现一次报错再来复制"
-                        }
+                        let log = (vm.lastDiagnosticsLog?.isEmpty == false)
+                            ? vm.lastDiagnosticsLog!
+                            : vm.currentDiagnosticsSnapshot()
+                        UIPasteboard.general.string = log
+                        copyNotice = "已复制诊断日志"
                     }
 
                 Text(AuthorInfo.displayName)

@@ -144,13 +144,14 @@ struct LoopbackPresentation {
 /// 识别为独立状态）：隧道相位 + 保存配置忙碌位 + 外部回环
 /// 在场位 → 按钮标题/副文案/可用性与状态行文案。
 ///
-/// 口径（run #170，Sage 定）：显示层分三档，不再只认内置。
-/// 内置已连接时事实源仍是 LoopbackTunnelManager 的 NEVPN
-/// 状态（providerBundleIdentifier == com.coco.cocowall.tunnel
-/// 的那一份系统 VPN 配置）；内置未连接、但外部回环在场时
-/// （externalUp = vm.vpnUp 接口扫描结果，任意 utun 在场即
-/// 真）显示「已连接（外部回环）」，与内置的「已连接（内置
-/// 回环）」文案不同，两处指示仍不打架。run #156 废止的只是
+/// 口径（run #170，Sage 定；run #171 收窄 externalUp 的事实源）：
+/// 显示层分三档，不再只认内置。内置已连接时事实源仍是
+/// LoopbackTunnelManager 的 NEVPN 状态（providerBundleIdentifier
+/// == com.coco.cocowall.tunnel 的那一份系统 VPN 配置）；内置未
+/// 连接、但外部回环在场时（externalUp = vm.vpnUp 回环路由探活
+/// 结果，只认到 10.7.0.1 的路由走隧道，不认任意 utun 在场——
+/// 见 NetworkStatus run #171）显示「已连接（外部回环）」，与
+/// 内置的「已连接（内置回环）」文案不同，两处指示仍不打架。run #156 废止的只是
 /// 旧宽口径（外部在场也报成内置的「已连接」）；run #170 恢复
 /// 的是带区分的显示，不是把旧口径原样搬回。注意这只改「显
 /// 示」：刷入链的可用性判定不在此列——vm.vpnUp 本身与引擎
@@ -1174,13 +1175,15 @@ struct TendiesView: View {
     }
 
     /// 状态条「回环」段的值与语义色（run #128；run #156 与瓷砖
-    /// 统一口径；run #170 加外部档）：与 loopbackPresentation
-    /// 同一事实源、同一判定——内置已连接显示「已连接」，内
-    /// 置未连接但外部回环在场（vm.vpnUp）显示「已连接（外部
-    /// 回环）」，两档文案不同、两处指示不打架；其余未连接。
-    /// 注意 vm.vpnUp 是接口扫描结果（任意 utun 在场即真），
-    /// 须由切回前台刷新（见 AirCardApp scenePhase）与进页
-    /// 刷新（本页 onAppear）保持新鲜，否则外部档会滞后。
+    /// 统一口径；run #170 加外部档；run #171 窄口径）：与
+    /// loopbackPresentation 同一事实源、同一判定——内置已连接
+    /// 显示「已连接」，内置未连接但外部回环在场（vm.vpnUp）
+    /// 显示「已连接（外部回环）」，两档文案不同、两处指示不打
+    /// 架；其余未连接。注意 vm.vpnUp 是回环路由探活结果（run
+    /// #171 窄口径：只认到 10.7.0.1 的路由走隧道，任意 utun
+    /// 在场不再算数），须由切回前台刷新（见 AirCardApp
+    /// scenePhase）与进页刷新（本页 onAppear）保持新鲜，否则
+    /// 外部档会滞后。
     private var loopbackSegment: (value: String, tone: TendiesStatusCapsuleState.Tone) {
         switch loopbackPhase {
         case .connected:
@@ -1450,7 +1453,11 @@ struct TendiesView: View {
             statusCapsule
 
             // run #127 纪律沿用：启停失败原文红字显示在状态条下方。
-            if let loopbackError = loopback.lastError {
+            // run #171：回环路由已通（内置或外部）时不显示——内置
+            // 配置读不到（签名无权限）与外部能通是两回事，外部通
+            // 时这行红字只会让人误以为回环坏了（Sage 22:21 截图）；
+            // 两路都不通时照常显示。
+            if let loopbackError = loopback.lastError, !vm.vpnUp {
                 Text(loopbackError)
                     .font(.caption)
                     .foregroundStyle(.red)

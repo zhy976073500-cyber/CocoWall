@@ -102,8 +102,11 @@ final class LoopbackTunnelManager: ObservableObject {
             }
             status = manager?.connection.status ?? .invalid
             // 读配置成功 = 系统允许本签名访问 VPN 偏好设置，
-            // 此前若因 Code 10 置过位，在此清掉。
+            // 此前若因 Code 10 置过位，在此清掉；同理清掉此前
+            // 的读取失败红字（run #171：否则一次瞬时失败会让
+            // 红字一直挂着）。
             signingBlocked = false
+            lastError = nil
         } catch {
             lastError = "读取 VPN 配置失败：\(error.localizedDescription)"
             // run #167：Code 10 即签名无回环权限，置位供两页

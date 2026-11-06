@@ -1399,7 +1399,8 @@ struct VPNStatusRow: View {
 
     /// 与壁纸页 loopbackUI 同一呈现（run #166；run #170 喂入
     /// 外部在场位 vm.vpnUp：内置未连接、外部在场时按钮副文案
-    /// 显示「已连接（外部回环）」，与壁纸页胶囊同口径）。
+    /// 显示「已连接（外部回环）」，与壁纸页胶囊同口径；run
+    /// #171：vm.vpnUp 已是窄口径回环路由探活，不再是任意 utun）。
     private var loopbackUI: LoopbackPresentation {
         loopbackPresentation(phase: loopbackPhase, isBusy: loopback.isBusy,
                              externalUp: vm.vpnUp)
@@ -1506,7 +1507,9 @@ struct VPNStatusRow: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
 
-            if let loopbackError = loopback.lastError {
+            // run #171：与壁纸页同口径——回环路由已通时不显示
+            // 内置的配置读取错误（见 TendiesView 同处注释）。
+            if let loopbackError = loopback.lastError, !vm.vpnUp {
                 Text(loopbackError)
                     .font(.caption)
                     .foregroundStyle(.red)

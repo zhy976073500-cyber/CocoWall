@@ -39,7 +39,10 @@ enum NetworkStatus {
         return String(cString: host)
     }
 
-    /// (vpnUp, wifiUp, detail) for UI status display.
+    /// (vpn, wifi, detail) for UI status display. vpn is the narrow
+    /// loopback-route check (run #171): true only when the route to
+    /// deviceIP (10.7.0.1) is carried by a tunnel, not when any
+    /// utun interface happens to exist.
     static func summarize(deviceIP: String) -> (vpn: Bool, wifi: Bool, detail: String) {
         let ifs = interfaces()
         let vpn = isLoopbackTunnelUp(in: ifs, deviceIP: deviceIP)
@@ -52,10 +55,17 @@ enum NetworkStatus {
         isLoopbackTunnelUp(in: interfaces(), deviceIP: deviceIP)
     }
 
+    /// run #171：回环是否真通——只认到 deviceIP（10.7.0.1）的路由
+    /// 走隧道，不认「任意 utun 在场」。iCloud 专用代理 / 任意商用
+    /// VPN 也会建 utun 接口，旧的首行（任意 utun 即真）会把它们
+    /// 误认成回环（Sage 22:21 截图实证：没连外部回环，壁纸页也报
+    /// 已连接（外部回环））。本函数去掉首行，只保留路由判定：
+    /// 到 deviceIP 的路由源自隧道接口、且默认路由不走同一源（排除
+    /// 全量隧道 VPN）；或某隧道接口的子网含 deviceIP（兜底，
+    /// 覆盖子网较宽的其他回环工具）。内置隧道与 LocalDevVPN
+    /// 都走 10.7.0.1/32 路由，两者都命中；只开专用代理 / 商用
+    /// VPN 时到 10.7.0.1 的路由走 en0，不命中。
     private static func isLoopbackTunnelUp(in ifs: [Interface], deviceIP: String) -> Bool {
-        if ifs.contains(where: { isTunnelInterface($0.name) }) {
-            return true
-        }
         guard let target = ipv4Value(deviceIP) else {
             return false
         }

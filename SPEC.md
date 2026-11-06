@@ -4657,3 +4657,35 @@ LocalDevVPN 已连接，壁纸页状态胶囊仍显示「未连接」。根因�
 
 - 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（`@Environment(\.scenePhase)`、`onChange(of:)` 双参闭包、`Task { @MainActor in }` 均为 SwiftUI / Swift 现成 API，部署目标 iOS 17.0）。完整 App 的真机端到端待 CI 出包后 Sage 真机验：① 连上 LocalDevVPN 后切回 CocoWall，壁纸页胶囊显示「已连接（外部回环）」绿标；② 配对页盾牌行「回环 VPN 已启用」与下方按钮副文案一致；③ 点「连接内置回环」可切到内置（系统一次只允许一个 VPN）；④ 什么都没连时仍显示「未连接」；⑤ 关于页 / 设置页显示的版本号为 1.0.4。
 - 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。
+
+## 改动登记 · 回环探活窄口径 + 红字抑制 + 诊断快照兜底 + 版本 1.0.5（run #171，2026-11-06；Sage 真机验 1.0.4 后三处反馈；纯 Swift 侧 + project.yml，rust 零改动）
+
+### 版本命名
+
+**1.0.5**（build 6）。按 #167 定例：每次修 bug 都更新版本号。project.yml：MARKETING_VERSION 1.0.4 → 1.0.5，CURRENT_PROJECT_VERSION 5 → 6。
+
+### 病因（Sage 真机验 1.0.4，2026-11-06 22:21 截图 + 三处反馈）
+
+1. **没连外部回环，壁纸页也报「已连接（外部回环）」**。根因是 #170 复用的 `vm.vpnUp` 事实源太宽：`NetworkStatus.isLoopbackTunnelUp` 首行「任意 utun 接口在场即真」——iCloud 专用代理 / 任意商用 VPN 也会建 utun 接口，照样命中。#156 当年废止旧宽口径就是这个原因，#170 换了个文案又把同一信号搬了回来。
+2. **连上外部回环，胶囊下方仍有红字「读取 VPN 配置失败：permission denied」**。那行红字是内置隧道读配置失败（`LoopbackTunnelManager.reload()` 报 Code 10，签名无回环权限）的原文，壁纸页与配对页都无条件渲染。内置读不到与外部能通是两回事，外部通时这行红字只会让人误以为回环坏了。
+3. **只连了回环、没触发过失败，去头像点三下只拿到「暂无诊断日志」**。`lastDiagnosticsLog` 只在刷入 / 容器检测失败时才写，没失败过就没有；Sage 做了回环动作就想拿到一份可发给作者的日志，空手而归。
+
+### 改动
+
+1. **NetworkStatus.swift：回环探活改窄口径**。`isLoopbackTunnelUp` 删掉「任意 utun 即真」的首行，只保留路由判定：到 deviceIP（10.7.0.1）的路由源自隧道接口、且默认路由不走同一源（排除全量隧道 VPN）；或某隧道接口的子网含 deviceIP（兜底，覆盖子网较宽的其他回环工具）。内置隧道与 LocalDevVPN 都走 10.7.0.1/32 路由，两者都命中；只开专用代理 / 商用 VPN 时到 10.7.0.1 的路由走 en0，不命中。`summarize` 只在 `refreshNetworkStatus` 一处被调，`loopbackTunnelUp` 无其他调用方；`vpnUp` 的全部消费者（胶囊外部档、配对页盾牌与呈现函数 externalUp、诊断日志回环行、刷入提示）都是显示 / 提示，不参与引擎门控——收窄后全部变准，且两页指示不再打架。`#170` 的调用处一字未动，改的只是事实源本身。
+2. **TendiesView.swift + ContentView.swift：回环通时不显示内置红字**。两页渲染 `loopback.lastError` 的条件都加 `!vm.vpnUp`（窄口径后的回环路由已通即隐藏）；两路都不通时照常显示。配对页的签名被挡兜底卡（`LoopbackSigningBlockedCard`）不受影响，仍按 `signingBlocked` 渲染。
+3. **LoopbackTunnelManager.swift：`reload()` 成功时清掉 `lastError`**。否则一次瞬时读取失败会让红字一直挂着（与 `signingBlocked` 成功即清同理）。
+4. **AppViewModel.swift：新增 `currentDiagnosticsSnapshot()`**。无失败日志时的兜底快照：格式与 `recordDiagnostics` 同款（同头、同字段：时间、版本 + build、iOS 版本、回环、配对文件），「失败步骤」一行改为「当前状态（未发生失败）」、无「原始错误」行。
+5. **AuthorView.swift：头像三击必有日志可拷**。有失败日志拷它，无失败日志拷 `currentDiagnosticsSnapshot()`；提示统一为「已复制诊断日志」，「暂无诊断日志」文案就此作废。
+6. **FeedbackView.swift：诊断区同款兜底**。`diagnosticsSection` 无失败日志时返回 `currentDiagnosticsSnapshot()`，不再是「暂无诊断记录（未发生过刷入失败）」。
+7. **版本号 1.0.5（build 6）**，见本节首段。
+
+### 未改动
+
+- 刷入链的可用性判定一概未动：`!vpnUp` 时刷入只记一条提示、不拦截；外部回环真能通时刷入照常走得通。`LoopbackTunnelManager` 的启动 / 停止、签名被挡、LiveContainer 判定均不变；`recordDiagnostics` 的调用点与格式不变。
+- `syncTargetHostsToRust` 与 `tunnelHostCandidates` 未动；LocalDevVPN 回调（`cocowall://`）仍只刷新网络状态。
+
+### 未验证项
+
+- 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（改动均为现成 API 与纯逻辑：`getifaddrs` 路由探活、`FileManager.fileExists`、`UIPasteboard`、三元表达式）。完整 App 的真机端到端待 CI 出包后 Sage 真机验：① 不连任何回环、只开专用代理 / 商用 VPN 时，壁纸页胶囊显示「未连接」，配对页盾牌显示「未检测到回环 VPN」；② 连上 LocalDevVPN 后切回，胶囊显示「已连接（外部回环）」绿标，且下方无红字；③ 两路都不通时红字「读取 VPN 配置失败」照常显示；④ 没触发过失败时头像点三下能拷出带「当前状态（未发生失败）」的日志；⑤ 关于页 / 设置页显示的版本号为 1.0.5。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。

@@ -6,7 +6,8 @@ import UIKit
 /// 用户写下遇到的问题，点「复制反馈内容」即把问题描述 + 诊断日志
 /// + 机型信息一并拷到剪贴板，粘贴给作者即可。App 内不直连任何
 /// 服务端、不自动上传——反馈去向由用户自己选（抖音、飞书、微信）。
-/// 诊断日志只在刷入/检测失败过时才有；没有就只复制问题描述。
+/// 诊断日志优先用最近一次失败记录；没有失败记录时附当前状态快照
+/// （run #171），不再只复制问题描述。
 struct FeedbackView: View {
     @EnvironmentObject var vm: AppViewModel
     @Environment(\.dismiss) private var dismiss
@@ -21,7 +22,7 @@ struct FeedbackView: View {
         if let log = vm.lastDiagnosticsLog, !log.isEmpty {
             return log
         }
-        return "暂无诊断记录（未发生过刷入失败）"
+        return vm.currentDiagnosticsSnapshot()
     }
 
     private var feedbackText: String {

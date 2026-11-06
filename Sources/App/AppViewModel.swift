@@ -313,6 +313,29 @@ final class AppViewModel: ObservableObject {
         ]
         lastDiagnosticsLog = lines.joined(separator: "\n")
     }
+
+    /// run #171：当前状态快照——无失败日志时头像三击 / 问题反馈
+    /// 复制的兜底。格式与 recordDiagnostics 同款（同头、同字段），
+    /// 只是「失败步骤」一行改为「当前状态（未发生失败）」、无
+    /// 「原始错误」行。Sage 22:25 反馈：只连了回环、没触发过失败
+    /// 就去点头像，结果只拿到「暂无诊断日志」——状态本身就是
+    /// 值得发给作者的信息。
+    func currentDiagnosticsSnapshot() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        let lines = [
+            "CocoWall 诊断日志",
+            "时间：\(formatter.string(from: Date()))",
+            "App 版本：\(RemoteConfigService.currentAppVersion) (build \(build))",
+            "iOS 版本：\(UIDevice.current.systemVersion)",
+            "回环：\(vpnUp ? "已连接" : "未连接")",
+            "配对文件：\(FileManager.default.fileExists(atPath: PairingController.pairingFilePath()) ? "已就绪" : "无")",
+            "当前状态（未发生失败）",
+        ]
+        return lines.joined(separator: "\n")
+    }
     @Published var log: [String] = []
     @Published var showDeletePairingConfirm: Bool = false
 
