@@ -760,7 +760,7 @@ struct ContentView: View {
     @State private var updateDismissCountdown = 10
     // 公告弹窗倒计时（run #173）：「关闭」按钮 10 秒后才可点，
     // 每秒减 1；弹窗每次出现都从 10 重新计。
-    @State private var announcementDismissCountdown = 10
+    @State private var announcementDismissCountdown = 5
     private let updateCountdownTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     // 远程配置弹窗（run #159）：待弹项由 RemoteConfigService
@@ -802,9 +802,11 @@ struct ContentView: View {
         // id 才弹一次，关闭即记已读；link 非空时多一个「查看教程」
         // 跳浏览器。系统 .alert 的按钮不支持带倒计时的禁用态，
         // 改 .overlay 居中卡片（与 #172 更新卡片同款）：遮罩 40%
-        // 黑、点遮罩不关闭，必须选按钮；「关闭」10 秒倒计时，
-        // 倒数完才可点（Sage 2026-11-07 定）；「查看教程」是去
-        // 看教程的正向动作，不等倒计时，点了即开链接并记已读。
+        // 黑、点遮罩不关闭，必须选按钮；「关闭」5 秒倒计时，
+        // 倒数完才可点（Sage 2026-11-07 定，10 秒改 5 秒）；「查看教程」
+        // 与「加入CocoWall内测群」是正向动作，不等倒计时，点了即
+        // 开链接并记已读。groupLink 非空时才显示内测群按钮。
+        // run #173：公告每天都提示一次（RemoteConfig 记当天已弹）。
         .overlay {
             if let ann = vm.remotePrompt?.announcementValue {
                 ZStack {
@@ -831,6 +833,19 @@ struct ContentView: View {
                                 .font(.subheadline.weight(.semibold))
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                             }
+                            if !ann.groupLink.isEmpty, let groupLink = URL(string: ann.groupLink) {
+                                Button("加入CocoWall内测群") {
+                                    UIApplication.shared.open(groupLink)
+                                    vm.remoteConfig.dismissPrompt()
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Color(.systemBackground))
+                                .foregroundStyle(Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255))
+                                .font(.subheadline.weight(.semibold))
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255), lineWidth: 1.5))
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                            }
                             Button(announcementDismissCountdown > 0
                                    ? "关闭（\(announcementDismissCountdown)秒后可关闭）"
                                    : "关闭") {
@@ -852,7 +867,7 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 20))
                     .shadow(radius: 20)
                     .padding(.horizontal, 32)
-                    .onAppear { announcementDismissCountdown = 10 }
+                    .onAppear { announcementDismissCountdown = 5 }
                 }
             }
         }

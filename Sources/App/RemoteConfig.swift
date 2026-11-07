@@ -34,6 +34,9 @@ struct RemoteConfig: Equatable {
         var title: String = ""
         var body: String = ""
         var link: String = ""
+        /// 内测群链接（run #173）：可选字段，非空时公告卡片多一
+        /// 个「加入CocoWall内测群」按钮；缺失/为空即不显示。
+        var groupLink: String = ""
     }
 
     struct AppInfo: Equatable {
@@ -97,7 +100,7 @@ extension RemoteConfig: Decodable {
 
     private struct AnnouncementBox: Decodable {
         var value: RemoteConfig.Announcement
-        private enum K: String, CodingKey { case id, title, body, link }
+        private enum K: String, CodingKey { case id, title, body, link, groupLink }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: K.self)
             var a = RemoteConfig.Announcement()
@@ -105,6 +108,7 @@ extension RemoteConfig: Decodable {
             a.title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? ""
             a.body = (try? c.decodeIfPresent(String.self, forKey: .body)) ?? ""
             a.link = (try? c.decodeIfPresent(String.self, forKey: .link)) ?? ""
+            a.groupLink = (try? c.decodeIfPresent(String.self, forKey: .groupLink)) ?? ""
             value = a
         }
     }
@@ -187,6 +191,9 @@ final class RemoteConfigService: ObservableObject {
 
     private enum Keys {
         static let lastReadAnnouncementID = "cw.remoteConfig.lastReadAnnouncementID"
+        /// 公告上次弹出的那天 0 点时间戳（run #173：每天都提示一
+        /// 次）：同一 id 当天已读过的不重弹，到了第二天再弹。
+        static let lastAnnouncementDay = "cw.remoteConfig.lastAnnouncementDay"
         /// 「明天再提醒」休眠到期的时间戳（run #172）：到明天 0 点
         /// 前普通提醒不弹；强更不受休眠影响。
         static let updateSnoozedUntil = "cw.remoteConfig.updateSnoozedUntil"
@@ -235,6 +242,8 @@ final class RemoteConfigService: ObservableObject {
         switch prompt {
         case .announcement(let a):
             UserDefaults.standard.set(a.id, forKey: Keys.lastReadAnnouncementID)
+            // run #173：记下今天已弹过——当天不再重弹，明天再弹。
+            UserDefaults.standard.set(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970, forKey: Keys.lastAnnouncementDay)
         case .update(let info):
             if !info.forceUpdate {
                 updateDismissedVersionThisLaunch = info.latestVersion
@@ -296,7 +305,12 @@ final class RemoteConfigService: ObservableObject {
         let a = config.announcement
         guard a.id > 0, !a.title.isEmpty || !a.body.isEmpty else { return nil }
         let lastRead = UserDefaults.standard.integer(forKey: Keys.lastReadAnnouncementID)
-        return a.id > lastRead ? a : nil
+        if a.id > lastRead { return a }
+        // run #173：每天都提示一次——同一 id 当天已读过的不重弹，
+        // 到了第二天再弹一次（新 id 不受此限，上面已直接返回）。
+        let lastDay = UserDefaults.standard.double(forKey: Keys.lastAnnouncementDay)
+        let todayStart = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+        return lastDay < todayStart ? a : nil
     }
 
     static var currentAppVersion: String {
