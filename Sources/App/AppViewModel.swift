@@ -296,12 +296,15 @@ final class AppViewModel: ObservableObject {
 
     /// 记录一次失败的诊断日志：时间、版本、系统、回环与配对状态、
     /// 失败步骤、底层原始错误。调用方在各自 catch 里记一笔即可。
+    /// run #174：错误 userInfo 里带 CWAttemptLog（容器检测的逐条
+    /// 连接尝试，见 TendiesEngine）时附在末尾——只看最后一条
+    /// 错误定位不了粉丝机上全部地址超时的问题。
     func recordDiagnostics(step: String, error: Error) {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-        let lines = [
+        var lines = [
             "CocoWall 诊断日志",
             "时间：\(formatter.string(from: Date()))",
             "App 版本：\(RemoteConfigService.currentAppVersion) (build \(build))",
@@ -311,6 +314,10 @@ final class AppViewModel: ObservableObject {
             "失败步骤：\(step)",
             "原始错误：\(error.localizedDescription)",
         ]
+        if let attemptLog = (error as NSError).userInfo["CWAttemptLog"] as? String, !attemptLog.isEmpty {
+            lines.append("连接尝试：")
+            lines.append(attemptLog)
+        }
         lastDiagnosticsLog = lines.joined(separator: "\n")
     }
 

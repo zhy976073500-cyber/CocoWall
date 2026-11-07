@@ -9,6 +9,30 @@ import UIKit
 import Foundation
 import AirliftFFI
 
+// run #174：容器检测的逐条连接日志收集器。Rust 侧
+// connect_tunnel / try_rsd / try_lockdown 的每次尝试都经
+// Logger.log 输出，但此前 detectPosterBoardContainer 传
+// nil 回调、日志全丢，诊断日志只剩最后一条错误——粉丝机
+// 上全部地址超时时看不出试了哪些地址。本版传真实回调，
+// 把本次调用的全部日志行收进 collector，失败时随错误带
+// 回（userInfo["CWAttemptLog"]），由 recordDiagnostics
+// 附进诊断日志。回调与 Rust 调用同线程同步执行，collector
+// 由局部变量持有，passUnretained 安全；NSLock 防万一。
+fileprivate final class ContainerDetectLogCollector {
+    var lines: [String] = []
+    let lock = NSLock()
+    func append(_ line: String) {
+        lock.lock(); defer { lock.unlock() }
+        lines.append(line)
+    }
+}
+
+fileprivate func containerDetectLogCallback(ctx: UnsafeMutableRawPointer?, msg: UnsafePointer<CChar>?) {
+    guard let ctx = ctx, let msg = msg else { return }
+    let collector = Unmanaged<ContainerDetectLogCollector>.fromOpaque(ctx).takeUnretainedValue()
+    collector.append(String(cString: msg))
+}
+
 public final class TendiesEngine {
     public static let shared = TendiesEngine()
 
@@ -191,10 +215,12 @@ public final class TendiesEngine {
             DispatchQueue.global(qos: .userInitiated).async {
                 var outContainer: UnsafeMutablePointer<CChar>? = nil
                 var outError: UnsafeMutablePointer<CChar>? = nil
+                let collector = ContainerDetectLogCollector()
+                let ctx = Unmanaged.passUnretained(collector).toOpaque()
 
                 let rc = pairingPath.withCString { pairC in
                     "com.apple.PosterBoard".withCString { bundleC in
-                        al_find_app_container(pairC, bundleC, nil, nil, &outContainer, &outError)
+                        al_find_app_container(pairC, bundleC, containerDetectLogCallback, ctx, &outContainer, &outError)
                     }
                 }
 
@@ -208,10 +234,15 @@ public final class TendiesEngine {
                         al_string_free(p)
                         return s
                     } ?? "Failed to find PosterBoard container"
+                    var userInfo: [String: Any] = [NSLocalizedDescriptionKey: errStr]
+                    let lines = collector.lines
+                    if !lines.isEmpty {
+                        userInfo["CWAttemptLog"] = lines.joined(separator: "\n")
+                    }
                     continuation.resume(throwing: NSError(
                         domain: "TendiesEngine",
                         code: Int(rc),
-                        userInfo: [NSLocalizedDescriptionKey: errStr]
+                        userInfo: userInfo
                     ))
                 }
             }

@@ -4749,3 +4749,32 @@ Sage 18:34 追加：文案仍用昨天的（教程），底下加一个「加入
 
 - 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（改动均为现成 API 与纯逻辑：`overlay`、`disabled`、`opacity`、`onAppear`、`onReceive`、UserDefaults 日期）。完整 App 的真机端到端待 CI 出包后 Sage 真机验：① 1.0.7 上公告弹窗是卡片不是系统 alert，「关闭」显示 5 秒倒计时，倒数完才可点；② 「查看教程」与「加入CocoWall内测群」不用等，点了各开链接并记已读；③ 点遮罩不关闭；④ 同一公告第二天进 App 再弹一次，当天不重弹；⑤ 更新弹窗三件套与强更行为不变；⑥ 关于页 / 设置页显示的版本号为 1.0.7。
 - 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。
+
+## 改动登记 · 诊断日志附逐条连接尝试：容器检测传真实日志回调 + connect_tunnel 记候选地址与配对文件构成 + 版本 1.0.8（run #174，2026-11-07；Sage 拍板先解决粉丝 RSD 失败；Swift + Rust）
+
+### 版本命名
+
+**1.0.8**（build 9）。按 #167 定例：每次修 bug / 加功能都更新版本号。project.yml：MARKETING_VERSION 1.0.7 → 1.0.8，CURRENT_PROJECT_VERSION 8 → 9。注：1.0.7（build 8，commit 4c78c01，公告自定义卡片）已由 Sage 于 2026-11-07 19:24 作废、不发；其卡片代码仍在 main，本版 1.0.8 从该 main 起步，故卡片一并在包里（用户更新到 1.0.8 后公告即卡片样式；不更新的用户仍走配置、系统 alert 看 id 2 公告）。
+
+### 背景（粉丝诊断日志，2026-11-07 18:24:17）
+
+App 1.0.6（build 7）、iOS 27.0、回环已连接、配对文件已就绪，失败步骤「查找 PosterBoard 容器」，原始错误「Device connection failed: 172.16.0.1:49152: RemoteXPC timed out after 2.5s」。粉丝已试过开发者模式、保持亮屏解锁、开关回环、删配对文件重配四步，仍失败。
+
+此前分析（见 #169 诊断日志设计与本次排查）：`connect_tunnel` 按顺序试全部候选地址（TARGET_HOST + Swift 提供的 EXTRA hosts 含 Wi-Fi IP + 默认 10.7.0.1/10.7.0.2/10.7.0.3/10.0.0.1/172.16.0.1），每地址 RSD 49152 端口 RemoteXPC 等 2.5 秒，`last_error` 每试一次就覆盖，最后只剩 172.16.0.1 这一条——它只是最后试的，不是唯一试的；全部超时指向设备上的 RSD 服务本身没响应，而非路由问题。最终错误是 RSD 的不是 Lockdown 的，说明配对文件只有 RP 凭证、无 Lockdown 记录（App 内 RPPairing 配对的特征）。「回环：已连接」只查路由存在、不查服务应答。且 `detectPosterBoardContainer` 传 nil 日志回调，Rust 的逐条尝试日志全丢，诊断日志只剩最后一条错误，无法定位。
+
+### 改动
+
+1. **rust-core/src/exploit.rs：`connect_tunnel` 开头记两行诊断**。候选地址清单（`target hosts (N): a, b, c...`，含 Swift 传来的 EXTRA hosts）与配对文件构成（`pairing file: lockdown=true/false, rp=true/false`），让诊断日志一眼看出试了哪些地址、配对文件是 RP-only 还是带 Lockdown 记录。逐条尝试的日志（`trying RSD tunnel on {ip}:49152...` / `RemoteXPC ... timed out after 2.5s` / Lockdown 62078 尝试）此前已在 `try_rsd` / `try_lockdown` 里，本版不动。
+2. **Sources/App/TendiesEngine.swift：容器检测传真实日志回调**。新增文件级 `ContainerDetectLogCollector`（NSLock + 行数组）与 `containerDetectLogCallback`（C 函数指针，从 ctx 取回 collector、逐行追加）；`detectPosterBoardContainer` 不再传 `nil, nil`，改传回调 + `Unmanaged.passUnretained(collector).toOpaque()`。回调与 Rust 调用同线程同步执行，collector 由局部变量持有，安全。失败时把收集到的行以 `userInfo["CWAttemptLog"]`（换行拼接）随 NSError 带回；成功路径不变。
+3. **Sources/App/AppViewModel.swift：`recordDiagnostics` 附连接尝试**。错误 userInfo 里有 `CWAttemptLog` 且非空时，在「原始错误：」之后追加「连接尝试：」+ 全部日志行。诊断日志其余字段与格式不变；三处 `detectPosterBoardContainer` 调用点（自动检测、刷入前检测、静默检测）均走同一 `recordDiagnostics`，无需改调用点。
+4. **版本号 1.0.8（build 9）**，见本节首段。
+
+### 未改动
+
+- 连接逻辑本身未动：候选地址顺序、每地址 2.5 秒超时、RSD 优先再 Lockdown、缓存路由快路径、127.0.0.1 不自动追加，均与 1.0.6 一致。`CWLogGate.detailedLogsEnabled` 仍为 false（全局 `al_log_init` 桥仍关闭）；本版诊断只靠本次调用的 per-call 回调，不依赖全局日志闸。
+- 公告配置（id 2 内测群）与远程配置、强更、匿名计数均未动。
+
+### 未验证项
+
+- 本机无 Swift/Rust 工具链，swiftc -parse 与 cargo check 均未跑；语法与类型靠人工逐项核对 + CI 构建核验（Rust 改动为两行 `logger.log(format!(...))`；Swift 改动为现成 API：`Unmanaged`、`NSLock`、NSError userInfo）。完整 App 的真机端到端待 CI 出包后 Sage / 粉丝真机验：① 1.0.8 上复现失败时，诊断日志（作者页头像三击复制 / 设置页问题反馈）末尾出现「连接尝试：」段，含候选地址清单、配对文件构成、每地址 RSD 尝试与结果；② 容器检测成功时行为不变；③ 关于页 / 设置页显示的版本号为 1.0.8；④ 公告在 1.0.8 上为自定义卡片样式（5 秒倒计时 + 内测群按钮 + 每天一次）。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变；清单内容与 1.0.2–1.0.7 逐字节一致，可复用）。
