@@ -4850,3 +4850,25 @@ worse_query（forcequitOS，2026-11-08 公开，GPL-3.0，bad_query 继任者）
 - 完整 App 的真机端到端待 CI 出包后 Sage 真机验（手册 §8 验证 1 优先）：① 任意 iOS 26.0+ / 27.2 真机，普通 Apple ID，分别经 AltStore、SideStore 各装一次：设置 → 支持系统 → 新路线卡显示 App Group「已放行」且含 group id，头像三击复制的诊断日志含同样的 App Group 与新路线两行；② 同一设备换另一侧载工具重装后点「重新检测 App Group」，状态刷新正确；③ 27.2 真机点刷入：提示「暂不支持刷入」（逃逸触发未实现），不进配对流程、不闪退；④ 26.x / 27.0–27.1 真机刷入：走现有路线，行为与 1.0.9 一致，刷入日志首行含新路线回退说明；⑤ 关于页 / 设置页显示的版本号为 1.0.10；⑥ CI 日志含 ad-hoc 签名步骤成功、签名里查到 `com.apple.security.application-groups`。
 - 验证 1 若在免费账号 + AltStore / SideStore 上均判未放行：该设备上新路线判死，走现有配对路线，并记录工具名、工具版本、系统版本；付费账号只作对照实验，不作默认解法。逃逸触发的四个未知项（服务、查询参数、扩展持有、超时重试）须真机联调实测后才能填，填之前不得宣称支持 27.2 刷入。
 - 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。
+
+## 改动登记 · 公告弹窗关不掉修复：拿掉「关闭」5 秒倒计时 + 点遮罩也能关 + 版本 1.0.11（run #177，2026-11-09；Sage 真机反馈弹窗关不掉；纯 Swift 侧 + project.yml，rust 零改动）
+
+**1.0.11**（build 12）。按 #167 定例：每次修 bug / 加功能都更新版本号。project.yml：MARKETING_VERSION 1.0.10 → 1.0.11，CURRENT_PROJECT_VERSION 11 → 12。
+
+### 背景
+
+Sage 真机（iOS 27.0.1，1.0.10）反馈：公告弹窗「CocoWall内测群」关不掉。截图显示「关闭」按钮已无倒计时数字（倒计时走完、按钮应已可用），但点按无反应。dismiss 链路经核查无硬错（`dismissPrompt()` 记已读 id + 当天、prompt 置 nil、Combine 同步到 `remotePrompt`；`pendingAnnouncement` 的 id 与当天两道门均能挡住重弹；`refreshFromNetwork` 后的重评估同样不重弹），倒计时走完仍关不掉的直接原因未在代码里定位到。为根治「关不掉」这一体感，索性拿掉倒计时本身，并给遮罩加关闭手势——弹窗的关闭路径不再依赖任何计时器状态。
+
+### 改动
+
+1. **`Sources/App/ContentView.swift`（公告卡片）**。「关闭」按钮改回纯文本「关闭」，删 `.disabled` 与 `.opacity` 的倒计时条件、删 `.onAppear { announcementDismissCountdown = 5 }`；遮罩 `Color.black.opacity(0.4)` 加 `.onTapGesture { vm.remoteConfig.dismissPrompt() }`，点卡片外任意处即关闭并记已读。删 `@State announcementDismissCountdown` 及其在 `.onReceive` 里的每秒递减；`updateCountdownTimer` 与 `updateDismissCountdown` 保留（版本提醒的「以后再说」10 秒倒计时不受影响）。
+2. **版本号 1.0.11（build 12）**，见本节首段。
+
+### 未改动
+
+- 公告内容、id 2、每天提示一次、已读记账、查看教程 / 加入内测群两个按钮、版本提醒三件套、Clownfish 重写、worse_query 路线、回环 / 配对 / AFC / Books 注入、Rust 核心均未动。
+
+### 未验证项
+
+- 本机无 Swift 工具链，语法靠人工核对 + CI 构建核验（改动只删代码与加一个手势，无新 API）。真机待 CI 出包后 Sage 验：① 进 App 公告弹出后立刻点「关闭」，弹窗消失且当天不再弹；② 点遮罩任意处，同样关闭且当天不再弹；③ 明天进 App 公告再弹一次（每天一次不变）；④ 关于页 / 设置页版本号为 1.0.11。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。

@@ -758,9 +758,9 @@ struct ContentView: View {
     // 更新弹窗倒计时（run #172）：「以后再说」按钮 10 秒后才可点，
     // 每秒减 1；弹窗每次出现都从 10 重新计。
     @State private var updateDismissCountdown = 10
-    // 公告弹窗倒计时（run #173）：「关闭」按钮 10 秒后才可点，
-    // 每秒减 1；弹窗每次出现都从 10 重新计。
-    @State private var announcementDismissCountdown = 5
+    // 公告弹窗（run #173 建、run #177 改）：「关闭」原来有 5 秒
+    // 倒计时，实测用户点关闭没反应、以为关不掉——倒计时已拿
+    // 掉，「关闭」随时可点，点遮罩也能关。
     private let updateCountdownTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     // 远程配置弹窗（run #159）：待弹项由 RemoteConfigService
@@ -813,16 +813,17 @@ struct ContentView: View {
         // id 才弹一次，关闭即记已读；link 非空时多一个「查看教程」
         // 跳浏览器。系统 .alert 的按钮不支持带倒计时的禁用态，
         // 改 .overlay 居中卡片（与 #172 更新卡片同款）：遮罩 40%
-        // 黑、点遮罩不关闭，必须选按钮；「关闭」5 秒倒计时，
-        // 倒数完才可点（Sage 2026-11-07 定，10 秒改 5 秒）；「查看教程」
-        // 与「加入CocoWall内测群」是正向动作，不等倒计时，点了即
-        // 开链接并记已读。groupLink 非空时才显示内测群按钮。
+        // 黑；「查看教程」与「加入CocoWall内测群」是正向动作，
+        // 点了即开链接并记已读。groupLink 非空时才显示内测群按钮。
         // run #173：公告每天都提示一次（RemoteConfig 记当天已弹）。
+        // run #177：5 秒倒计时拿掉——「关闭」随时可点，点遮罩也
+        // 能关，弹窗再也关不掉的问题到此为止。
         .overlay {
             if let ann = vm.remotePrompt?.announcementValue {
                 ZStack {
                     Color.black.opacity(0.4)
                         .ignoresSafeArea()
+                        .onTapGesture { vm.remoteConfig.dismissPrompt() }
                     VStack(alignment: .leading, spacing: 16) {
                         Text(ann.title.isEmpty ? "公告" : ann.title)
                             .font(.headline)
@@ -857,9 +858,7 @@ struct ContentView: View {
                                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(red: 0, green: 113.0 / 255, blue: 227.0 / 255), lineWidth: 1.5))
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                             }
-                            Button(announcementDismissCountdown > 0
-                                   ? "关闭（\(announcementDismissCountdown)秒后可关闭）"
-                                   : "关闭") {
+                            Button("关闭") {
                                 vm.remoteConfig.dismissPrompt()
                             }
                             .frame(maxWidth: .infinity)
@@ -868,8 +867,6 @@ struct ContentView: View {
                             .foregroundStyle(.primary)
                             .font(.subheadline.weight(.semibold))
                             .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .disabled(announcementDismissCountdown > 0)
-                            .opacity(announcementDismissCountdown > 0 ? 0.5 : 1)
                         }
                     }
                     .padding(20)
@@ -878,7 +875,6 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 20))
                     .shadow(radius: 20)
                     .padding(.horizontal, 32)
-                    .onAppear { announcementDismissCountdown = 5 }
                 }
             }
         }
@@ -973,9 +969,6 @@ struct ContentView: View {
         .onReceive(updateCountdownTimer) { _ in
             if vm.remotePrompt?.updateValue != nil, updateDismissCountdown > 0 {
                 updateDismissCountdown -= 1
-            }
-            if vm.remotePrompt?.announcementValue != nil, announcementDismissCountdown > 0 {
-                announcementDismissCountdown -= 1
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: vm.toastMessage)
