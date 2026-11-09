@@ -4778,3 +4778,40 @@ App 1.0.6（build 7）、iOS 27.0、回环已连接、配对文件已就绪，�
 
 - 本机无 Swift/Rust 工具链，swiftc -parse 与 cargo check 均未跑；语法与类型靠人工逐项核对 + CI 构建核验（Rust 改动为两行 `logger.log(format!(...))`；Swift 改动为现成 API：`Unmanaged`、`NSLock`、NSError userInfo）。完整 App 的真机端到端待 CI 出包后 Sage / 粉丝真机验：① 1.0.8 上复现失败时，诊断日志（作者页头像三击复制 / 设置页问题反馈）末尾出现「连接尝试：」段，含候选地址清单、配对文件构成、每地址 RSD 尝试与结果；② 容器检测成功时行为不变；③ 关于页 / 设置页显示的版本号为 1.0.8；④ 公告在 1.0.8 上为自定义卡片样式（5 秒倒计时 + 内测群按钮 + 每天一次）。
 - 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变；清单内容与 1.0.2–1.0.7 逐字节一致，可复用）。
+
+## 改动登记 · iOS 27 旧包 Clownfish 重写：导入检测 + 转换提示 + 刷入前重写（run #175，2026-11-09；Sage 令加 GoldenNugget 的 Clownfish 重写功能；Swift）
+
+### 版本命名
+
+**1.0.9**（build 10）。按 #167 定例：每次修 bug / 加功能都更新版本号。project.yml：MARKETING_VERSION 1.0.8 → 1.0.9，CURRENT_PROJECT_VERSION 9 → 10。
+
+### 背景（设计合约已批）
+
+Sage 2026-11-09 04:03 发 GoldenNugget 截图（iOS 27 仅针对现代 "Clownfish" 布局构建景深效果，27 之前的包应用时会被重写），令把这个功能加到 CocoWall。cc 按 reference-design-contract 规矩先拆合约、经 Sage 点头（全 family 都重写）再动手。合约全文：`~/workspace/cocowall-release/contract-clownfish-rewrite.md`。
+
+参考实现已逐行核对：GoldenNugget `src/tweaks/posterboard/posterboard_converter.py`（1188 行）与 `posterboard_tweak.py` 的导入提示 + 应用时调用；手机版 Swift `Nugget/Core/PosterBoardConverter.swift`（1291 行）逻辑一致。**许可硬线：GoldenNugget 是 AGPL-3.0，代码不能搬进闭源 CocoWall**——本轮为按行为描述的 Swift clean-room 重写，只复用 PosterKit 格式本身的事实，不抄 GoldenNugget 代码。
+
+### 改动
+
+1. **新增 `Sources/App/ClownfishRewriter.swift`（996 行，纯文件 I/O）**。判定：描述符有壁纸平面、但没有任何一个平面的 `index.xml` 含 `publishedObjectNames` → 旧包；Mercury 包直接跳过（布局完全不同，重写会毁掉它）；已现代的包不动。转换（每描述符）：发布各平面根图层（根 `CALayer` 的 `id` 改角色名、内部 `targetId` 跟指、`name`/`position` 不动、像素画布 fit 缩放）→ 删外部 `<scriptObject>` → 危险 CAML（`LKStateAddElement`/`LKStateRemoveElement`/`CAMeshTransform`）拍平成单张静态图 → 缺 Foreground 补空透明已发布平面 → 纯色背景渲染成 PNG 补实图 → `Wallpaper.plist` 改 `family=Clownfish` 并补 `contentVersion 1.01` / `disableAdaptiveTime` / `maximumAdaptiveTimeMultiplier 2.0` / `LayeredAnimation` 与平面文件名键 → 写两个深度配置 plist（`configurableOptions` 与 `renderingConfiguration`，`depthEffectDisabled=false`，固定内容以 base64 常量内嵌，直接写出）→ `index.xml` 按现代模板重写（含 `publishedObjectNames`）→ 包与平面改名成 stock 形状（`<assetId>.Clownfish-<逻辑屏类>.wallpaper` 与 `<assetId>.Clownfish_<角色>-<逻辑屏类>.ca`）。已现代的包也过一遍安全处理（只删脚本 / 拍平危险平面）。与 GoldenNugget 原规则的一处不同（合约 §6，Sage 已批）：重写集合为全部旧包 family，不只限 Marble/Lavender——否则 CocoWall 自己的壁纸（family 为 WWDC22 / CocoWallKeyframe）一个都不会被转换。手机版注释亦佐证：WWDC22 包不重写就一直是平的，但 GoldenNugget 的重写集合里却没放 WWDC22。
+2. **`Sources/App/TendiesModel.swift`：`TendieItem` 加两个字段**。`legacyFamilies: [String]`（导入时检测到的旧包 family，空 = 不是旧包）与 `convertToClownfish: Bool`（默认 true；用户在导入提示里选「原样安装」后记 false）。旧版存盘数据没有这两个键：扩展里写自定义 `init(from:)`，逐项 `decodeIfPresent`、缺失给默认值，旧库绝不因缺键解码失败。
+3. **`Sources/App/TendiesEngine.swift`：导入检测 + 刷入前转换**。`importTendie` 在解压后的树上直接判定旧包，记进返回的 `TendieItem`。`flashTendies` 每包解压后、标识重写之前：仅当目标 iOS 27+ 且该条目 `convertToClownfish` 为真时，对解压树执行 `convertTree` + `renameDescriptorsToSkeleton`，逐项记日志（已转换 / 安全处理 / 转换失败）；转换失败只记日志、不中断刷入。跑在标识重写之前：转换先用原 assetId 改名，标识重写再把整套名字换成新 base，两步衔接、最终一致；描述符文件夹本身不改名，后面的 `findDescriptors` / 注入不受影响。
+4. **`Sources/App/AppViewModel.swift` + `Sources/App/ContentView.swift`：导入转换提示**。仅 iOS 27+ 且条目确为旧包时，导入后逐包弹「旧版壁纸」提示（「转换」/「原样安装」），一次只弹一个、多包排队。默认即转换（`convertToClownfish` 初始 true）；直接关掉提示不点按钮 = 保持默认转换；点「原样安装」才记 false 并落盘。两处导入入口（`importTendieFiles` 与 `IntakeRouter.importTendieViaIntake`）均在成功导入后调用 `offerLegacyConvert`。
+5. **版本号 1.0.9（build 10）**，见本节首段。
+
+### 未改动
+
+- 注入机制（回环 + 配对 → AFC → Books 同步）、.tendies 解析、刷入流程、配置与公告、匿名计数均未动。
+- 27 以下不提示、不重写；Mercury 包与已现代的包不动；选「原样安装」的包刷入时原样装。
+
+### 已验证项（本机，2026-11-09）
+
+- 参考实现输出（GoldenNugget Python 转换器，`99_3.tendies` WWDC22 包）：三平面 `index.xml` 均含 `publishedObjectNames`；`Wallpaper.plist` 的 `family` 为 `Clownfish`、`contentVersion 1.01`、`disableAdaptiveTime` true、`maximumAdaptiveTimeMultiplier 2.0`、`type` LayeredAnimation；两个深度配置 plist 齐全（282 / 912 字节，`depthEffectDisabled` false）；三平面 `main.caml` 根 id 分别为 Background / Floating / Foreground，无 `scriptObject`、无 `LKStateAddElement`，`LKState` 三态值保留；改名后包为 `7400.Clownfish-390w-844h@3x~iphone.wallpaper`。
+- 本轮 Swift 内嵌的两个深度配置 plist 与参考实现输出**逐字节一致**（912 / 282 字节）；`modernIndexXML` 模板与参考实现输出的 `index.xml` 结构一致（键序、tab 缩进、`<real>390</real>` / `<real>844</real>`）。
+- CocoWall 现有样本实测：全部没有 `publishedObjectNames`（按判定都是旧包），family 为 WWDC22 / CocoWallKeyframe（不在 GoldenNugget 的 Marble/Lavender 集合里，故合约把集合扩到全部旧包 family），全部没有 `LKStateAddElement` / `<scriptObject>`（不会触发拍平；动画为 `CAKeyframeAnimation` + `LKState`，发布根层时 `targetId` 跟着改指，应能保留——须真机验）。
+- 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（新文件只用 Foundation / UIKit 现成 API：`NSRegularExpression`、`PropertyListSerialization`、`UIGraphicsImageRenderer`；正则模式与 Python 版逐项对过；`String(format:)` 均指定 `en_US_POSIX` locale，防逗号小数点地区）。
+
+### 未验证项
+
+- 完整 App 的真机端到端待 CI 出包后 Sage 真机验（合约 §9）：① 旧包样本导入 iOS 27 真机、选「转换」：转换后的包每平面 `index.xml` 含 `publishedObjectNames`，`Wallpaper.plist` 的 `family` 为 `Clownfish` 且有两个深度配置 plist，包名与平面名符合 stock 形状；② 同一包选「原样安装」：内容逐字节不变；③ iOS 27 真机上，转换后的壁纸刷入后锁屏有景深效果，且原有动画（摇摆 / 上下浮 / 三态）仍正常；④ 已现代的包与 Mercury 包导入时不被改动；⑤ iOS 26（含）以下导入旧包不提示、不重写；⑥ 关于页 / 设置页显示的版本号为 1.0.9。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变；清单内容与 1.0.2–1.0.8 逐字节一致，可复用）。

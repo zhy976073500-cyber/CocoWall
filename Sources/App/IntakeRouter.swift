@@ -172,6 +172,8 @@ extension AppViewModel {
             tendieItems.append(item)
             saveTendieItems()
             applyTendieSort()
+            // run #175：旧包转换提示（iOS 27+ 才问；其余静默默认转换）。
+            offerLegacyConvert(for: item)
             showToast("导入成功")
             if switchTab {
                 selectedTab = .wallpapers

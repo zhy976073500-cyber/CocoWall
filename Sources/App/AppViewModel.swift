@@ -187,6 +187,13 @@ final class AppViewModel: ObservableObject {
     @Published var tendiesFlashProgress: Double = 0
     @Published var tendiesFlashLog: [String] = []
     @Published var isNeoSpringing: Bool = false
+    /// run #175：iOS 27 旧包转换提示。导入时检测到旧包（legacyFamilies
+    /// 非空）且目标为 iOS 27+，逐包问「转换 / 原样安装」。默认即转换
+    /// （item.convertToClownfish 初始 true），用户不答或点「转换」
+    /// 都按转换；点「原样安装」记 false、刷入时原样装。一次只弹一
+    /// 个，多包排队（legacyConvertQueue）。
+    @Published var legacyConvertPrompt: LegacyConvertPrompt? = nil
+    private var legacyConvertQueue: [LegacyConvertPrompt] = []
     private var previewRegenInFlight: Set<UUID> = []
     /// 预览再生等待队列（run #148）：展开页快速滑动时
     /// 单元格 .task 会成批请求再生，无上限并发解压会把
@@ -1283,6 +1290,8 @@ final class AppViewModel: ObservableObject {
                     self.saveTendieItems()
                     importedCount += 1
                     lastImportedName = item.name
+                    // run #175：旧包转换提示（iOS 27+ 才问；其余静默默认转换）。
+                    self.offerLegacyConvert(for: item)
                 }
             } catch {
                 await MainActor.run {
@@ -1299,6 +1308,43 @@ final class AppViewModel: ObservableObject {
                 self.showToast("导入成功")
             }
         }
+    }
+
+    /// run #175：iOS 27 旧包转换提示（见 tendieItems 上方的注释）。
+    /// 只在 iOS 27+ 且条目确为旧包时排队；其余情况静默（默认转换）。
+    struct LegacyConvertPrompt: Identifiable {
+        let id = UUID()
+        let itemID: UUID
+        let itemName: String
+        let families: [String]
+    }
+
+    func offerLegacyConvert(for item: TendieItem) {
+        guard ClownfishRewriter.isConversionSupported(
+            majorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion),
+              !item.legacyFamilies.isEmpty else { return }
+        legacyConvertQueue.append(LegacyConvertPrompt(
+            itemID: item.id, itemName: item.name, families: item.legacyFamilies))
+        presentNextLegacyConvertPrompt()
+    }
+
+    private func presentNextLegacyConvertPrompt() {
+        guard legacyConvertPrompt == nil, let next = legacyConvertQueue.first else { return }
+        legacyConvertQueue.removeFirst()
+        legacyConvertPrompt = next
+    }
+
+    /// 提示的回答：true = 转换（默认，已是初始值，仅落盘确认），
+    /// false = 原样安装（刷入时跳过重写）。答完弹队列里下一个。
+    /// 提示被直接关掉（不点按钮）时条目保持默认 true，不另处理。
+    func answerLegacyConvert(_ convert: Bool) {
+        guard let prompt = legacyConvertPrompt else { return }
+        legacyConvertPrompt = nil
+        if let idx = tendieItems.firstIndex(where: { $0.id == prompt.itemID }) {
+            tendieItems[idx].convertToClownfish = convert
+            saveTendieItems()
+        }
+        presentNextLegacyConvertPrompt()
     }
 
     func deleteTendie(item: TendieItem) {

@@ -188,7 +188,11 @@ public final class TendiesEngine {
             posterType: posterType,
             previewImageData: previewData,
             dateImported: Date(),
-            isSelected: true
+            isSelected: true,
+            // run #175：iOS 27 旧包检测。解压后的树上直接判定
+            // （有壁纸平面、但没有任何一个平面已发布）；Mercury
+            // 包不算旧包。结果供导入提示与刷入时转换决策用。
+            legacyFamilies: ClownfishRewriter.legacyFamilies(in: tempExtractDir)
         )
     }
 
@@ -367,6 +371,31 @@ public final class TendiesEngine {
             guard extractRC == 0 else {
                 log("❌ Failed to extract '\(item.name)'")
                 continue
+            }
+
+            // Run #175：iOS 27 Clownfish 重写。仅当用户在导入时选了
+            // 「转换」（默认即转换；旧库条目默认 true）且目标为 iOS 27+。
+            // 在解压树上原地执行：旧描述符改现代布局，已现代但带危险
+            // CAML/脚本的只做安全处理；Mercury 包与非旧包不动。随后
+            // 按 stock 形状改名。转换失败只记日志、不中断刷入（原包
+            // 照常走下面的标识重写与注入）。跑在标识重写之前：转换
+            // 用原 assetId 改名，标识重写再把整套名字换成新 base，
+            // 两步衔接、最终一致；描述符文件夹本身不改名，后面的
+            // findDescriptors / 注入不受影响。
+            if ClownfishRewriter.isConversionSupported(majorVersion: majorVer), item.convertToClownfish {
+                let converted = ClownfishRewriter.convertTree(at: tempStageDir)
+                for summary in converted {
+                    if let failed = summary.failed {
+                        log("  ⚠️ Clownfish 转换失败 \(summary.descriptor)：\(failed)")
+                    } else if summary.flattened {
+                        log("  🧹 Clownfish 安全处理 \(summary.wallpaper)：危险平面已拍平")
+                    } else {
+                        log("  ✨ Clownfish 已转换 \(summary.wallpaper)（\(summary.screen)，平面：\(summary.planes.joined(separator: "、"))）")
+                    }
+                }
+                for renamed in ClownfishRewriter.renameDescriptorsToSkeleton(at: tempStageDir) {
+                    log("  🏷 Clownfish 已改名 \(renamed.wallpaper)")
+                }
             }
 
             log("  🖼 Locating wallpaper descriptors…")

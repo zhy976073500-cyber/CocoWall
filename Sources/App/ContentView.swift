@@ -793,6 +793,17 @@ struct ContentView: View {
         } message: {
             Text(vm.errorMessage ?? "")
         }
+        // run #175：iOS 27 旧包转换提示。直接关掉（不点按钮）= 保持
+        // 默认「转换」，不另记；点「原样安装」才记 false。
+        .alert("旧版壁纸", isPresented: Binding(
+            get: { vm.legacyConvertPrompt != nil },
+            set: { if !$0 { vm.legacyConvertPrompt = nil } }
+        )) {
+            Button("转换") { vm.answerLegacyConvert(true) }
+            Button("原样安装") { vm.answerLegacyConvert(false) }
+        } message: {
+            Text("「\(vm.legacyConvertPrompt?.itemName ?? "")」是 iOS 27 之前做的旧包，直接装没有景深。转换后按新布局重写，景深能出来，但外观可能有细微变化。")
+        }
         .alert("成功！🎉", isPresented: $vm.showSuccessAlert) {
             Button("好") {}
         } message: {

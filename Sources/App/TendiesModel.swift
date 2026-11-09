@@ -57,6 +57,13 @@ public struct TendieItem: Identifiable, Codable, Equatable {
     public var previewImageData: Data?
     public var dateImported: Date
     public var isSelected: Bool
+    /// run #175：导入时检测到的旧包 family（iOS 27 之前做的包）。
+    /// 空 = 不是旧包（或导入时未检测）。仅作提示与刷入决策用。
+    public var legacyFamilies: [String] = []
+    /// run #175：iOS 27+ 上刷入时是否把旧包重写成 Clownfish 布局。
+    /// 默认 true（GoldenNugget 的默认也是转换）；用户在导入提示里
+    /// 选「原样安装」后记 false。非旧包时此值无意义。
+    public var convertToClownfish: Bool = true
 
     public init(
         id: UUID = UUID(),
@@ -69,7 +76,9 @@ public struct TendieItem: Identifiable, Codable, Equatable {
         posterType: TendiePosterType = .collections,
         previewImageData: Data? = nil,
         dateImported: Date = Date(),
-        isSelected: Bool = true
+        isSelected: Bool = true,
+        legacyFamilies: [String] = [],
+        convertToClownfish: Bool = true
     ) {
         self.id = id
         self.name = name
@@ -82,6 +91,8 @@ public struct TendieItem: Identifiable, Codable, Equatable {
         self.previewImageData = previewImageData
         self.dateImported = dateImported
         self.isSelected = isSelected
+        self.legacyFamilies = legacyFamilies
+        self.convertToClownfish = convertToClownfish
     }
 
     public var fileURL: URL {
@@ -99,5 +110,28 @@ public struct TendieItem: Identifiable, Codable, Equatable {
         lhs.isSelected == rhs.isSelected &&
         lhs.descriptorCount == rhs.descriptorCount &&
         lhs.previewImageData?.count == rhs.previewImageData?.count
+    }
+}
+
+// MARK: - 解码兼容（run #175）
+
+extension TendieItem {
+    /// 旧版存盘数据没有 legacyFamilies / convertToClownfish 两个键；
+    /// 逐项 decodeIfPresent、缺失给默认值，旧库绝不因缺键解码失败。
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        fileName = try c.decodeIfPresent(String.self, forKey: .fileName) ?? ""
+        relativePath = try c.decodeIfPresent(String.self, forKey: .relativePath) ?? fileName
+        isContainer = try c.decodeIfPresent(Bool.self, forKey: .isContainer) ?? false
+        unsafeContainer = try c.decodeIfPresent(Bool.self, forKey: .unsafeContainer) ?? false
+        descriptorCount = try c.decodeIfPresent(Int.self, forKey: .descriptorCount) ?? 1
+        posterType = try c.decodeIfPresent(TendiePosterType.self, forKey: .posterType) ?? .collections
+        previewImageData = try c.decodeIfPresent(Data.self, forKey: .previewImageData)
+        dateImported = try c.decodeIfPresent(Date.self, forKey: .dateImported) ?? Date()
+        isSelected = try c.decodeIfPresent(Bool.self, forKey: .isSelected) ?? true
+        legacyFamilies = try c.decodeIfPresent([String].self, forKey: .legacyFamilies) ?? []
+        convertToClownfish = try c.decodeIfPresent(Bool.self, forKey: .convertToClownfish) ?? true
     }
 }
