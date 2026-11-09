@@ -6,5 +6,15 @@
 	<array>
 		<string>packet-tunnel-provider</string>
 	</array>
+	<!-- run #176：worse_query 路线前置——App Group 容器。Group id
+	     以开发者后台注册为准；运行时先读 ALTAppGroups（AltStore
+	     重签后写入的实际授予 id），再读 Info.plist 的
+	     CWAppGroupIdentifier，最后用字面量。打包前须先用本
+	     entitlements 做 ad-hoc 签名（见 ci/build-ipa.yml），否则
+	     AltStore 读不到声明、不会分配 App Group。 -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.coco.cocowall.shared</string>
+	</array>
 </dict>
 </plist>

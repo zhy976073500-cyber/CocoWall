@@ -18,6 +18,12 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- run #176：App Group 编译期常量（worse_query 路线）。
+	     运行时解析顺序：ALTAppGroups → 本键 → 字面量兜底
+	     group.com.coco.cocowall.shared。Group id 以开发者后台
+	     注册为准，本键须与 entitlements 里的声明一致。 -->
+	<key>CWAppGroupIdentifier</key>
+	<string>group.com.coco.cocowall.shared</string>
 	<!-- 外部回环回调（run #167）：LocalDevVPN 的 URL scheme API
 	     支持 `localdevvpn://enable?scheme=<回调 scheme>`，1 秒后
 	     打开 `<回调 scheme>://` 跳回调用方；CocoWall 注册

@@ -30,13 +30,37 @@ jobs:
             -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
+      # run #176: ad-hoc sign before packaging. CODE_SIGNING_ALLOWED=NO
+      # above leaves the bundles unsigned, so the App Groups declaration
+      # (Config/CocoWall.entitlements) would be invisible to AltStore /
+      # SideStore and no group would be allocated — a known silent
+      # failure for the worse_query route. Ad-hoc signing (-s -) needs
+      # no certificate and only carries the entitlements into the
+      # signature; the sideload tool re-signs everything anyway.
+      # Sign inner extension bundles first, then the app itself.
+      # The tunnel extension keeps its own entitlements; the Live
+      # Activity extension has none. Verify the app entitlements
+      # land in the signature (fails the job if codesign disagrees).
+      - name: Ad-hoc sign (carry App Groups entitlement)
+        run: |
+          APP=build/DerivedData/Build/Products/Release-iphoneos/CocoWall.app
+          for APPEX in "$APP/PlugIns"/*.appex; do
+            [ -d "$APPEX" ] || continue
+            case "$APPEX" in
+              *CocoWallTunnel*) codesign -s - -f --entitlements Config/CocoWallTunnel.entitlements "$APPEX" ;;
+              *) codesign -s - -f "$APPEX" ;;
+            esac
+          done
+          codesign -s - -f --entitlements Config/CocoWall.entitlements "$APP"
+          codesign -d --entitlements - "$APP" | grep -q com.apple.security.application-groups
+
       - name: Package IPA
         run: |
           mkdir -p build/Payload
           cp -R build/DerivedData/Build/Products/Release-iphoneos/CocoWall.app build/Payload/
-          cd build && zip -qr CocoWall-unsigned.ipa Payload
+          cd build && zip -qr CocoWall-adhoc.ipa Payload
 
       - uses: actions/upload-artifact@v4
         with:
           name: CocoWall-iOS-IPA
-          path: build/CocoWall-unsigned.ipa
+          path: build/CocoWall-adhoc.ipa

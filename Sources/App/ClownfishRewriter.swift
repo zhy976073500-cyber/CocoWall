@@ -709,8 +709,9 @@ public enum ClownfishRewriter {
                 enumerator.skipDescendants()
                 continue
             }
-            guard url.lastPathComponent == "versions",
-                  let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory), isDir.boolValue else { continue }
+            guard url.lastPathComponent == "versions" else { continue }
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else { continue }
             let descriptorDir = url.deletingLastPathComponent()
             if findWallpaperDir(in: descriptorDir) != nil {
                 results.append(descriptorDir)

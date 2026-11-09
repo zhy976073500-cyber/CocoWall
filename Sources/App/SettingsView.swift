@@ -182,7 +182,7 @@ struct SupportedSystemsView: View {
                     title: "动态壁纸刷入",
                     lines: [
                         "支持 iOS 17.0 – 27.0.1。",
-                        "iOS 27.2 起，苹果已修复相关通道，暂不支持；升级到 27.2 或更高版本后将无法刷入。",
+                        "iOS 27.2：旧通道已修复，新路线（worse_query）验证中，暂不支持刷入。",
                         "低于 iOS 17.0 不支持。"
                     ]
                 )
@@ -193,6 +193,31 @@ struct SupportedSystemsView: View {
                         "iOS 17 – 26 需要导入配对文件；其中 iOS 26.4 起旧配对文件失效，需要 RPPairing 格式的新配对文件。"
                     ]
                 )
+
+                // 新路线 App Group 状态（run #176，验证 1）：启动时
+                // 探测一次；「重新检测」可手动重测（重装 / 换侧载
+                // 工具后用）。状态同时写进诊断日志（头像三击复制）。
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("新路线（worse_query）")
+                        .font(.headline)
+                    Text(vm.worseQueryRouting.userMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("App Group：\(vm.worseQueryAppGroupStatus.summaryText)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("重新检测 App Group") {
+                        vm.refreshWorseQueryStatus()
+                    }
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.blue)
+                    .disabled(vm.worseQueryAppGroupStatus == .checking)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+                .glassSurface(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
                 // iOS 26 生成配对文件教程（run #158 建入口；
                 // run #159 起链接改读远程配置 pairingTutorialUrl，

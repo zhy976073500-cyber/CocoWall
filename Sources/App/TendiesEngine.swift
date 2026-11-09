@@ -33,6 +33,16 @@ fileprivate func containerDetectLogCallback(ctx: UnsafeMutableRawPointer?, msg: 
     collector.append(String(cString: msg))
 }
 
+/// 刷入通道（run #176）：legacy 为现有回环 + 配对 → AFC → Books
+/// 事务；direct 为 worse_query 路线——逃逸授予访问权后直接用
+/// FileManager 把描述符拷进 PosterBoard 容器，不走 AFC/Books。
+/// direct 只在逃逸触发成功后由调用方选用；分包、Clownfish 重写、
+/// 标识随机化等上游步骤两通道共用、不分叉。
+public enum FlashTransport {
+    case legacy
+    case direct
+}
+
 public final class TendiesEngine {
     public static let shared = TendiesEngine()
 
@@ -279,7 +289,8 @@ public final class TendiesEngine {
         pairingPath: String,
         log: @escaping (String) -> Void,
         progress: @escaping (Double) -> Void,
-        onDescriptorInstalled: ((TendieItem, String, String) -> Void)? = nil
+        onDescriptorInstalled: ((TendieItem, String, String) -> Void)? = nil,
+        transport: FlashTransport = .legacy
     ) async throws {
         guard !items.isEmpty else {
             log("⚠️ No wallpapers selected to flash")
@@ -303,6 +314,9 @@ public final class TendiesEngine {
 
         log("🚀 Starting PosterBoard injection into \(normalizedContainer)")
         log("ℹ️ Target PosterBoard structure version: \(structVersion) (iOS \(majorVer))")
+        if transport == .direct {
+            log("ℹ️ 直写通道（worse_query）：跳过 /var/mobile/Library/Preferences（不在新路线公开可达路径内），只写容器内刷新偏好")
+        }
 
         let totalItems = Double(items.count)
 
@@ -418,18 +432,32 @@ public final class TendiesEngine {
                 //    primary spot only + combined reload-preferences write in
                 //    a single Books snapshot/restore cycle (see Rust core).
                 let primaryParentDir = "\(normalizedContainer)/Library/Application Support/PRBPosterExtensionDataStore/\(structVersion)/Extensions/\(descItem.ext)/descriptors"
-                try await injectPrimaryTransaction(
-                    folderURL: descItem.url,
-                    targetParentDir: primaryParentDir,
-                    destName: targetUUID,
-                    prefFileURL: prefPlistURL,
-                    prefTargetA: targetPrefDir,
-                    prefTargetB: mobilePrefDir,
-                    pairingPath: pairingPath,
-                    packageLabel: item.name,
-                    stageTotals: stageTotals,
-                    log: log
-                )
+                switch transport {
+                case .legacy:
+                    try await injectPrimaryTransaction(
+                        folderURL: descItem.url,
+                        targetParentDir: primaryParentDir,
+                        destName: targetUUID,
+                        prefFileURL: prefPlistURL,
+                        prefTargetA: targetPrefDir,
+                        prefTargetB: mobilePrefDir,
+                        pairingPath: pairingPath,
+                        packageLabel: item.name,
+                        stageTotals: stageTotals,
+                        log: log
+                    )
+                case .direct:
+                    // run #176：直写通道——不走 AFC/Books 事务，
+                    // 直接拷描述符进容器（调用方须已触发逃逸）。
+                    try await installDescriptorDirectly(
+                        folderURL: descItem.url,
+                        targetParentDir: primaryParentDir,
+                        destName: targetUUID,
+                        prefFileURL: prefPlistURL,
+                        prefTargetDir: targetPrefDir,
+                        log: log
+                    )
+                }
 
                 // Run #124: report each descriptor the moment its
                 // install transaction has succeeded, so the caller
@@ -450,7 +478,11 @@ public final class TendiesEngine {
                 }
 
                 if let modernExt = modernExt, majorVer >= 18 {
-                    log("    airlift: comparison mode=primary_only mirror_deferred=1 target=\(modernExt)")
+                    if transport == .direct {
+                        log("    direct: 现代容器镜像暂缓（\(modernExt)，只写主落点）")
+                    } else {
+                        log("    airlift: comparison mode=primary_only mirror_deferred=1 target=\(modernExt)")
+                    }
                 }
             }
 
@@ -959,6 +991,56 @@ public final class TendiesEngine {
     }
 
     // MARK: - Primary Transaction Injector (Walllive shape, run #112)
+
+    // MARK: - Direct install (worse_query route, run #176)
+
+    /// 直接把一个已改好标识的描述符文件夹拷进目标描述符目录，
+    /// 再回读校验（源与目标条目数一致，且标识文件在场）。校验不过
+    /// 删掉本次拷入的条目（回滚，不留半成品）再抛错。
+    /// 刷新偏好只写容器内目标（prefTargetDir，即 legacy 事务里的
+    /// prefTargetA）；`/var/mobile/Library/Preferences` 不在
+    /// worse_query 公开的可达路径里，本通道不写。
+    private func installDescriptorDirectly(
+        folderURL: URL,
+        targetParentDir: String,
+        destName: String,
+        prefFileURL: URL,
+        prefTargetDir: String,
+        log: @escaping (String) -> Void
+    ) async throws {
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: targetParentDir, withIntermediateDirectories: true)
+        let destPath = (targetParentDir as NSString).appendingPathComponent(destName)
+        do {
+            try fm.copyItem(atPath: folderURL.path, toPath: destPath)
+            // 刷新偏好（容器内）：与 legacy 事务里写 prefTargetA 等价。
+            try fm.createDirectory(atPath: prefTargetDir, withIntermediateDirectories: true)
+            let prefDest = (prefTargetDir as NSString).appendingPathComponent("com.apple.PosterBoard.unprotectedUserDefaults.plist")
+            if fm.fileExists(atPath: prefDest) { try? fm.removeItem(atPath: prefDest) }
+            try fm.copyItem(atPath: prefFileURL.path, toPath: prefDest)
+        } catch {
+            try? fm.removeItem(atPath: destPath)
+            throw NSError(
+                domain: "TendiesEngine",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "直接写入描述符失败：\(error.localizedDescription)"]
+            )
+        }
+        // 回读校验：源与目标条目数一致，且标识文件在场。
+        let sourceCount = (try? fm.subpathsOfDirectory(atPath: folderURL.path))?.count ?? -1
+        let destCount = (try? fm.subpathsOfDirectory(atPath: destPath))?.count ?? -2
+        let identifierPath = (destPath as NSString).appendingPathComponent("com.apple.posterkit.provider.descriptor.identifier")
+        let identifierPresent = fm.fileExists(atPath: identifierPath)
+        guard sourceCount == destCount, identifierPresent else {
+            try? fm.removeItem(atPath: destPath)
+            throw NSError(
+                domain: "TendiesEngine",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "直接写入校验失败（源 \(sourceCount) 项 / 目标 \(destCount) 项，标识文件\(identifierPresent ? "在场" : "缺失")），已回滚"]
+            )
+        }
+        log("    direct: 已写入 \(destName)（\(destCount) 项，校验通过）")
+    }
 
     /// One Walllive-shaped install transaction in the Rust core:
     /// primary-spot descriptor inject + combined reload-preferences

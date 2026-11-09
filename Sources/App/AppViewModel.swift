@@ -318,6 +318,8 @@ final class AppViewModel: ObservableObject {
             "iOS 版本：\(UIDevice.current.systemVersion)",
             "回环：\(vpnUp ? "已连接" : "未连接")",
             "配对文件：\(FileManager.default.fileExists(atPath: PairingController.pairingFilePath()) ? "已就绪" : "无")",
+            "App Group：\(worseQueryAppGroupStatus.summaryText)",
+            "新路线：\(worseQueryRouting.userMessage)",
             "失败步骤：\(step)",
             "原始错误：\(error.localizedDescription)",
         ]
@@ -334,6 +336,8 @@ final class AppViewModel: ObservableObject {
     /// 「原始错误」行。Sage 22:25 反馈：只连了回环、没触发过失败
     /// 就去点头像，结果只拿到「暂无诊断日志」——状态本身就是
     /// 值得发给作者的信息。
+    /// run #176：末尾追加 App Group 与新路线两行（与
+    /// recordDiagnostics 同款），验证 1 的结果随快照一起发出。
     func currentDiagnosticsSnapshot() -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
@@ -346,9 +350,44 @@ final class AppViewModel: ObservableObject {
             "iOS 版本：\(UIDevice.current.systemVersion)",
             "回环：\(vpnUp ? "已连接" : "未连接")",
             "配对文件：\(FileManager.default.fileExists(atPath: PairingController.pairingFilePath()) ? "已就绪" : "无")",
+            "App Group：\(worseQueryAppGroupStatus.summaryText)",
+            "新路线：\(worseQueryRouting.userMessage)",
             "当前状态（未发生失败）",
         ]
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - worse_query 新路线状态（run #176）
+    //
+    // App Group 探测结果（启动时异步跑一次，设置页可手动重测）。
+    // 验证 1 的生死门：granted 才可能走新路线。路由决策见
+    // WorseQueryRouter（系统版本 + 本次探测结果，探测优先）。
+    @Published var worseQueryAppGroupStatus: WorseQueryAppGroup.Status = .notChecked
+
+    /// 新路线回退说明：逃逸触发失败、落回现有路线时由分流处记下，
+    /// legacy 流程在日志重置后追加进刷入日志（界面明示走哪条路线、
+    /// 为什么回退）。平时为 nil。
+    private var worseQueryFallbackNote: String? = nil
+
+    /// 本次启动的路由决策（系统版本 + App Group 探测结果）。
+    var worseQueryRouting: WorseQueryRouting {
+        WorseQueryRouter.route(
+            for: UIDevice.current.systemVersion,
+            appGroup: worseQueryAppGroupStatus
+        )
+    }
+
+    /// 跑一次 App Group 探测（后台队列，不阻塞启动），结果写进
+    /// 诊断快照与设置页。失败不弹提示，只记状态——26/27.0–27.1
+    /// 会静默回退现有路线，27.2 在刷入时才明示。
+    func refreshWorseQueryStatus() {
+        worseQueryAppGroupStatus = .checking
+        Task {
+            let status = await Task.detached(priority: .userInitiated) {
+                WorseQueryAppGroup.probe()
+            }.value
+            await MainActor.run { self.worseQueryAppGroupStatus = status }
+        }
     }
     @Published var log: [String] = []
     @Published var showDeletePairingConfirm: Bool = false
@@ -406,6 +445,10 @@ final class AppViewModel: ObservableObject {
                 if error != nil { self?.loopbackToastArmed = false }
             }
             .store(in: &loopbackCancellables)
+
+        // run #176：启动时跑一次 App Group 探测（后台队列，
+        // 不阻塞启动），结果供路由决策、诊断快照与设置页读取。
+        refreshWorseQueryStatus()
     }
 
     // MARK: - Documents directory scanner
@@ -1392,6 +1435,46 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        // run #176：新路线分流（手册 §7）。blocked / 实验性未开启
+        // 时如实提示、不进刷入；逃逸触发失败时，优先路线落回现有
+        // 路线（下面的 legacy 流程原样执行），27.2 无回退、直接提示。
+        // 先清上一次残留的回退说明，避免配对缺失提前返回时
+        // 漏进下一次刷入的日志。
+        worseQueryFallbackNote = nil
+        let routing = worseQueryRouting
+        switch routing.route {
+        case .worseQueryBlocked, .experimental27_3:
+            recordDiagnostics(
+                step: "新路线（worse_query）不可用",
+                error: NSError(domain: "WorseQueryRoute", code: 1, userInfo: [NSLocalizedDescriptionKey: routing.reason])
+            )
+            errorMessage = routing.userMessage
+            return
+        case .worseQuery, .worseQueryOnly:
+            // 逃逸触发是前置门。本版触发为桩（未实现），立即失败，
+            // 不触碰任何系统服务；实现落地后这里才会真正进入新路线。
+            switch await WorseQueryEscape.trigger(targetPath: WorseQueryPosterBoardLocator.applicationContainersRoot) {
+            case .success:
+                await flashSelectedTendiesViaWorseQuery(items: selected)
+                return
+            case .failure(let escapeError):
+                recordDiagnostics(step: "worse_query 逃逸触发", error: escapeError)
+                if routing.route == .worseQueryOnly {
+                    errorMessage = "iOS 27.2 暂不支持刷入：逃逸触发失败（\(escapeError.localizedDescription)）"
+                    return
+                }
+                // 优先路线：落回现有路线（下面的 legacy 流程），
+                // 回退原因记进刷入日志，界面明示。
+                worseQueryFallbackNote = "⚠️ 新路线逃逸触发失败（\(escapeError.localizedDescription)），回退现有路线。"
+            }
+        case .legacy, .unsupported:
+            // 优先路线回退：刷入日志首行明示原因（消费点在
+            // legacy 流程的日志重置后，见下）。
+            if routing.fellBackFromWorseQuery {
+                worseQueryFallbackNote = "ℹ️ \(routing.reason)"
+            }
+        }
+
         let pairingPath = PairingController.pairingFilePath()
         guard FileManager.default.fileExists(atPath: pairingPath) else {
             // run #163：未配对点刷入的提示文案改 Sage 定稿
@@ -1435,6 +1518,12 @@ final class AppViewModel: ObservableObject {
         tendiesFlashPhase = .running
         tendiesFlashProgress = 0
         tendiesFlashLog = []
+        // run #176：新路线回退说明（逃逸触发失败时由分流处记下，
+        // 这里是日志重置后唯一的追加点；legacy 本体行为不变）。
+        if let note = worseQueryFallbackNote {
+            tendiesFlashLog.append(note)
+            worseQueryFallbackNote = nil
+        }
         if CWLogGate.detailedLogsEnabled, let containerDetectMS {
             tendiesFlashLog.append("[计时] 刷入·容器检测 \(cwStageText(containerDetectMS)) ms")
         }
@@ -1495,6 +1584,104 @@ final class AppViewModel: ObservableObject {
                 } else {
                     self.tendiesFlashLog.append("⚠️ 壁纸已写入，自动刷新未确认（本版不自动注销；如未生效可手动点注销）。")
                 }
+            }
+        } catch {
+            if CWLogGate.detailedLogsEnabled {
+                tendiesFlashLog.append("[计时] 刷入·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（中途失败）")
+            }
+            tendiesFlashLog.append("❌ 错误：\(error.localizedDescription)")
+            tendiesFlashPhase = .done(ok: false)
+        }
+    }
+
+    /// 新路线刷入（run #176）：逃逸已触发 → 定位 PosterBoard 容器 →
+    /// 直写通道刷入 → 刷新。调用前分流处已触发逃逸并成功；本函数
+    /// 不再要求配对文件。刷新优先沿用现有免注销刷新（有配对文件时），
+    /// 无配对时只提示手动处理，不自动注销（现行版本策略）。
+    /// 与 legacy 流程结构相同、独立一份：legacy 本体一行不动。
+    private func flashSelectedTendiesViaWorseQuery(items: [TendieItem]) async {
+        // 资源完整性门（与 legacy 同款，同步、失败即停）。
+        guard ResourceIntegrity.verifyBundleResources() else {
+            errorMessage = "资源完整性校验未通过，已停止刷入"
+            return
+        }
+
+        let roundStart = DispatchTime.now()
+        let locateStart = DispatchTime.now()
+        let located = WorseQueryPosterBoardLocator.locate(cachedContainer: posterBoardContainer)
+        let container: String
+        switch located {
+        case .success(let path):
+            container = path
+            self.posterBoardContainer = path
+            UserDefaults.standard.set(path, forKey: "aircard.posterboard_container")
+        case .failure(let locateError):
+            recordDiagnostics(step: "新路线：定位 PosterBoard 容器", error: locateError)
+            errorMessage = "新路线定位 PosterBoard 容器失败：\(locateError.localizedDescription)"
+            return
+        }
+
+        tendiesFlashPhase = .running
+        tendiesFlashProgress = 0
+        tendiesFlashLog = []
+        if CWLogGate.detailedLogsEnabled {
+            tendiesFlashLog.append("[计时] 刷入·新路线容器定位 \(cwStageText(cwStageMS(locateStart, DispatchTime.now()))) ms")
+        }
+        tendiesFlashLog.append("ℹ️ 新路线（worse_query）刷入：\(container)")
+
+        do {
+            try await TendiesEngine.shared.flashTendies(
+                items: items,
+                containerPath: container,
+                resetProtections: resetPBProtections,
+                pairingPath: "",
+                log: { [weak self] line in
+                    DispatchQueue.main.async {
+                        self?.appendEngineDetail(line)
+                    }
+                },
+                progress: { [weak self] p in
+                    DispatchQueue.main.async {
+                        self?.tendiesFlashProgress = p
+                    }
+                },
+                onDescriptorInstalled: { [weak self] item, ext, storeUUID in
+                    DispatchQueue.main.async {
+                        self?.registerFlashedDescriptor(item: item, extensionID: ext, storeUUID: storeUUID)
+                    }
+                },
+                transport: .direct
+            )
+            if CWLogGate.detailedLogsEnabled {
+                tendiesFlashLog.append("[计时] 刷入·整轮总计 \(cwStageText(cwStageMS(roundStart, DispatchTime.now()))) ms（不含 poster_refresh）")
+            }
+            tendiesFlashPhase = .done(ok: true)
+            tendiesFlashProgress = 1.0
+            tendiesFlashLog.append("🎉 壁纸应用成功！")
+            tendiesFlashLog.append("正在刷新系统壁纸…")
+
+            // 有配对文件时沿用免注销刷新；无配对时只如实提示，
+            // 不自动注销，用户可自行点「注销（NeoSpring）」手动注销。
+            let pairingPath = PairingController.pairingFilePath()
+            if FileManager.default.fileExists(atPath: pairingPath) {
+                PosterRefreshHelper.attemptRefresh(
+                    pairingPath: pairingPath,
+                    log: { [weak self] line in
+                        DispatchQueue.main.async {
+                            self?.appendEngineDetail(line)
+                        }
+                    }
+                ) { [weak self] confirmed, _ in
+                    guard let self else { return }
+                    if confirmed {
+                        self.tendiesFlashLog.append("✅ 系统壁纸已刷新，免注销生效。")
+                        self.showToast("刷入成功")
+                    } else {
+                        self.tendiesFlashLog.append("⚠️ 壁纸已写入，自动刷新未确认（本版不自动注销；如未生效可手动点注销）。")
+                    }
+                }
+            } else {
+                tendiesFlashLog.append("⚠️ 壁纸已写入，未配对故自动刷新不可用：如锁屏未更新，请手动注销（NeoSpring）或去设置-墙纸查看。")
             }
         } catch {
             if CWLogGate.detailedLogsEnabled {

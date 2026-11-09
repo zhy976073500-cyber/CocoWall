@@ -4815,3 +4815,38 @@ Sage 2026-11-09 04:03 发 GoldenNugget 截图（iOS 27 仅针对现代 "Clownfis
 
 - 完整 App 的真机端到端待 CI 出包后 Sage 真机验（合约 §9）：① 旧包样本导入 iOS 27 真机、选「转换」：转换后的包每平面 `index.xml` 含 `publishedObjectNames`，`Wallpaper.plist` 的 `family` 为 `Clownfish` 且有两个深度配置 plist，包名与平面名符合 stock 形状；② 同一包选「原样安装」：内容逐字节不变；③ iOS 27 真机上，转换后的壁纸刷入后锁屏有景深效果，且原有动画（摇摆 / 上下浮 / 三态）仍正常；④ 已现代的包与 Mercury 包导入时不被改动；⑤ iOS 26（含）以下导入旧包不提示、不重写；⑥ 关于页 / 设置页显示的版本号为 1.0.9。
 - 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变；清单内容与 1.0.2–1.0.8 逐字节一致，可复用）。
+
+## 改动登记 · worse_query 接入（行为重写版）：App Group 探测 + 版本分流 + 直写通道骨架（run #176，2026-11-09；Sage 令按手册接入；Swift）
+
+### 版本命名
+
+**1.0.10**（build 11）。按 #167 定例：每次修 bug / 加功能都更新版本号。project.yml：MARKETING_VERSION 1.0.9 → 1.0.10，CURRENT_PROJECT_VERSION 10 → 11。
+
+### 背景
+
+worse_query（forcequitOS，2026-11-08 公开，GPL-3.0，bad_query 继任者）公开支持 iOS 26.0–26.7.2 / 27.2，可达路径含 `/var/mobile/Containers/Data/Application/*`，前置条件是 App 须配好一个 App Group 容器。现有路线（回环 + 配对 + AFC + Books 注入）支持到 27.1，AirTraffic 在 27.2 beta 3 起被修补。接入手册：`~/workspace/goals/cocowall-27-2/files/cocowall-worse-query-integration-manual/cocowall-worse-query-integration-manual.pdf`（11 页）；调研报告：`~/workspace/research_notes/cocowall-worse-query-integration-research-20261109.md`。
+
+### 改动
+
+1. **新增 `Sources/App/WorseQueryRoute.swift`（模块 1–5、8，纯自研 Swift）**。模块 1 App Group 容器发现：Group id 解析顺序为 `ALTAppGroups`（AltStore 重签后写入的实际授予 id）→ Info.plist 编译期常量 `CWAppGroupIdentifier` → 字面量兜底，不 hardcode；`probe()` 调 `containerURL(forSecurityApplicationGroupIdentifier:)`，非 nil 则写探针文件并读回校验，成功即 `granted`。模块 2 版本分流（`WorseQueryRouter`，手册 §7 表）：17.0–25.x 走现有路线；26.0–26.7.2 与 27.0–27.1 优先新路线、失败回退现有路线，以本次启动探测结果为准；27.2 只走新路线；27.3 beta 实验性灰度默认关；27.3 正式版以后默认不支持。模块 3 逃逸触发：只定接口与结构化错误（超时 / 被拒绝 / 无扩展三类分开），本版实现为桩、返回 `.notImplemented`，不触碰任何系统服务；服务名、查询参数、扩展持有方式等内部细节未公开，文件中以问题形式列出、待真机联调实测填，不得编造。模块 4+5 PosterBoard 容器定位：先复用现有路线已缓存的容器路径（UserDefaults `aircard.posterboard_container`），再枚举 `/var/mobile/Containers/Data/Application/*`、读元数据 plist 的 `MCMMetadataIdentifier` 匹配 `com.apple.PosterBoard`；定位不到报错，不拼猜测路径。模块 8 诊断：App Group 与路由两行摘要，供诊断日志复用。
+2. **`Sources/App/TendiesEngine.swift`：直写通道（模块 6）**。新增 `FlashTransport`（`legacy` / `direct`，默认 `legacy`），`flashTendies` 在描述符安装点按通道分叉：legacy 走原 `injectPrimaryTransaction`（AFC + Books 事务，一字未动）；direct 走新增 `installDescriptorDirectly`——FileManager 直接把已改好标识的描述符文件夹拷进容器内描述符目录，刷新偏好只写容器内目标，`/var/mobile/Library/Preferences` 不在新路线公开可达路径内、跳过并记日志；写后回读校验（源与目标条目数一致 + 标识文件在场），不过删本次条目回滚再抛错。分包、Clownfish 重写、标识随机化（9999–99999 档沿用既有 `rewriteDescriptorIdentifiers`）、现代容器镜像暂缓等上游步骤两通道共用。`pairingPath` 只在 legacy 事务里使用，直写通道传空串安全（已核对全文件引用点）。
+3. **`Sources/App/AppViewModel.swift`：状态、分流与新路线刷入**。新增 `@Published worseQueryAppGroupStatus`（启动时 `refreshWorseQueryStatus()` 在后台队列跑一次探测，不阻塞启动）与 `worseQueryRouting` 计算属性；`recordDiagnostics` 与 `currentDiagnosticsSnapshot` 各加「App Group」「新路线」两行，验证 1 结果随诊断日志（头像三击复制 / 问题反馈）发出。`flashSelectedTendies()` 顶部加分流：blocked / 实验性未开启如实提示、不进刷入；优先与仅走新路线时先触发逃逸（本版为桩、立即失败），失败则优先路线落回现有路线（回退原因记进刷入日志，界面明示）、27.2 无回退直接提示；legacy 流程本体只加一处回退说明追加点，其余一行未动。新增 `flashSelectedTendiesViaWorseQuery`（独立流程，与 legacy 同结构）：定位容器 → 直写通道刷入 → 有配对文件时沿用免注销刷新，无配对时只提示手动处理、不自动注销。
+4. **`Sources/App/SettingsView.swift`：设置页明示状态**。支持系统页「动态壁纸刷入」卡的 27.2 文案改为「旧通道已修复，新路线（worse_query）验证中，暂不支持刷入」；新增「新路线（worse_query）」卡：当前路由人话说明 + App Group 状态 +「重新检测 App Group」按钮（重装 / 换侧载工具后手动重测）。
+5. **工程与打包**。`Config/CocoWall.entitlements` 加 `com.apple.security.application-groups` = `group.com.coco.cocowall.shared`（Group id 以开发者后台注册为准）；`Sources/App/Info.plist` 加编译期常量 `CWAppGroupIdentifier`（同值）。`ci/build-ipa.yml` 与 `.github/workflows/build-ipa.yml`（现场跑 macos-26）在 Build 与 Package 之间加 ad-hoc 签名步骤：先签各 `.appex`（隧道扩展用自己的 entitlements，Live Activity 扩展无 entitlements 文件），再用主 entitlements 签 App，并校验签名里含 `com.apple.security.application-groups`（grep 不中则任务失败）；IPA 文件名随之由 `CocoWall-unsigned.ipa` 改为 `CocoWall-adhoc.ipa`（现为 ad-hoc 签名包，不再是未签名包；artifact 名 `CocoWall-iOS-IPA` 不变）。
+6. **版本号 1.0.10（build 11）**，见本节首段。
+
+### 许可隔离
+
+本轮无任何上游源码进入仓库：未包含、链接、复制 worse_query / Erosion / Pocket Poster / Placard 的任何源码；实现者隔离——只按手册 §5 的行为清单与公开行为规格写，未打开上游源码目录，未沿用下游封装名；未编造任何未公开的接口名、函数名、守护进程名、CVE、参数数值（逃逸触发的四个未知项在 `WorseQueryRoute.swift` 中以问题形式明文列出）。许可部分是公开资料整理、非法律意见，出包前须经熟悉开源许可的第三方复核。
+
+### 未改动
+
+- 回环、配对、AFC、Books 注入、Rust 核心（`rust-core/`）、Clownfish 重写、.tendies 解析、配置与公告、匿名计数、版本号命名规则均未动。包名仍为 `com.coco.cocowall`，最低 iOS 17.0 不变。`systemSupportLevel` 的判定未动（27.2 仍为 `patchedRisk`，验证 2 通过前不宣称支持）。
+- 逃逸触发未实现之前，本版在任何系统上的刷入结果与 1.0.9 一致，仅 26.0–27.1 的刷入日志首行多一句回退说明（模块 8 要求界面明示走哪条路线、为什么回退）。直写通道代码已就位，但无逃逸授予访问权时不可达。
+
+### 未验证项
+
+- 本机无 Swift 工具链，swiftc -parse 未跑；语法与类型靠人工逐项核对 + CI 构建核验（新文件只用 Foundation / UIKit 现成 API：`containerURL(forSecurityApplicationGroupIdentifier:)`、`FileManager` 探针读写、`NSDictionary` 读元数据 plist；括号平衡已机查通过）。plist 两处改动已用 plistlib 校验通过；两份 workflow YAML 已解析通过。
+- 完整 App 的真机端到端待 CI 出包后 Sage 真机验（手册 §8 验证 1 优先）：① 任意 iOS 26.0+ / 27.2 真机，普通 Apple ID，分别经 AltStore、SideStore 各装一次：设置 → 支持系统 → 新路线卡显示 App Group「已放行」且含 group id，头像三击复制的诊断日志含同样的 App Group 与新路线两行；② 同一设备换另一侧载工具重装后点「重新检测 App Group」，状态刷新正确；③ 27.2 真机点刷入：提示「暂不支持刷入」（逃逸触发未实现），不进配对流程、不闪退；④ 26.x / 27.0–27.1 真机刷入：走现有路线，行为与 1.0.9 一致，刷入日志首行含新路线回退说明；⑤ 关于页 / 设置页显示的版本号为 1.0.10；⑥ CI 日志含 ad-hoc 签名步骤成功、签名里查到 `com.apple.security.application-groups`。
+- 验证 1 若在免费账号 + AltStore / SideStore 上均判未放行：该设备上新路线判死，走现有配对路线，并记录工具名、工具版本、系统版本；付费账号只作对照实验，不作默认解法。逃逸触发的四个未知项（服务、查询参数、扩展持有、超时重试）须真机联调实测后才能填，填之前不得宣称支持 27.2 刷入。
+- 本轮 CI 产物照 #160 设计仍不含完整性清单：若定版分发，须由主线对最终 IPA 重新生成、签名并注入清单（清单 7 文件本轮均未动，内容不变）。
